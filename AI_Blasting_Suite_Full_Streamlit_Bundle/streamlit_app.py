@@ -9,7 +9,7 @@ from utils_blaster import (
 
 st.set_page_config(page_title="AI Blasting Suite", layout="wide")
 
-# --- Login (streamlit-authenticator; credentials come from Secrets) ---
+# --- Login (streamlit-authenticator; credentials come from Secrets) --
 def build_authenticator():
     creds = st.secrets.get("credentials", {})
     cookie  = st.secrets.get("cookie", {})
