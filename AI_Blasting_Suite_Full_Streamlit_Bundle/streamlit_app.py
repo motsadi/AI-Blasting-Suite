@@ -1,6 +1,5 @@
-
 import os, numpy as np, pandas as pd, joblib, streamlit as st, matplotlib.pyplot as plt
-import streamlit_authenticator as stauth
+# NOTE: authenticator removed
 
 from utils_blaster import (
     INPUT_LABELS, slider_ranges_from_df, EmpiricalParams, empirical_predictions,
@@ -9,29 +8,8 @@ from utils_blaster import (
 
 st.set_page_config(page_title="AI Blasting Suite", layout="wide")
 
-# --- Login (streamlit-authenticator; credentials come from Secrets) --
-def build_authenticator():
-    creds = st.secrets.get("credentials", {})
-    cookie  = st.secrets.get("cookie", {})
-    if not creds or "usernames" not in creds:
-        st.error("Credentials not configured. Add them in Streamlit Secrets. See README.")
-        st.stop()
-    return stauth.Authenticate(
-        creds,
-        cookie.get("name","blasting_cookie"),
-        cookie.get("key","supersecret_key_change_me"),
-        cookie.get("expiry_days", 7),
-        cookie.get("preauthorized", {}),
-    )
-
-authenticator = build_authenticator()
-name, auth_status, username = authenticator.login("Login", "main")
-if auth_status is False:
-    st.error("Invalid username or password"); st.stop()
-elif auth_status is None:
-    st.info("Enter your credentials to continue."); st.stop()
-
-authenticator.logout("Logout", "sidebar")
+# --- Dev banner (since we removed login) ---
+st.toast("Running without authentication (dev mode)", icon="⚠️")
 st.title("💎 AI Blasting Suite")
 st.caption("Data audit • Empirical calibration • ML predictions • Flyrock • Slope stability • Delay simulation")
 
@@ -57,14 +35,16 @@ tabs = st.tabs(["Data","Predict (ML + Empirical)","Flyrock (Auto-Train)","Slope 
 with tabs[0]:
     st.subheader("📑 Data Management")
     up = st.file_uploader("Upload blast CSV (Orapa/Jwaneng or similar)", type=["csv"])
-    if up is not None: st.session_state["data_df"] = pd.read_csv(up)
+    if up is not None:
+        st.session_state["data_df"] = pd.read_csv(up)
     else:
+        # try local fallbacks
         for name in ["combinedv2Orapa.csv","combinedv2Jwaneng.csv","Backbreak.csv"]:
             if os.path.exists(name):
                 st.session_state["data_df"] = pd.read_csv(name); break
     df = st.session_state.get("data_df")
     if df is not None:
-        st.write("### Preview"); st.dataframe(df.head(200))
+        st.write("### Preview"); st.dataframe(df.head(200), use_container_width=True)
         with st.expander("Quick KPIs (set limits & HPD)"):
             ppv_lim = st.number_input("PPV limit (mm/s)", value=12.5, step=0.1)
             air_lim = st.number_input("Air limit (dB)", value=134.0, step=0.5)
@@ -89,7 +69,8 @@ with tabs[0]:
                 st.info("\n".join(out) if out else "Not enough columns for KPIs.")
         with st.expander("Correlation heatmap"):
             num = df.apply(pd.to_numeric, errors="coerce"); corr = num.corr(numeric_only=True)
-            fig, ax = plt.subplots(); im = ax.imshow(corr, aspect="auto")
+            fig, ax = plt.subplots()
+            im = ax.imshow(corr, aspect="auto")
             ax.set_xticks(range(len(corr.columns))); ax.set_xticklabels(corr.columns, rotation=45, ha="right", fontsize=8)
             ax.set_yticks(range(len(corr.columns))); ax.set_yticklabels(corr.columns, fontsize=8)
             fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04); ax.set_title("Correlation")
@@ -192,7 +173,7 @@ with tabs[3]:
     if ups:
         dfs = pd.read_csv(ups)
         cols = {c.lower().strip(): c for c in dfs.columns}
-        def pick(*names): 
+        def pick(*names):
             for n in names:
                 if n in cols: return cols[n]
             return None
@@ -240,7 +221,7 @@ with tabs[4]:
     if upld:
         dh = pd.read_csv(upld)
         cols = {c.lower().strip(): c for c in dh.columns}
-        def getc(*names): 
+        def getc(*names):
             for n in names:
                 if n in cols: return cols[n]
             return None
@@ -264,7 +245,6 @@ with tabs[4]:
             else:
                 y = np.clip(10 + 0.02*X[:,0] + 0.0005*X[:,2], 5, 250)
             Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=42)
-            from sklearn.preprocessing import StandardScaler
             sc = StandardScaler().fit(Xtr)
             mdl = RandomForestRegressor(n_estimators=200, random_state=42).fit(sc.transform(Xtr), ytr)
 
