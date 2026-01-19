@@ -20,14 +20,14 @@ type TabKey =
 
 const TABS: Array<{ key: TabKey; title: string; desc: string }> = [
   { key: "data", title: "Data", desc: "Upload / preview datasets (GCS-backed later)" },
-  { key: "predict", title: "Predict", desc: "Empirical + ML outputs (API)" },
-  { key: "feature", title: "Feature Importance", desc: "Model feature importances" },
+  { key: "predict", title: "Predict", desc: "Empirical + ML outputs + RR" },
+  { key: "feature", title: "Feature Importance", desc: "RF importance + PCA" },
   { key: "param", title: "Parameter Optimisation", desc: "Surface + goal seek" },
   { key: "cost", title: "Cost Optimisation", desc: "KPIs, optimise, Pareto" },
   { key: "backbreak", title: "Backbreak", desc: "RF model from CSV" },
-  { key: "flyrock", title: "Flyrock", desc: "Auto-train + predict (API later)" },
-  { key: "slope", title: "Slope", desc: "Auto-train classifier (API later)" },
-  { key: "delay", title: "Delay", desc: "Delay prediction & plan view (API later)" },
+  { key: "flyrock", title: "Flyrock", desc: "ML + empirical" },
+  { key: "slope", title: "Slope", desc: "Stable/Failure classifier" },
+  { key: "delay", title: "Delay", desc: "Delay prediction & plan view" },
 ];
 
 export function Shell({ apiBaseUrl, session, onLogout }: Props) {
@@ -212,6 +212,9 @@ function PredictPanel({ apiBaseUrl, token, meta }: { apiBaseUrl: string; token: 
   const [busy, setBusy] = useState(false);
   const [out, setOut] = useState<any>(null);
   const [inputs, setInputs] = useState<Record<string, number>>({});
+  const [rrN, setRrN] = useState(1.8);
+  const [rrMode, setRrMode] = useState<"manual" | "estimate">("estimate");
+  const [rrXov, setRrXov] = useState(500);
   const outputs: string[] = meta?.outputs ?? ["Ground Vibration", "Airblast", "Fragmentation"];
   const empiricalDefaults = meta?.empirical_defaults ?? {
     K_ppv: 1000,
@@ -248,7 +251,10 @@ function PredictPanel({ apiBaseUrl, token, meta }: { apiBaseUrl: string; token: 
           inputs,
           hpd_override: 1,
           empirical: empiricalDefaults,
-          want_ml: true
+          want_ml: true,
+          rr_n: rrN,
+          rr_mode: rrMode,
+          rr_x_ov: rrXov
         }),
       });
       const json = await res.json();
@@ -313,6 +319,30 @@ function PredictPanel({ apiBaseUrl, token, meta }: { apiBaseUrl: string; token: 
         </div>
       ) : null}
 
+      {out?.json?.rr ? (
+        <div className="card">
+          <div className="label" style={{ marginBottom: 8 }}>Rosin–Rammler (CDF)</div>
+          <div className="grid3">
+            <div>
+              <label className="label">n mode</label>
+              <select className="input" value={rrMode} onChange={(e) => setRrMode(e.target.value as any)}>
+                <option value="estimate">Estimate</option>
+                <option value="manual">Manual</option>
+              </select>
+            </div>
+            <div>
+              <label className="label">n (manual)</label>
+              <input className="input" type="number" value={rrN} onChange={(e) => setRrN(Number(e.target.value))} />
+            </div>
+            <div>
+              <label className="label">Oversize (mm)</label>
+              <input className="input" type="number" value={rrXov} onChange={(e) => setRrXov(Number(e.target.value))} />
+            </div>
+          </div>
+          <RRChart rr={out.json.rr} />
+        </div>
+      ) : null}
+
       <div className="card">
         <div className="label" style={{ marginBottom: 10 }}>Response</div>
         <pre style={pre}>{JSON.stringify(out, null, 2)}</pre>
@@ -371,6 +401,16 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
           <div className="label">Train R²: {Number(resp.train_r2).toFixed(3)}</div>
         </div>
       )}
+      {resp?.empirical && (
+        <div style={{ marginTop: 12 }}>
+          {Object.entries(resp.empirical).map(([k, v]) => (
+            <div key={k} className="kpi" style={{ marginTop: 6 }}>
+              <div className="kpiTitle">{k}</div>
+              <div className="kpiValue">{Number(v).toFixed(2)}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -380,18 +420,30 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  const [inputs, setInputs] = useState<Record<string, number>>({});
+
   async function run() {
     if (!apiBaseUrl) return;
     setBusy(true);
     setErr(null);
     try {
+      const fd = new FormData();
+      if (Object.keys(inputs).length) fd.append("inputs_json", JSON.stringify(inputs));
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/slope/predict`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
+        body: fd,
       });
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Slope failed");
       setResp(json);
+      if (json?.feature_stats) {
+        const next: Record<string, number> = {};
+        Object.keys(json.feature_stats).forEach((k) => {
+          next[k] = json.feature_stats[k].median;
+        });
+        setInputs(next);
+      }
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -403,6 +455,16 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     <div className="card">
       <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Slope Stability</div>
       <div className="subtitle">Using default dataset: slope data.csv</div>
+      {Object.keys(inputs).length ? (
+        <div className="grid3" style={{ marginTop: 10 }}>
+          {Object.entries(inputs).map(([k, v]) => (
+            <div key={k}>
+              <label className="label">{k}</label>
+              <input className="input" type="number" value={v} onChange={(e) => setInputs({ ...inputs, [k]: Number(e.target.value) })} />
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
         <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict"}</button>
       </div>
@@ -455,12 +517,14 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
           <div className="kpiValue">{resp.points.length}</div>
         </div>
       ) : null}
+      {resp?.points?.length ? <PlanView points={resp.points} /> : null}
     </div>
   );
 }
 
 function FeaturePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const [resp, setResp] = useState<any>(null);
+  const [pca, setPca] = useState<any>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -469,12 +533,16 @@ function FeaturePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
     setBusy(true);
     setErr(null);
     try {
-      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/feature-importance`, {
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/feature/importance`, {
         headers: { authorization: `Bearer ${token}` },
       });
       const json = await res.json();
       if (!res.ok) throw new Error("Failed");
       setResp(json);
+      const p = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/feature/pca`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      setPca(await p.json());
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -507,6 +575,14 @@ function FeaturePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
               </div>
             </div>
           ))}
+        </div>
+      )}
+      {pca?.explained_variance_ratio && (
+        <div style={{ marginTop: 12 }}>
+          <div className="label">PCA Explained Variance</div>
+          <div className="pill" style={{ marginTop: 6 }}>
+            {pca.explained_variance_ratio.map((v: number, i: number) => `PC${i + 1}: ${(v * 100).toFixed(1)}%`).join(" · ")}
+          </div>
         </div>
       )}
     </div>
@@ -551,6 +627,63 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
           <div className="kpiValue">{Number(resp.prediction).toFixed(2)}</div>
         </div>
       )}
+    </div>
+  );
+}
+
+function RRChart({ rr }: { rr: any }) {
+  const xs = rr?.xs ?? [];
+  const ys = rr?.cdf ?? [];
+  if (!xs.length) return null;
+  const w = 600;
+  const h = 240;
+  const xlog = xs.map((x: number) => Math.log10(Math.max(0.1, x)));
+  const xmin = Math.min(...xlog);
+  const xmax = Math.max(...xlog);
+  const ymin = 0;
+  const ymax = 100;
+  const pts = xlog.map((x: number, i: number) => {
+    const px = ((x - xmin) / (xmax - xmin)) * (w - 20) + 10;
+    const py = h - ((ys[i] - ymin) / (ymax - ymin)) * (h - 20) - 10;
+    return `${px},${py}`;
+  });
+  return (
+    <div style={{ marginTop: 10 }}>
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+        <polyline fill="none" stroke="#60a5fa" strokeWidth="2" points={pts.join(" ")} />
+      </svg>
+      <div className="label" style={{ marginTop: 6 }}>
+        n={rr.n?.toFixed(2)} · Xm={rr.xm?.toFixed(1)} mm · X50={rr.x50?.toFixed(1)} mm · Oversize@{rr.x_ov}={rr.oversize_pct?.toFixed(1)}%
+      </div>
+    </div>
+  );
+}
+
+function PlanView({ points }: { points: Array<{ X: number; Y: number; Delay: number }> }) {
+  const w = 620;
+  const h = 360;
+  const xs = points.map((p) => p.X);
+  const ys = points.map((p) => p.Y);
+  const ds = points.map((p) => p.Delay);
+  const xmin = Math.min(...xs);
+  const xmax = Math.max(...xs);
+  const ymin = Math.min(...ys);
+  const ymax = Math.max(...ys);
+  const dmin = Math.min(...ds);
+  const dmax = Math.max(...ds);
+  const norm = (v: number, a: number, b: number) => (b - a === 0 ? 0.5 : (v - a) / (b - a));
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div className="label">Plan View (color by delay)</div>
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+        {points.slice(0, 800).map((p, i) => {
+          const x = 10 + norm(p.X, xmin, xmax) * (w - 20);
+          const y = 10 + (1 - norm(p.Y, ymin, ymax)) * (h - 20);
+          const t = norm(p.Delay, dmin, dmax);
+          const color = `hsl(${(1 - t) * 220}, 80%, 60%)`;
+          return <circle key={i} cx={x} cy={y} r={3} fill={color} />;
+        })}
+      </svg>
     </div>
   );
 }

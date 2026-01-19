@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field
 
 
@@ -25,12 +25,16 @@ class PredictRequest(BaseModel):
     hpd_override: float = 1.0
     empirical: EmpiricalParamsIn = Field(default_factory=EmpiricalParamsIn)
     want_ml: bool = True
+    rr_n: Optional[float] = None
+    rr_mode: Optional[str] = None  # "manual" | "estimate"
+    rr_x_ov: Optional[float] = None
 
 
 class PredictResponse(BaseModel):
     empirical: dict[str, float]
     ml: Optional[Dict[str, float]] = None
     assets_loaded: dict[str, bool]
+    rr: Optional[Dict[str, Any]] = None
 
 
 class AssetsStatus(BaseModel):

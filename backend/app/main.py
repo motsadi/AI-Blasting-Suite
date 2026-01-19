@@ -157,6 +157,88 @@ def predict(req: PredictRequest, _token: str = Depends(require_auth)):
     p = EmpiricalParams(**req.empirical.model_dump())
     emp = empirical_predictions(vals, p, outputs)
 
+    # RR curve (from local prediction_module logic)
+    rr = None
+    try:
+        import math
+        import numpy as np
+
+        def _safe_log10(x: float, eps: float = 1e-12) -> float:
+            return math.log10(max(x, eps))
+
+        def _derived_charge_volume() -> tuple[float, float, float, float]:
+            depth = float(vals.get("Hole depth (m)", 0.0))
+            stem = float(vals.get("Stemming (m)", 0.0))
+            Lc = max(0.0, depth - stem)
+            lin = float(vals.get("Linear charge (kg/m)", 0.0))
+            mass_per_hole_lin = lin * Lc
+            mass_per_hole_exp = float(vals.get("Explosive mass (kg)", 0.0))
+            n_holes = max(1, int(round(float(vals.get("# Holes", 1)))))
+            vol = float(vals.get("Blast volume (m³)", 0.0))
+            if vol <= 0.0:
+                B = float(vals.get("Burden (m)", 0.0))
+                S = float(vals.get("Spacing (m)", 0.0))
+                vol = max(0.0, B * S * depth * n_holes)
+            PF_slider = float(vals.get("Powder factor (kg/m³)", 0.0))
+
+            per_hole = 0.0
+            for cand in (mass_per_hole_lin, mass_per_hole_exp):
+                if cand > 0:
+                    per_hole = cand
+                    break
+            total_mass = per_hole * n_holes
+            if PF_slider > 0.0 and vol > 0.0:
+                total_mass = PF_slider * vol
+                if n_holes > 0:
+                    per_hole = total_mass / n_holes
+            hpd = max(1.0, float(req.hpd_override))
+            qd = per_hole * hpd
+            return per_hole, total_mass, qd, vol
+
+        def _estimate_n_rr() -> float | None:
+            B = float(vals.get("Burden (m)", 0.0))
+            d_mm = float(vals.get("Hole diameter (mm)", 0.0))
+            if B <= 0 or d_mm <= 0:
+                return None
+            d_m = d_mm / 1000.0
+            n_hat = 2.2 - 14.0 * (d_m / max(B, 1e-9))
+            return float(np.clip(n_hat, 0.5, 3.5))
+
+        n = req.rr_n
+        if (req.rr_mode or "").startswith("estimate") or n is None:
+            n = _estimate_n_rr() or n
+        if n is None:
+            n = 1.8
+
+        per_hole, total_mass, qd, vol = _derived_charge_volume()
+        A = max(0.0, float(req.empirical.A_kuz))
+        RWS = max(1e-6, float(req.empirical.RWS))
+        K_pf = float(vals.get("Powder factor (kg/m³)", 0.0))
+        if (K_pf <= 0.0) and (vol > 0.0):
+            K_pf = total_mass / vol
+        xm = None
+        if K_pf > 0.0 and per_hole > 0.0:
+            xm = A * (K_pf ** -0.8) * (per_hole ** (1.0 / 6.0)) * ((115.0 / RWS) ** (19.0 / 20.0))
+        if xm is not None and n > 0:
+            lam = xm / math.gamma(1.0 + 1.0 / n)
+            x50 = lam * (math.log(2.0) ** (1.0 / n))
+            x_ov = float(req.rr_x_ov or 500.0)
+            xmax = max(6.0 * xm, 1.5 * x_ov, 10.0)
+            xs = np.logspace(math.log10(max(0.1, xm / 20.0)), math.log10(xmax), 200)
+            P = 100.0 * (1.0 - np.exp(-((xs / lam) ** n)))
+            oversize = 100.0 * float(np.exp(-((x_ov / lam) ** n)))
+            rr = {
+                "n": float(n),
+                "xm": float(xm),
+                "x50": float(x50),
+                "x_ov": float(x_ov),
+                "oversize_pct": float(oversize),
+                "xs": xs.tolist(),
+                "cdf": P.tolist(),
+            }
+    except Exception:
+        rr = None
+
     ml = None
     if req.want_ml and _assets.scaler and (_assets.mdl_frag or _assets.mdl_ppv or _assets.mdl_air):
         import numpy as np
@@ -171,7 +253,7 @@ def predict(req: PredictRequest, _token: str = Depends(require_auth)):
         if _assets.mdl_frag:
             ml["Fragmentation"] = float(_assets.mdl_frag.predict(Xs)[0])
 
-    return PredictResponse(empirical=emp, ml=ml, assets_loaded=assets_status(_assets))
+    return PredictResponse(empirical=emp, ml=ml, assets_loaded=assets_status(_assets), rr=rr)
 
 
 def _ensure_dataset(name: str) -> Path:
@@ -321,6 +403,155 @@ def feature_importance(_token: str = Depends(require_auth)):
     return {"feature_importance": out}
 
 
+def _feature_map_synonyms():
+    return {
+        "inputs": {
+            "hole depth (m)": ["hole depth", "depth", "holedepth"],
+            "hole diameter (mm)": ["hole diameter", "diameter", "hole dia", "hole_diameter", "holediameter"],
+            "burden (m)": ["burden"],
+            "spacing (m)": ["spacing"],
+            "stemming (m)": ["stemming"],
+            "distance (m)": ["distance", "monitor distance", "distance m", "monitoring distance"],
+            "powder factor (kg/m³)": ["powder factor", "powderfactor", "pf", "powder factor (kg/m3)"],
+            "rock density (t/m³)": ["rock density", "density", "rock density (t/m3)"],
+            "linear charge (kg/m)": ["linear charge", "linearcharge", "kg/m", "charge per metre", "charge/m"],
+            "explosive mass (kg)": ["explosive mass", "charge mass", "explosivemass"],
+            "blast volume (m³)": ["blast volume", "volume", "blast volume (m3)"],
+            "# holes": ["number of holes", "no. holes", "holes", "holes count", "holes #"],
+        },
+        "outputs": {
+            "fragmentation": ["mean fragmentation", "fragmentation", "p80", "frag", "fragmentation (mm)"],
+            "ground vibration": ["ground vibration", "ppv", "peak particle velocity", "ppv (mm/s)", "ppv mms"],
+            "airblast": ["airblast", "air blast", "air overpressure", "overpressure", "db", "air blast (db)"],
+        },
+    }
+
+
+def _resolve_map(df_cols, expected, synonyms_map):
+    import re
+
+    def _norm(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(s).lower())
+
+    cols = list(df_cols)
+    lower = {c.lower(): c for c in cols}
+    norm = {_norm(c): c for c in cols}
+    result = []
+    for name in expected:
+        if name in cols:
+            result.append(name)
+            continue
+        if name.lower() in lower:
+            result.append(lower[name.lower()])
+            continue
+        chosen = None
+        syns = synonyms_map.get(name.lower(), [])
+        for s in [name] + syns:
+            if s in cols:
+                chosen = s
+                break
+            if s.lower() in lower:
+                chosen = lower[s.lower()]
+                break
+            if _norm(s) in norm:
+                chosen = norm[_norm(s)]
+                break
+        result.append(chosen)
+    return result
+
+
+@app.get("/v1/feature/importance")
+def feature_importance_dataset(top_k: int = 12, _token: str = Depends(require_auth)):
+    import numpy as np
+    import pandas as pd
+    from sklearn.ensemble import RandomForestRegressor
+
+    df = _combined_df()
+    syn = _feature_map_synonyms()
+    in_res = _resolve_map(df.columns, INPUT_LABELS, syn["inputs"])
+    out_res = _resolve_map(df.columns, ["Fragmentation", "Ground Vibration", "Airblast"], syn["outputs"])
+
+    name_mode_ok = (not any(v is None for v in in_res)) and (not any(v is None for v in out_res))
+    if name_mode_ok:
+        Xraw = df[in_res].copy()
+        Yraw = df[out_res].copy()
+    else:
+        if df.shape[1] < 4:
+            return {"error": "Dataset needs at least 4 columns."}
+        Xraw = df.iloc[:, : df.shape[1] - 3].copy()
+        Yraw = df.iloc[:, df.shape[1] - 3 :].copy()
+
+    Xnum = Xraw.copy()
+    for c in Xnum.columns:
+        Xnum[c] = pd.to_numeric(Xnum[c], errors="coerce")
+    Ynum = Yraw.copy()
+    for c in Ynum.columns:
+        Ynum[c] = pd.to_numeric(Ynum[c], errors="coerce")
+
+    work = Xnum.join(Ynum, how="inner")
+    if work.empty:
+        return {"error": "No numeric rows available."}
+
+    X = work.iloc[:, : Xraw.shape[1]].values
+    ydf = work.iloc[:, Xraw.shape[1] :]
+    out = {}
+    for out_name in ydf.columns:
+        y = ydf[out_name].values
+        mask = np.isfinite(X).all(axis=1) & np.isfinite(y)
+        if mask.sum() < 20:
+            continue
+        mdl = RandomForestRegressor(n_estimators=400, random_state=42)
+        mdl.fit(X[mask], y[mask])
+        imp = list(mdl.feature_importances_)
+        items = [
+            {"feature": f, "importance": float(v)}
+            for f, v in zip(list(Xraw.columns), imp)
+        ]
+        items.sort(key=lambda r: r["importance"], reverse=True)
+        out[out_name] = items[: max(3, int(top_k))]
+    return {"feature_importance": out}
+
+
+@app.get("/v1/feature/pca")
+def feature_pca(_token: str = Depends(require_auth)):
+    import numpy as np
+    import pandas as pd
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.decomposition import PCA
+
+    df = _combined_df()
+    syn = _feature_map_synonyms()
+    in_res = _resolve_map(df.columns, INPUT_LABELS, syn["inputs"])
+    name_mode_ok = not any(v is None for v in in_res)
+    if name_mode_ok:
+        Xraw = df[in_res].copy()
+    else:
+        if df.shape[1] < 4:
+            return {"error": "Dataset needs at least 4 columns."}
+        Xraw = df.iloc[:, : df.shape[1] - 3].copy()
+
+    Xnum = Xraw.copy()
+    for c in Xnum.columns:
+        Xnum[c] = pd.to_numeric(Xnum[c], errors="coerce")
+    Xnum = Xnum.dropna()
+    if len(Xnum) < 10:
+        return {"error": "Not enough rows for PCA."}
+
+    Xs = StandardScaler().fit_transform(Xnum.values)
+    pca = PCA(n_components=min(5, Xs.shape[1]))
+    comps = pca.fit_transform(Xs)
+    loadings = pca.components_
+    out = []
+    for i in range(loadings.shape[0]):
+        pairs = list(zip(Xraw.columns, loadings[i]))
+        pairs.sort(key=lambda p: abs(p[1]), reverse=True)
+        out.append([{"feature": k, "loading": float(v)} for k, v in pairs[: min(10, len(pairs))]])
+    return {
+        "explained_variance_ratio": [float(v) for v in pca.explained_variance_ratio_],
+        "top_loadings": out,
+    }
+
+
 @app.post("/v1/flyrock/predict")
 def flyrock_predict(
     file: UploadFile | None = File(default=None),
@@ -368,7 +599,91 @@ def flyrock_predict(
     xstar = np.array([[float(inputs.get(c, stats[c]["median"])) for c in X.columns]], dtype=float)
     yhat = float(rf.predict(xstar)[0])
 
-    return {"prediction": yhat, "train_r2": score, "features": list(X.columns), "feature_stats": stats}
+    # Empirical estimates (from local flyrock module)
+    def _norm(s: str) -> str:
+        s = "".join(ch.lower() if (ch.isalnum() or ch.isspace()) else " " for ch in str(s))
+        s = " ".join(s.split())
+        s = (
+            s.replace(" kg/m3", "")
+            .replace(" kg m3", "")
+            .replace(" kg m^3", "")
+            .replace(" kn/m3", "")
+            .replace(" kn m3", "")
+            .replace("(m)", "")
+            .replace(" m", "")
+            .replace(" mm", "")
+            .replace(" kpa", "")
+        )
+        return " ".join(s.split())
+
+    def _lookup(vals, syns, default=float("nan")):
+        keys = list(vals.keys())
+        for s in syns:
+            ns = _norm(s)
+            if ns in vals:
+                return float(vals[ns])
+        for k in keys:
+            if any(_norm(s) in k for s in syns):
+                return float(vals[k])
+        return float(default)
+
+    BURDEN_SYNS = ["burden", "b"]
+    SPACING_SYNS = ["spacing", "s"]
+    STEMMING_SYNS = ["stemming", "stem"]
+    DIAM_SYNS = ["hole diameter", "diameter", "hole dia", "bh dia", "bit diameter", "drill diameter", "d"]
+    BENCH_SYNS = ["bench height", "bench", "height", "h"]
+    CHARGE_SYNS = ["charge per delay", "charge", "explosive mass", "charge per hole"]
+    PF_SYNS = ["powder factor", "specific charge", "pf", "q"]
+    ROCKD_SYNS = ["rock density", "density", "t/m3", "tm3", "rho"]
+    SDOB_SYNS = ["sdob", "s/b", "spacing to burden", "spacing burden ratio"]
+    LUNDBORG_SYNS = ["lundborg", "lundborg distance", "lundborg m"]
+
+    def _derive_sdob(vals):
+        sd = _lookup(vals, SDOB_SYNS, default=float("nan"))
+        if np.isfinite(sd):
+            return float(sd)
+        stem = _lookup(vals, STEMMING_SYNS, default=float("nan"))
+        qd = _lookup(vals, CHARGE_SYNS, default=float("nan"))
+        if np.isfinite(stem) and np.isfinite(qd) and qd > 0:
+            return float(stem / (qd ** (1.0 / 3.0)))
+        return None
+
+    def emp_lundborg_1981(vals):
+        dmm = _lookup(vals, DIAM_SYNS, default=float("nan"))
+        q = _lookup(vals, PF_SYNS, default=float("nan"))
+        if not np.isfinite(dmm) or not np.isfinite(q):
+            return float("nan")
+        d_in = dmm / 25.4
+        return float(max(0.0, 143.0 * d_in * (q - 0.2)))
+
+    def emp_mckenzie_sdob(vals):
+        dmm = _lookup(vals, DIAM_SYNS, default=float("nan"))
+        rho = _lookup(vals, ROCKD_SYNS, default=2.6)
+        sd = _derive_sdob(vals)
+        if not np.isfinite(dmm) or sd is None or sd <= 0:
+            return float("nan")
+        return float(10.0 * (max(dmm, 0.0) ** 0.667) * (sd ** -2.167) * (rho / 2.6))
+
+    def emp_lundborg_legacy(vals):
+        dmm = _lookup(vals, DIAM_SYNS, default=float("nan"))
+        if not np.isfinite(dmm):
+            return float("nan")
+        return float(30.745 * (max(dmm, 0.0) ** 0.66))
+
+    vals_norm = {_norm(k): v for k, v in inputs.items()}
+    empirical = {
+        "Lundborg_1981": emp_lundborg_1981(vals_norm),
+        "McKenzie_SDoB": emp_mckenzie_sdob(vals_norm),
+        "Lundborg_Legacy": emp_lundborg_legacy(vals_norm),
+    }
+
+    return {
+        "prediction": yhat,
+        "train_r2": score,
+        "features": list(X.columns),
+        "feature_stats": stats,
+        "empirical": empirical,
+    }
 
 
 @app.post("/v1/backbreak/predict")
