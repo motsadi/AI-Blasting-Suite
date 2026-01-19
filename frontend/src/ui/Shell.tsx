@@ -7,11 +7,13 @@ type Props = {
   onLogout: () => void;
 };
 
-type TabKey = "data" | "predict" | "flyrock" | "slope" | "delay";
+type TabKey = "data" | "predict" | "feature" | "backbreak" | "flyrock" | "slope" | "delay";
 
 const TABS: Array<{ key: TabKey; title: string; desc: string }> = [
   { key: "data", title: "Data", desc: "Upload / preview datasets (GCS-backed later)" },
   { key: "predict", title: "Predict", desc: "Empirical + ML outputs (API)" },
+  { key: "feature", title: "Feature Importance", desc: "Model feature importances" },
+  { key: "backbreak", title: "Backbreak", desc: "RF model from CSV" },
   { key: "flyrock", title: "Flyrock", desc: "Auto-train + predict (API later)" },
   { key: "slope", title: "Slope", desc: "Auto-train classifier (API later)" },
   { key: "delay", title: "Delay", desc: "Delay prediction & plan view (API later)" },
@@ -86,6 +88,10 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
             <PredictPanel apiBaseUrl={apiBaseUrl} token={session.token} meta={meta} />
           ) : tab === "data" ? (
             <DataPanel apiBaseUrl={apiBaseUrl} token={session.token} />
+          ) : tab === "feature" ? (
+            <FeaturePanel apiBaseUrl={apiBaseUrl} token={session.token} />
+          ) : tab === "backbreak" ? (
+            <BackbreakPanel apiBaseUrl={apiBaseUrl} token={session.token} />
           ) : tab === "flyrock" ? (
             <FlyrockPanel apiBaseUrl={apiBaseUrl} token={session.token} />
           ) : tab === "slope" ? (
@@ -484,6 +490,107 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
           <div className="kpiValue">{resp.points.length}</div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function FeaturePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const [resp, setResp] = useState<any>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function run() {
+    if (!apiBaseUrl) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/feature-importance`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error("Failed");
+      setResp(json);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Feature Importance</div>
+      <div className="subtitle">Uses model feature importances from the RF models.</div>
+      <div style={{ marginTop: 10 }}>
+        <button className="btn btnPrimary" onClick={run} disabled={busy}>
+          {busy ? "Loading…" : "Load Importances"}
+        </button>
+      </div>
+      {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
+      {resp?.feature_importance && (
+        <div style={{ marginTop: 12 }}>
+          {Object.entries(resp.feature_importance).map(([name, items]: any) => (
+            <div key={name} style={{ marginBottom: 12 }}>
+              <div className="label">{name}</div>
+              <div>
+                {(items as any[]).slice(0, 8).map((it) => (
+                  <div key={it.feature} className="kpi" style={{ marginTop: 6 }}>
+                    <div className="kpiTitle">{it.feature}</div>
+                    <div className="kpiValue">{Number(it.importance).toFixed(3)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [resp, setResp] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function run() {
+    if (!file || !apiBaseUrl) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/backbreak/predict`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: fd,
+      });
+      const json = await res.json();
+      if (!res.ok || json?.error) throw new Error(json?.error ?? "Backbreak failed");
+      setResp(json);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Backbreak</div>
+      <div className="subtitle">Upload dataset and get predicted backbreak.</div>
+      <input type="file" accept=".csv,.xlsx,.xls" className="input" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+      <div style={{ marginTop: 10 }}>
+        <button className="btn btnPrimary" onClick={run} disabled={!file || busy}>{busy ? "Running…" : "Predict"}</button>
+      </div>
+      {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
+      {resp?.prediction != null && (
+        <div className="kpi" style={{ marginTop: 12 }}>
+          <div className="kpiTitle">Predicted Backbreak</div>
+          <div className="kpiValue">{Number(resp.prediction).toFixed(2)}</div>
+        </div>
+      )}
     </div>
   );
 }

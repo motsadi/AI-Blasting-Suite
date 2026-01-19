@@ -160,6 +160,36 @@ def _preview_df(df, n=20):
     }
 
 
+def _normalize_col(s: str) -> str:
+    keep = "".join(ch.lower() if (ch.isalnum() or ch.isspace()) else " " for ch in str(s))
+    return " ".join(keep.split())
+
+
+def _infer_backbreak_target(df):
+    names = list(df.columns)
+    norm_map = {_normalize_col(c): c for c in names}
+    candidates = [
+        "backbreak",
+        "back break",
+        "bb",
+        "backbreak m",
+        "backbreak mm",
+        "back break m",
+        "back break mm",
+    ]
+    for key in candidates:
+        if key in norm_map:
+            return norm_map[key]
+    last = names[-1]
+    try:
+        x = pd.to_numeric(df[last], errors="coerce")
+        if x.notna().sum() >= 10 and float(x.std()) > 1e-9:
+            return last
+    except Exception:
+        pass
+    return None
+
+
 @app.post("/v1/data/preview")
 def data_preview(file: UploadFile = File(...), _token: str = Depends(require_auth)):
     df = _read_upload_df(file)
@@ -184,6 +214,27 @@ def data_upload(
     blob = bucket.blob(obj)
     blob.upload_from_file(file.file, content_type=file.content_type)
     return {"gs_uri": f"gs://{settings.gcs_bucket}/{obj}"}
+
+
+@app.get("/v1/feature-importance")
+def feature_importance(_token: str = Depends(require_auth)):
+    """
+    Return model feature importances for the preloaded RF models.
+    """
+    out = {}
+    for name, mdl in [
+        ("Ground Vibration", _assets.mdl_ppv),
+        ("Airblast", _assets.mdl_air),
+        ("Fragmentation", _assets.mdl_frag),
+    ]:
+        if mdl is None or not hasattr(mdl, "feature_importances_"):
+            continue
+        imp = list(getattr(mdl, "feature_importances_", []))
+        out[name] = [
+            {"feature": f, "importance": float(v)}
+            for f, v in zip(list(INPUT_LABELS), imp)
+        ]
+    return {"feature_importance": out}
 
 
 @app.post("/v1/flyrock/predict")
@@ -234,6 +285,81 @@ def flyrock_predict(
     yhat = float(rf.predict(xstar)[0])
 
     return {"prediction": yhat, "train_r2": score, "features": list(X.columns), "feature_stats": stats}
+
+
+@app.post("/v1/backbreak/predict")
+def backbreak_predict(
+    file: UploadFile = File(...),
+    inputs_json: str | None = Form(default=None),
+    _token: str = Depends(require_auth),
+):
+    import json
+    import numpy as np
+    import pandas as pd
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.model_selection import train_test_split
+
+    df = _read_upload_df(file)
+    if df.shape[1] < 2:
+        return {"error": "CSV must have at least 2 columns (features + target)."}
+
+    for c in df.columns:
+        try:
+            df[c] = pd.to_numeric(df[c], errors="ignore")
+        except Exception:
+            pass
+
+    tgt = _infer_backbreak_target(df)
+    if tgt is None:
+        return {"error": "Could not infer Back Break target column."}
+
+    num = df.select_dtypes(include=[np.number]).copy()
+    if tgt not in num.columns:
+        y = pd.to_numeric(df[tgt], errors="coerce")
+        num[tgt] = y
+
+    X = num.drop(columns=[tgt], errors="ignore").copy()
+    y = pd.to_numeric(df[tgt], errors="coerce")
+
+    mask = X.notna().all(axis=1) & y.notna()
+    X, y = X[mask], y[mask]
+
+    if X.shape[0] < 30 or X.shape[1] < 2:
+        return {"error": "Not enough clean rows or features to train Random Forest (need >=30 rows, >=2 features)."}
+
+    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=42)
+    model = RandomForestRegressor(n_estimators=500, random_state=42)
+    model.fit(Xtr, ytr)
+
+    imp = model.feature_importances_
+    order = np.argsort(imp)[::-1]
+    feat_names = list(X.columns)
+    keep = [feat_names[i] for i in order[: min(6, len(order))]]
+
+    stats = {}
+    for name in keep:
+        col = pd.to_numeric(X[name], errors="coerce").dropna()
+        vmin = float(col.quantile(0.02)) if col.size else 0.0
+        vmax = float(col.quantile(0.98)) if col.size else 1.0
+        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+            vmin, vmax = (float(col.min()), float(col.max())) if col.size else (0.0, 1.0)
+            if vmin == vmax:
+                vmax = vmin + 1.0
+        stats[name] = {"min": vmin, "max": vmax, "median": float(col.median()) if col.size else 0.0}
+
+    inputs = None
+    if inputs_json:
+        try:
+            inputs = json.loads(inputs_json)
+        except Exception:
+            inputs = None
+    if not isinstance(inputs, dict):
+        inputs = {k: stats[k]["median"] for k in keep}
+
+    xstar = np.array([[float(inputs.get(c, stats[c]["median"])) for c in keep]], dtype=float)
+    yhat = float(model.predict(xstar)[0])
+
+    return {"prediction": yhat, "features": keep, "feature_stats": stats}
 
 
 @app.post("/v1/slope/predict")
