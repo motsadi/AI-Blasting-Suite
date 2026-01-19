@@ -1,0 +1,15 @@
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      [
+        "build",
+        "-f",
+        "backend/Dockerfile",
+        "-t",
+        "gcr.io/$PROJECT_ID/ai-blasting-backend",
+        ".",
+      ]
+
+images:
+  - "gcr.io/$PROJECT_ID/ai-blasting-backend"
+
