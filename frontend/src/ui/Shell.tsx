@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Session = { token: string; email: string };
 type Props = {
@@ -19,56 +19,73 @@ const TABS: Array<{ key: TabKey; title: string; desc: string }> = [
 
 export function Shell({ apiBaseUrl, session, onLogout }: Props) {
   const [tab, setTab] = useState<TabKey>("predict");
+  const [meta, setMeta] = useState<any>(null);
+  const [metaErr, setMetaErr] = useState<string | null>(null);
 
   const headerRight = useMemo(() => {
     return (
       <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-        <span style={{ fontSize: 13, color: "#475569" }}>{session.email}</span>
-        <button onClick={onLogout} style={btn("secondary")}>
+        <span className="pill">{session.email}</span>
+        <button onClick={onLogout} className="btn">
           Logout
         </button>
       </div>
     );
   }, [onLogout, session.email]);
 
+  useEffect(() => {
+    if (!apiBaseUrl) return;
+    const url = `${apiBaseUrl.replace(/\/$/, "")}/v1/meta`;
+    (async () => {
+      try {
+        const res = await fetch(url);
+        const j = await res.json();
+        setMeta(j);
+      } catch (e: any) {
+        setMetaErr(String(e?.message ?? e));
+      }
+    })();
+  }, [apiBaseUrl]);
+
   return (
-    <div style={page}>
-      <div style={topbar}>
+    <div className="container">
+      <div className="topbar">
         <div>
-          <div style={{ fontWeight: 700, letterSpacing: "-0.02em" }}>AI Blasting Suite</div>
-          <div style={{ fontSize: 12, color: "#64748b" }}>
-            Modern React UI • FastAPI backend • InstantDB auth • GCS storage
-          </div>
+          <div className="title">AI Blasting Suite</div>
+          <div className="subtitle">Secure auth • Cloud Run API • GCS assets • Modern UI</div>
         </div>
         {headerRight}
       </div>
 
-      <div style={layout}>
-        <aside style={sidebar}>
+      <div className="layout">
+        <aside className="sidebar">
           {TABS.map((t) => (
             <button
               key={t.key}
               onClick={() => setTab(t.key)}
-              style={navItem(tab === t.key)}
+              className={`navItem ${tab === t.key ? "navItemActive" : ""}`}
             >
               <div style={{ fontWeight: 650 }}>{t.title}</div>
-              <div style={{ fontSize: 12, color: tab === t.key ? "#1f2937" : "#64748b" }}>
+              <div style={{ fontSize: 12, color: tab === t.key ? "var(--text)" : "var(--muted)" }}>
                 {t.desc}
               </div>
             </button>
           ))}
 
           <div style={{ marginTop: 18, paddingTop: 16, borderTop: "1px solid #e2e8f0" }}>
-            <div style={{ fontSize: 12, color: "#64748b" }}>Backend</div>
+            <div className="label">Backend</div>
             <div style={{ fontSize: 12, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
               {apiBaseUrl || "(set VITE_API_BASE_URL)"}
             </div>
           </div>
         </aside>
 
-        <main style={main}>
+        <main style={{ minHeight: 600 }}>
+          {metaErr && <div className="error">{metaErr}</div>}
           {tab === "predict" ? (
-            <PredictPanel apiBaseUrl={apiBaseUrl} token={session.token} />
+            <PredictPanel apiBaseUrl={apiBaseUrl} token={session.token} meta={meta} />
+          ) : tab === "data" ? (
+            <DataPanel />
           ) : (
             <PlaceholderPanel title={TABS.find((t) => t.key === tab)!.title} />
           )}
@@ -80,18 +97,39 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
 
 function PlaceholderPanel({ title }: { title: string }) {
   return (
-    <div style={card}>
-      <div style={{ fontSize: 18, fontWeight: 700 }}>{title}</div>
-      <div style={{ color: "#64748b", marginTop: 8 }}>
+    <div className="card">
+      <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: "-0.02em" }}>{title}</div>
+      <div style={{ color: "var(--muted)", marginTop: 8 }}>
         UI scaffolded. Next step is wiring this tab to FastAPI endpoints and GCS.
       </div>
     </div>
   );
 }
 
-function PredictPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+function DataPanel() {
+  return (
+    <div className="card">
+      <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: "-0.02em" }}>Data</div>
+      <div style={{ color: "var(--muted)", marginTop: 8 }}>
+        Next: upload CSV/XLSX here (client-side preview first), then we’ll add a backend endpoint to
+        persist datasets to GCS and track metadata in InstantDB.
+      </div>
+    </div>
+  );
+}
+
+function PredictPanel({ apiBaseUrl, token, meta }: { apiBaseUrl: string; token: string; meta: any }) {
   const [busy, setBusy] = useState(false);
   const [out, setOut] = useState<any>(null);
+  const outputs: string[] = meta?.outputs ?? ["Ground Vibration", "Airblast", "Fragmentation"];
+  const empiricalDefaults = meta?.empirical_defaults ?? {
+    K_ppv: 1000,
+    beta: 1.6,
+    K_air: 170,
+    B_air: 20,
+    A_kuz: 22,
+    RWS: 115,
+  };
 
   async function run() {
     if (!apiBaseUrl) {
@@ -122,7 +160,7 @@ function PredictPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
             "# Holes": 30
           },
           hpd_override: 1,
-          empirical: { K_ppv: 1000, beta: 1.6, K_air: 170, B_air: 20, A_kuz: 22, RWS: 115 },
+          empirical: empiricalDefaults,
           want_ml: true
         }),
       });
@@ -137,68 +175,46 @@ function PredictPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
-      <div style={card}>
+      <div className="card">
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <div>
-            <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: "-0.02em" }}>Predict</div>
-            <div style={{ color: "#64748b", marginTop: 6 }}>
+            <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Predict</div>
+            <div style={{ color: "var(--muted)", marginTop: 6 }}>
               Calls FastAPI <code>/v1/predict</code> (wrapping existing Python functions, unchanged).
             </div>
           </div>
-          <button onClick={run} disabled={busy} style={btn("primary")}>
+          <button onClick={run} disabled={busy} className={`btn btnPrimary`}>
             {busy ? "Running…" : "Run sample prediction"}
           </button>
         </div>
+
+        <div style={{ marginTop: 12 }} className="grid3">
+          {outputs.map((k) => (
+            <div key={k} className="kpi">
+              <div className="kpiTitle">{k}</div>
+              <div className="kpiValue">
+                {out?.json?.ml?.[k] != null
+                  ? Number(out.json.ml[k]).toFixed(2)
+                  : out?.json?.empirical?.[k] != null
+                    ? Number(out.json.empirical[k]).toFixed(2)
+                    : "—"}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--muted)" }}>
+                {out?.json?.ml?.[k] != null ? "ML" : out?.json?.empirical?.[k] != null ? "Empirical" : ""}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
-      <div style={card}>
-        <div style={{ fontSize: 13, color: "#64748b", marginBottom: 10 }}>Response</div>
+      <div className="card">
+        <div className="label" style={{ marginBottom: 10 }}>Response</div>
         <pre style={pre}>{JSON.stringify(out, null, 2)}</pre>
       </div>
     </div>
   );
 }
 
-function btn(variant: "primary" | "secondary") {
-  return {
-    border: "1px solid",
-    borderColor: variant === "primary" ? "#0f172a" : "#e2e8f0",
-    background: variant === "primary" ? "#0f172a" : "white",
-    color: variant === "primary" ? "white" : "#0f172a",
-    padding: "10px 12px",
-    borderRadius: 12,
-    fontWeight: 650,
-    cursor: "pointer",
-  } as const;
-}
-
-const page = { minHeight: "100vh", background: "#0b1220", padding: 16 } as const;
-const topbar = {
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
-  background: "linear-gradient(135deg, #ffffff, #f1f5f9)",
-  border: "1px solid #e2e8f0",
-  borderRadius: 16,
-  padding: "14px 16px",
-  boxShadow: "0 10px 30px rgba(15, 23, 42, 0.10)",
-} as const;
-const layout = { display: "grid", gridTemplateColumns: "320px 1fr", gap: 16, marginTop: 16 } as const;
-const sidebar = {
-  background: "white",
-  borderRadius: 16,
-  border: "1px solid #e2e8f0",
-  padding: 12,
-  boxShadow: "0 10px 30px rgba(15, 23, 42, 0.08)",
-} as const;
-const main = { minHeight: 600 } as const;
-const card = {
-  background: "white",
-  borderRadius: 16,
-  border: "1px solid #e2e8f0",
-  padding: 16,
-  boxShadow: "0 10px 30px rgba(15, 23, 42, 0.08)",
-} as const;
 const pre = {
   background: "#0b1220",
   color: "#e2e8f0",
@@ -207,17 +223,4 @@ const pre = {
   overflow: "auto",
   maxHeight: 420,
 } as const;
-const navItem = (active: boolean) =>
-  ({
-    width: "100%",
-    textAlign: "left",
-    padding: "12px 12px",
-    borderRadius: 14,
-    border: "1px solid",
-    borderColor: active ? "#0f172a" : "#e2e8f0",
-    background: active ? "#0f172a" : "white",
-    color: active ? "white" : "#0f172a",
-    cursor: "pointer",
-    marginBottom: 10,
-  }) as const;
 

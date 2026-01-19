@@ -41,9 +41,7 @@ export function App() {
 
   if (booting) {
     return (
-      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#0b1220", color: "#e2e8f0" }}>
-        Loading…
-      </div>
+      <div className="container" style={{ display: "grid", placeItems: "center" }}>Loading…</div>
     );
   }
 

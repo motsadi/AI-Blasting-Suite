@@ -82,6 +82,26 @@ def get_assets_status():
     st = assets_status(_assets)
     return AssetsStatus(**st)
 
+@app.get("/v1/meta")
+def get_meta():
+    """
+    Frontend bootstrap metadata so the UI can render forms without hardcoding.
+    """
+    d = EmpiricalParams()
+    return {
+        "input_labels": list(INPUT_LABELS),
+        "outputs": ["Ground Vibration", "Airblast", "Fragmentation"],
+        "empirical_defaults": {
+            "K_ppv": d.K_ppv,
+            "beta": d.beta,
+            "K_air": d.K_air,
+            "B_air": d.B_air,
+            "A_kuz": d.A_kuz,
+            "RWS": d.RWS,
+        },
+        "defaults": {"hpd_override": 1.0},
+    }
+
 
 @app.post("/v1/assets/sync", response_model=AssetsStatus)
 def sync_assets(_token: str = Depends(require_auth)):

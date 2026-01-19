@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { getDb, INSTANT_APP_ID } from "../instant";
 
 type Props = {
@@ -50,51 +50,47 @@ export function LoginCard({ onLogin }: Props) {
   }
 
   return (
-    <div style={page}>
-      <div style={card}>
-        <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: "-0.02em" }}>
-          Sign in
-        </div>
-        <div style={{ color: "#64748b", marginTop: 6 }}>
-          Email login with a verification code.
-        </div>
+    <div className="container" style={{ display: "grid", placeItems: "center" }}>
+      <div className="card" style={{ width: "min(560px, 100%)" }}>
+        <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Sign in</div>
+        <div className="subtitle">Secure email login via magic code (InstantDB).</div>
 
         <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
           {!INSTANT_APP_ID && (
-            <div style={warn}>
+            <div className="error">
               Missing <code>VITE_INSTANTDB_APP_ID</code>. Set it in Vercel env vars (or locally) and
               reload.
             </div>
           )}
 
-          <label style={label}>Email</label>
+          <label className="label">Email</label>
           <input
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="you@company.com"
-            style={input}
+            className="input"
           />
 
           {step === "code" && (
             <>
-              <label style={label}>Verification code</label>
+              <label className="label">Verification code</label>
               <input
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
                 placeholder="123456"
-                style={input}
+                className="input"
               />
             </>
           )}
 
-          {err && <div style={errBox}>{err}</div>}
+          {err && <div className="error">{err}</div>}
 
           {step === "email" ? (
-            <button onClick={requestCode} style={btnPrimary} disabled={!email.includes("@") || busy || !INSTANT_APP_ID}>
+            <button onClick={requestCode} className="btn btnPrimary" disabled={!email.includes("@") || busy || !INSTANT_APP_ID}>
               {busy ? "Sending…" : "Send code"}
             </button>
           ) : (
-            <button onClick={verifyCode} style={btnPrimary} disabled={!code.trim() || busy || !INSTANT_APP_ID}>
+            <button onClick={verifyCode} className="btn btnPrimary" disabled={!code.trim() || busy || !INSTANT_APP_ID}>
               {busy ? "Verifying…" : "Verify & continue"}
             </button>
           )}
@@ -103,57 +99,3 @@ export function LoginCard({ onLogin }: Props) {
     </div>
   );
 }
-
-const page = {
-  minHeight: "100vh",
-  display: "grid",
-  placeItems: "center",
-  background: "radial-gradient(1200px 600px at 20% 20%, rgba(99,102,241,0.25), transparent), #0b1220",
-  padding: 16,
-} as const;
-
-const card = {
-  width: "min(560px, 100%)",
-  background: "linear-gradient(135deg, #ffffff, #f8fafc)",
-  border: "1px solid #e2e8f0",
-  borderRadius: 18,
-  padding: 18,
-  boxShadow: "0 18px 50px rgba(15, 23, 42, 0.25)",
-} as const;
-
-const label = { fontSize: 12, color: "#475569", fontWeight: 700 } as const;
-const input = {
-  border: "1px solid #e2e8f0",
-  borderRadius: 12,
-  padding: "10px 12px",
-  outline: "none",
-  fontSize: 14,
-} as const;
-const btnPrimary = {
-  border: "1px solid #0f172a",
-  background: "#0f172a",
-  color: "white",
-  padding: "10px 12px",
-  borderRadius: 12,
-  fontWeight: 700,
-  cursor: "pointer",
-} as const;
-
-const errBox = {
-  background: "#fff1f2",
-  color: "#9f1239",
-  border: "1px solid #fecdd3",
-  borderRadius: 12,
-  padding: "10px 12px",
-  fontSize: 13,
-  whiteSpace: "pre-wrap",
-} as const;
-
-const warn = {
-  background: "#fffbeb",
-  color: "#92400e",
-  border: "1px solid #fde68a",
-  borderRadius: 12,
-  padding: "10px 12px",
-  fontSize: 13,
-} as const;
