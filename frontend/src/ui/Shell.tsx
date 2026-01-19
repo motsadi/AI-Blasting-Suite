@@ -7,12 +7,23 @@ type Props = {
   onLogout: () => void;
 };
 
-type TabKey = "data" | "predict" | "feature" | "backbreak" | "flyrock" | "slope" | "delay";
+type TabKey =
+  | "data"
+  | "predict"
+  | "feature"
+  | "param"
+  | "cost"
+  | "backbreak"
+  | "flyrock"
+  | "slope"
+  | "delay";
 
 const TABS: Array<{ key: TabKey; title: string; desc: string }> = [
   { key: "data", title: "Data", desc: "Upload / preview datasets (GCS-backed later)" },
   { key: "predict", title: "Predict", desc: "Empirical + ML outputs (API)" },
   { key: "feature", title: "Feature Importance", desc: "Model feature importances" },
+  { key: "param", title: "Parameter Optimisation", desc: "Surface + goal seek" },
+  { key: "cost", title: "Cost Optimisation", desc: "KPIs, optimise, Pareto" },
   { key: "backbreak", title: "Backbreak", desc: "RF model from CSV" },
   { key: "flyrock", title: "Flyrock", desc: "Auto-train + predict (API later)" },
   { key: "slope", title: "Slope", desc: "Auto-train classifier (API later)" },
@@ -90,6 +101,10 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
             <DataPanel apiBaseUrl={apiBaseUrl} token={session.token} />
           ) : tab === "feature" ? (
             <FeaturePanel apiBaseUrl={apiBaseUrl} token={session.token} />
+          ) : tab === "param" ? (
+            <ParamPanel apiBaseUrl={apiBaseUrl} token={session.token} />
+          ) : tab === "cost" ? (
+            <CostPanel apiBaseUrl={apiBaseUrl} token={session.token} />
           ) : tab === "backbreak" ? (
             <BackbreakPanel apiBaseUrl={apiBaseUrl} token={session.token} />
           ) : tab === "flyrock" ? (
@@ -119,23 +134,17 @@ function PlaceholderPanel({ title }: { title: string }) {
 }
 
 function DataPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
-  const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [uploaded, setUploaded] = useState<string | null>(null);
 
   async function runPreview() {
-    if (!apiBaseUrl || !file) return;
+    if (!apiBaseUrl) return;
     setErr(null);
     setBusy(true);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/data/preview`, {
-        method: "POST",
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/data/default`, {
         headers: { authorization: `Bearer ${token}` },
-        body: fd,
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error ?? "Preview failed");
@@ -147,51 +156,18 @@ function DataPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     }
   }
 
-  async function uploadToGcs() {
-    if (!apiBaseUrl || !file) return;
-    setErr(null);
-    setBusy(true);
-    try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/data/upload`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${token}` },
-        body: fd,
-      });
-      const json = await res.json();
-      if (!res.ok || json?.error) throw new Error(json?.error ?? "Upload failed");
-      setUploaded(json.gs_uri);
-    } catch (e: any) {
-      setErr(String(e?.message ?? e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <div className="card">
       <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Data</div>
-      <div className="subtitle">Upload CSV/XLSX, preview and store to GCS.</div>
+      <div className="subtitle">Using default dataset: combinedv2Orapa.csv</div>
 
       <div style={{ marginTop: 12 }} className="grid2">
         <div>
-          <label className="label">Dataset file</label>
-          <input
-            type="file"
-            accept=".csv,.xlsx,.xls"
-            className="input"
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-          />
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-            <button className="btn btnPrimary" onClick={runPreview} disabled={!file || busy}>
-              {busy ? "Working…" : "Preview"}
-            </button>
-            <button className="btn" onClick={uploadToGcs} disabled={!file || busy}>
-              {busy ? "Uploading…" : "Upload to GCS"}
+            <button className="btn btnPrimary" onClick={runPreview} disabled={busy}>
+              {busy ? "Loading…" : "Load Preview"}
             </button>
           </div>
-          {uploaded && <div className="pill" style={{ marginTop: 8 }}>{uploaded}</div>}
         </div>
         <div>
           {err && <div className="error">{err}</div>}
@@ -249,7 +225,9 @@ function PredictPanel({ apiBaseUrl, token, meta }: { apiBaseUrl: string; token: 
   useEffect(() => {
     if (!meta?.input_labels) return;
     const defaults: Record<string, number> = {};
-    for (const k of meta.input_labels) defaults[k] = 0;
+    for (const k of meta.input_labels) {
+      defaults[k] = meta?.input_stats?.[k]?.median ?? 0;
+    }
     setInputs(defaults);
   }, [meta]);
 
@@ -318,7 +296,7 @@ function PredictPanel({ apiBaseUrl, token, meta }: { apiBaseUrl: string; token: 
 
       {meta?.input_labels?.length ? (
         <div className="card">
-          <div className="label" style={{ marginBottom: 8 }}>Inputs</div>
+          <div className="label" style={{ marginBottom: 8 }}>Inputs (defaults from combinedv2Orapa.csv)</div>
           <div className="grid3">
             {meta.input_labels.map((k: string) => (
               <div key={k}>
@@ -344,19 +322,17 @@ function PredictPanel({ apiBaseUrl, token, meta }: { apiBaseUrl: string; token: 
 }
 
 function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
-  const [file, setFile] = useState<File | null>(null);
   const [resp, setResp] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [inputs, setInputs] = useState<Record<string, number>>({});
 
   async function run() {
-    if (!file || !apiBaseUrl) return;
+    if (!apiBaseUrl) return;
     setBusy(true);
     setErr(null);
     try {
       const fd = new FormData();
-      fd.append("file", file);
       if (Object.keys(inputs).length) fd.append("inputs_json", JSON.stringify(inputs));
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/flyrock/predict`, {
         method: "POST",
@@ -383,10 +359,9 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
   return (
     <div className="card">
       <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Flyrock</div>
-      <div className="subtitle">Upload dataset and get predicted flyrock distance.</div>
-      <input type="file" accept=".csv,.xlsx,.xls" className="input" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+      <div className="subtitle">Using default dataset: flyrock_synth.csv</div>
       <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-        <button className="btn btnPrimary" onClick={run} disabled={!file || busy}>{busy ? "Running…" : "Predict"}</button>
+        <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict"}</button>
       </div>
       {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
       {resp?.prediction != null && (
@@ -401,22 +376,18 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
 }
 
 function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
-  const [file, setFile] = useState<File | null>(null);
   const [resp, setResp] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   async function run() {
-    if (!file || !apiBaseUrl) return;
+    if (!apiBaseUrl) return;
     setBusy(true);
     setErr(null);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/slope/predict`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
-        body: fd,
       });
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Slope failed");
@@ -431,10 +402,9 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   return (
     <div className="card">
       <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Slope Stability</div>
-      <div className="subtitle">Upload slope dataset and get stability probability.</div>
-      <input type="file" accept=".csv,.xlsx,.xls" className="input" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+      <div className="subtitle">Using default dataset: slope data.csv</div>
       <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-        <button className="btn btnPrimary" onClick={run} disabled={!file || busy}>{busy ? "Running…" : "Predict"}</button>
+        <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict"}</button>
       </div>
       {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
       {resp?.prob_stable != null && (
@@ -448,22 +418,18 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
 }
 
 function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
-  const [file, setFile] = useState<File | null>(null);
   const [resp, setResp] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   async function run() {
-    if (!file || !apiBaseUrl) return;
+    if (!apiBaseUrl) return;
     setBusy(true);
     setErr(null);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/delay/predict`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
-        body: fd,
       });
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Delay failed");
@@ -478,10 +444,9 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   return (
     <div className="card">
       <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Delay & Plan View</div>
-      <div className="subtitle">Upload hole dataset and get predicted delays.</div>
-      <input type="file" accept=".csv,.xlsx,.xls" className="input" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+      <div className="subtitle">Using default dataset: Hole_data_v1.csv (fallback to v2)</div>
       <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-        <button className="btn btnPrimary" onClick={run} disabled={!file || busy}>{busy ? "Running…" : "Predict"}</button>
+        <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict"}</button>
       </div>
       {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
       {resp?.points?.length ? (
@@ -549,22 +514,18 @@ function FeaturePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
 }
 
 function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
-  const [file, setFile] = useState<File | null>(null);
   const [resp, setResp] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   async function run() {
-    if (!file || !apiBaseUrl) return;
+    if (!apiBaseUrl) return;
     setBusy(true);
     setErr(null);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/backbreak/predict`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
-        body: fd,
       });
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Backbreak failed");
@@ -579,16 +540,239 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
   return (
     <div className="card">
       <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Backbreak</div>
-      <div className="subtitle">Upload dataset and get predicted backbreak.</div>
-      <input type="file" accept=".csv,.xlsx,.xls" className="input" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+      <div className="subtitle">Using default dataset: Backbreak.csv</div>
       <div style={{ marginTop: 10 }}>
-        <button className="btn btnPrimary" onClick={run} disabled={!file || busy}>{busy ? "Running…" : "Predict"}</button>
+        <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict"}</button>
       </div>
       {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
       {resp?.prediction != null && (
         <div className="kpi" style={{ marginTop: 12 }}>
           <div className="kpiTitle">Predicted Backbreak</div>
           <div className="kpiValue">{Number(resp.prediction).toFixed(2)}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ParamPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const [meta, setMeta] = useState<any>(null);
+  const [resp, setResp] = useState<any>(null);
+  const [goal, setGoal] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [output, setOutput] = useState("");
+  const [x1, setX1] = useState("");
+  const [x2, setX2] = useState("");
+  const [objective, setObjective] = useState<"min" | "max">("max");
+  const [target, setTarget] = useState(0);
+
+  useEffect(() => {
+    if (!apiBaseUrl) return;
+    (async () => {
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/meta`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const json = await res.json();
+      setMeta(json);
+      if (json?.outputs?.length) setOutput(json.outputs[0]);
+      if (json?.inputs?.length > 1) {
+        setX1(json.inputs[0]);
+        setX2(json.inputs[1]);
+      }
+    })();
+  }, [apiBaseUrl, token]);
+
+  async function runSurface() {
+    if (!apiBaseUrl || !output || !x1 || !x2) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({ output, x1, x2, objective }),
+      });
+      const json = await res.json();
+      if (!res.ok || json?.error) throw new Error(json?.error ?? "Surface failed");
+      setResp(json);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runGoal() {
+    if (!apiBaseUrl || !output) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/goal-seek`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({ output, target }),
+      });
+      const json = await res.json();
+      if (!res.ok || json?.error) throw new Error(json?.error ?? "Goal seek failed");
+      setGoal(json);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Parameter Optimisation</div>
+      <div className="subtitle">Using default dataset: combinedv2Orapa.csv</div>
+      <div className="grid3" style={{ marginTop: 10 }}>
+        <div>
+          <label className="label">Output</label>
+          <select className="input" value={output} onChange={(e) => setOutput(e.target.value)}>
+            {(meta?.outputs ?? []).map((o: string) => (
+              <option key={o} value={o}>{o}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="label">X-axis</label>
+          <select className="input" value={x1} onChange={(e) => setX1(e.target.value)}>
+            {(meta?.inputs ?? []).map((o: string) => (
+              <option key={o} value={o}>{o}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="label">Y-axis</label>
+          <select className="input" value={x2} onChange={(e) => setX2(e.target.value)}>
+            {(meta?.inputs ?? []).map((o: string) => (
+              <option key={o} value={o}>{o}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <button className="btn btnPrimary" onClick={runSurface} disabled={busy}>
+          {busy ? "Running…" : "Optimise Surface"}
+        </button>
+        <select className="input" value={objective} onChange={(e) => setObjective(e.target.value as any)} style={{ width: 120 }}>
+          <option value="max">Maximise</option>
+          <option value="min">Minimise</option>
+        </select>
+      </div>
+      <div className="grid2" style={{ marginTop: 12 }}>
+        <div>
+          <label className="label">Goal Seek Target</label>
+          <input className="input" type="number" value={target} onChange={(e) => setTarget(Number(e.target.value))} />
+          <button className="btn" style={{ marginTop: 8 }} onClick={runGoal} disabled={busy}>
+            {busy ? "Running…" : "Goal Seek"}
+          </button>
+        </div>
+        <div>{err && <div className="error">{err}</div>}</div>
+      </div>
+      {resp?.best && (
+        <div className="kpi" style={{ marginTop: 12 }}>
+          <div className="kpiTitle">Best {resp.output}</div>
+          <div className="kpiValue">{Number(resp.best.value).toFixed(2)}</div>
+        </div>
+      )}
+      {goal?.best && (
+        <div className="kpi" style={{ marginTop: 12 }}>
+          <div className="kpiTitle">Goal Seek Predicted</div>
+          <div className="kpiValue">{Number(goal.best.predicted).toFixed(2)}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const [defaults, setDefaults] = useState<Record<string, number>>({});
+  const [busy, setBusy] = useState(false);
+  const [resp, setResp] = useState<any>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!apiBaseUrl) return;
+    (async () => {
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/cost/defaults`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const json = await res.json();
+      setDefaults(json);
+    })();
+  }, [apiBaseUrl, token]);
+
+  async function runCompute() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/cost/compute`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify(defaults),
+      });
+      const json = await res.json();
+      if (!res.ok || json?.error) throw new Error(json?.error ?? "Compute failed");
+      setResp(json);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runOptimize() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/cost/optimize`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify(defaults),
+      });
+      const json = await res.json();
+      if (!res.ok || json?.error) throw new Error(json?.error ?? "Optimise failed");
+      setResp(json?.result ?? json);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Cost Optimisation</div>
+      <div className="subtitle">Uses CTk cost model defaults (no dataset selection).</div>
+      <div className="grid3" style={{ marginTop: 10 }}>
+        {Object.keys(defaults).map((k) => (
+          <div key={k}>
+            <label className="label">{k}</label>
+            <input
+              className="input"
+              type="number"
+              value={defaults[k]}
+              onChange={(e) => setDefaults({ ...defaults, [k]: Number(e.target.value) })}
+            />
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <button className="btn btnPrimary" onClick={runCompute} disabled={busy}>
+          {busy ? "Working…" : "Compute KPIs"}
+        </button>
+        <button className="btn" onClick={runOptimize} disabled={busy}>
+          {busy ? "Optimising…" : "Optimise"}
+        </button>
+      </div>
+      {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
+      {resp && (
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="label">Result</div>
+          <pre style={pre}>{JSON.stringify(resp, null, 2)}</pre>
         </div>
       )}
     </div>

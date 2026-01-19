@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth import require_auth
@@ -33,6 +33,15 @@ app.add_middleware(
 )
 
 _assets = load_local_assets(core_bundle_path)
+
+DATASETS = {
+    "combined": "combinedv2Orapa.csv",
+    "backbreak": "Backbreak.csv",
+    "flyrock": "flyrock_synth.csv",
+    "slope": "slope data.csv",
+    "delay_v1": "Hole_data_v1.csv",
+    "delay_v2": "Hole_data_v2.csv",
+}
 
 
 @app.on_event("startup")
@@ -91,6 +100,29 @@ def get_meta():
     Frontend bootstrap metadata so the UI can render forms without hardcoding.
     """
     d = EmpiricalParams()
+    input_stats = {}
+    try:
+        import pandas as pd
+
+        df = _read_upload_df(None, DATASETS["combined"])
+        cols = {str(c).lower().strip(): c for c in df.columns}
+        norm = {_normalize_col(c): c for c in df.columns}
+        for label in INPUT_LABELS:
+            key = str(label).lower().strip()
+            col = cols.get(key) or norm.get(_normalize_col(label))
+            if col is None:
+                continue
+            s = pd.to_numeric(df[col], errors="coerce").dropna()
+            if s.empty:
+                continue
+            input_stats[label] = {
+                "min": float(s.quantile(0.02)),
+                "max": float(s.quantile(0.98)),
+                "median": float(s.median()),
+            }
+    except Exception:
+        input_stats = {}
+
     return {
         "input_labels": list(INPUT_LABELS),
         "outputs": ["Ground Vibration", "Airblast", "Fragmentation"],
@@ -103,6 +135,7 @@ def get_meta():
             "RWS": d.RWS,
         },
         "defaults": {"hpd_override": 1.0},
+        "input_stats": input_stats,
     }
 
 
@@ -141,9 +174,52 @@ def predict(req: PredictRequest, _token: str = Depends(require_auth)):
     return PredictResponse(empirical=emp, ml=ml, assets_loaded=assets_status(_assets))
 
 
-def _read_upload_df(up: UploadFile):
+def _ensure_dataset(name: str) -> Path:
+    """
+    Ensure a dataset exists locally; otherwise attempt download from GCS.
+    """
+    local_candidates = [
+        Path(core_bundle_path) / name,
+        Path("/tmp/ai-blasting-assets") / name,
+        Path("/tmp/ai-blasting-assets/datasets") / name,
+    ]
+    for p in local_candidates:
+        if p.exists():
+            return p
+
+    if not settings.gcs_bucket:
+        raise FileNotFoundError(f"Dataset not found locally and BLAST_GCS_BUCKET is not set: {name}")
+
+    from google.cloud import storage
+
+    prefixes = ["datasets/", "assets/", ""]
+    dest_dir = Path("/tmp/ai-blasting-assets/datasets")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    client = storage.Client()
+    bucket = client.bucket(settings.gcs_bucket)
+    for pref in prefixes:
+        blob = bucket.blob(f"{pref}{name}")
+        try:
+            if blob.exists():
+                dest = dest_dir / name
+                blob.download_to_filename(dest)
+                return dest
+        except Exception:
+            continue
+    raise FileNotFoundError(f"Dataset not found in GCS bucket {settings.gcs_bucket}: {name}")
+
+
+def _read_upload_df(up: UploadFile | None = None, dataset_name: str | None = None):
     import pandas as pd
     import io
+
+    if up is None:
+        if not dataset_name:
+            raise ValueError("No file or dataset_name provided")
+        path = _ensure_dataset(dataset_name)
+        if str(path).lower().endswith((".xlsx", ".xls")):
+            return pd.read_excel(path)
+        return pd.read_csv(path)
 
     data = up.file.read()
     up.file.seek(0)
@@ -166,6 +242,8 @@ def _normalize_col(s: str) -> str:
 
 
 def _infer_backbreak_target(df):
+    import pandas as pd
+
     names = list(df.columns)
     norm_map = {_normalize_col(c): c for c in names}
     candidates = [
@@ -193,6 +271,12 @@ def _infer_backbreak_target(df):
 @app.post("/v1/data/preview")
 def data_preview(file: UploadFile = File(...), _token: str = Depends(require_auth)):
     df = _read_upload_df(file)
+    return _preview_df(df)
+
+
+@app.get("/v1/data/default")
+def data_default(_token: str = Depends(require_auth)):
+    df = _read_upload_df(None, DATASETS["combined"])
     return _preview_df(df)
 
 
@@ -239,7 +323,7 @@ def feature_importance(_token: str = Depends(require_auth)):
 
 @app.post("/v1/flyrock/predict")
 def flyrock_predict(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(default=None),
     inputs_json: str | None = Form(default=None),
     _token: str = Depends(require_auth),
 ):
@@ -249,7 +333,7 @@ def flyrock_predict(
     from sklearn.ensemble import RandomForestRegressor
     from sklearn.model_selection import train_test_split
 
-    df = _read_upload_df(file)
+    df = _read_upload_df(file, DATASETS["flyrock"])
     num = df.apply(pd.to_numeric, errors="coerce")
     y = num.iloc[:, -1]
     X = num.iloc[:, :-1]
@@ -289,7 +373,7 @@ def flyrock_predict(
 
 @app.post("/v1/backbreak/predict")
 def backbreak_predict(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(default=None),
     inputs_json: str | None = Form(default=None),
     _token: str = Depends(require_auth),
 ):
@@ -299,7 +383,7 @@ def backbreak_predict(
     from sklearn.ensemble import RandomForestRegressor
     from sklearn.model_selection import train_test_split
 
-    df = _read_upload_df(file)
+    df = _read_upload_df(file, DATASETS["backbreak"])
     if df.shape[1] < 2:
         return {"error": "CSV must have at least 2 columns (features + target)."}
 
@@ -364,7 +448,7 @@ def backbreak_predict(
 
 @app.post("/v1/slope/predict")
 def slope_predict(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(default=None),
     inputs_json: str | None = Form(default=None),
     _token: str = Depends(require_auth),
 ):
@@ -376,7 +460,7 @@ def slope_predict(
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.model_selection import train_test_split
 
-    df = _read_upload_df(file)
+    df = _read_upload_df(file, DATASETS["slope"])
     cols = {c.lower().strip(): c for c in df.columns}
 
     def pick(*names):
@@ -443,7 +527,7 @@ def slope_predict(
 
 @app.post("/v1/delay/predict")
 def delay_predict(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(default=None),
     _token: str = Depends(require_auth),
 ):
     import numpy as np
@@ -452,7 +536,10 @@ def delay_predict(
     from sklearn.preprocessing import StandardScaler
     from sklearn.model_selection import train_test_split
 
-    df = _read_upload_df(file)
+    try:
+        df = _read_upload_df(file, DATASETS["delay_v1"])
+    except Exception:
+        df = _read_upload_df(file, DATASETS["delay_v2"])
     cols = {c.lower().strip(): c for c in df.columns}
 
     def getc(*names):
@@ -499,4 +586,427 @@ def delay_predict(
         dfv = dfv.sample(2000, random_state=42)
 
     return {"points": dfv.to_dict(orient="records")}
+
+
+def _combined_df():
+    return _read_upload_df(None, DATASETS["combined"])
+
+
+def _split_inputs_outputs(df):
+    import numpy as np
+    import pandas as pd
+
+    num = df.select_dtypes(include=[np.number]).copy()
+    if num.shape[1] < 4:
+        raise ValueError("Dataset must have at least 4 numeric columns.")
+    outputs = list(num.columns[-3:])
+    inputs = [c for c in num.columns if c not in outputs]
+    return num, inputs, outputs
+
+
+@app.get("/v1/param/meta")
+def param_meta(_token: str = Depends(require_auth)):
+    df = _combined_df()
+    _, inputs, outputs = _split_inputs_outputs(df)
+    return {"inputs": inputs, "outputs": outputs}
+
+
+@app.post("/v1/param/surface")
+def param_surface(payload: dict = Body(...), _token: str = Depends(require_auth)):
+    import numpy as np
+    import pandas as pd
+    from sklearn.ensemble import RandomForestRegressor
+
+    df = _combined_df()
+    num, inputs, outputs = _split_inputs_outputs(df)
+    output = payload.get("output", outputs[0])
+    x1 = payload.get("x1", inputs[0])
+    x2 = payload.get("x2", inputs[1] if len(inputs) > 1 else inputs[0])
+    objective = payload.get("objective", "max")
+    grid = int(payload.get("grid", 25))
+    samples = int(payload.get("samples", 40))
+
+    if output not in outputs or x1 not in inputs or x2 not in inputs or x1 == x2:
+        return {"error": "Invalid output/x1/x2 selection."}
+
+    X = num[inputs].apply(pd.to_numeric, errors="coerce")
+    y = pd.to_numeric(num[output], errors="coerce")
+    m = X.notna().all(axis=1) & y.notna()
+    X = X[m]
+    y = y[m]
+    if len(y) < 30:
+        return {"error": "Not enough clean rows in dataset."}
+
+    rf = RandomForestRegressor(n_estimators=300, random_state=42)
+    rf.fit(X, y)
+
+    bounds = {}
+    for c in inputs:
+        s = X[c]
+        bounds[c] = (float(s.quantile(0.02)), float(s.quantile(0.98)))
+
+    x1_min, x1_max = bounds[x1]
+    x2_min, x2_max = bounds[x2]
+    gx = np.linspace(x1_min, x1_max, grid)
+    gy = np.linspace(x2_min, x2_max, grid)
+
+    Z = []
+    best_overall = None
+    best_inputs = None
+
+    for xv in gx:
+        row = []
+        for yv in gy:
+            best = None
+            best_in = None
+            for _ in range(samples):
+                vec = {}
+                for c in inputs:
+                    lo, hi = bounds[c]
+                    vec[c] = float(np.random.uniform(lo, hi))
+                vec[x1] = float(xv)
+                vec[x2] = float(yv)
+                x_arr = np.array([[vec[c] for c in inputs]], dtype=float)
+                pred = float(rf.predict(x_arr)[0])
+                if best is None or (objective == "min" and pred < best) or (objective != "min" and pred > best):
+                    best = pred
+                    best_in = vec
+            row.append(best)
+            if best_overall is None or (objective == "min" and best < best_overall) or (objective != "min" and best > best_overall):
+                best_overall = best
+                best_inputs = best_in
+        Z.append(row)
+
+    return {
+        "x1": x1,
+        "x2": x2,
+        "output": output,
+        "grid_x": gx.tolist(),
+        "grid_y": gy.tolist(),
+        "Z": Z,
+        "best": {"value": best_overall, "inputs": best_inputs},
+    }
+
+
+@app.post("/v1/param/goal-seek")
+def param_goal_seek(payload: dict = Body(...), _token: str = Depends(require_auth)):
+    import numpy as np
+    import pandas as pd
+    from sklearn.ensemble import RandomForestRegressor
+
+    df = _combined_df()
+    num, inputs, outputs = _split_inputs_outputs(df)
+    output = payload.get("output", outputs[0])
+    target = float(payload.get("target", 0.0))
+    samples = int(payload.get("samples", 1500))
+    if output not in outputs:
+        return {"error": "Invalid output selection."}
+
+    X = num[inputs].apply(pd.to_numeric, errors="coerce")
+    y = pd.to_numeric(num[output], errors="coerce")
+    m = X.notna().all(axis=1) & y.notna()
+    X = X[m]
+    y = y[m]
+    rf = RandomForestRegressor(n_estimators=300, random_state=42)
+    rf.fit(X, y)
+
+    bounds = {}
+    for c in inputs:
+        s = X[c]
+        bounds[c] = (float(s.quantile(0.02)), float(s.quantile(0.98)))
+
+    best = None
+    best_in = None
+    for _ in range(samples):
+        vec = {}
+        for c in inputs:
+            lo, hi = bounds[c]
+            vec[c] = float(np.random.uniform(lo, hi))
+        x_arr = np.array([[vec[c] for c in inputs]], dtype=float)
+        pred = float(rf.predict(x_arr)[0])
+        err = abs(pred - target)
+        if best is None or err < best:
+            best = err
+            best_in = {"predicted": pred, "inputs": vec}
+
+    return {"target": target, "best": best_in}
+
+
+def _cost_defaults():
+    return {
+        "d_mm": 102.0,
+        "bench": 10.0,
+        "B": 3.0,
+        "S": 3.3,
+        "sub": 2.0,
+        "stem": 1.8,
+        "n_holes": 30,
+        "hpd": 1,
+        "vol": 0.0,
+        "rho_gcc": 1.15,
+        "rws": 115.0,
+        "ci": 10.0,
+        "ce": 4.0,
+        "cd": 7.0,
+        "R": 500.0,
+        "Kp": 1000.0,
+        "beta": 1.6,
+        "ppv_lim": 12.5,
+        "Ka": 170.0,
+        "Ba": 20.0,
+        "air_lim": 134.0,
+        "Ak": 22.0,
+        "nrr": 1.8,
+        "x50_target": 120.0,
+        "x_ov": 500.0,
+        "ov_max": 0.10,
+        "Bmin": 2.5,
+        "Bmax": 4.5,
+        "kS_min": 1.05,
+        "kS_max": 1.50,
+        "kStem_min": 0.70,
+        "kStem_max": 1.00,
+        "kSub_min": 0.30,
+        "kSub_max": 0.50,
+        "stiff_min": 2.50,
+        "stiff_max": 4.50,
+    }
+
+
+def _cost_derived(p):
+    import math
+
+    d_m = p["d_mm"] / 1000.0
+    area = math.pi * (d_m**2) / 4.0
+    hole_len = max(0.0, p["bench"] + p["sub"])
+    charge_len = max(0.0, hole_len - p["stem"])
+    rho = p["rho_gcc"] * 1000.0
+    m_per_hole = rho * area * charge_len
+    m_total = m_per_hole * p["n_holes"]
+    vol = p["vol"] if p["vol"] > 0 else p["B"] * p["S"] * p["bench"] * p["n_holes"]
+    PF = m_total / max(1e-9, vol)
+    drill_len_total = p["n_holes"] * hole_len
+    Q_delay = p["hpd"] * m_per_hole
+    return {
+        "d_m": d_m,
+        "area": area,
+        "hole_len": hole_len,
+        "charge_len": charge_len,
+        "rho": rho,
+        "m_per_hole": m_per_hole,
+        "m_total": m_total,
+        "PF": PF,
+        "vol": vol,
+        "drill_len_total": drill_len_total,
+        "Q_delay": Q_delay,
+    }
+
+
+def _cost_cost(p, d):
+    initiation_cost = p["n_holes"] * p["ci"]
+    explosive_cost = d["m_total"] * p["ce"]
+    drilling_cost = d["drill_len_total"] * p["cd"]
+    total = initiation_cost + explosive_cost + drilling_cost
+    return total, initiation_cost, explosive_cost, drilling_cost
+
+
+def _cost_vibration(p, d):
+    import math
+
+    SD = p["R"] / max(1e-9, math.sqrt(d["Q_delay"]))
+    PPV = p["Kp"] * (SD ** (-p["beta"]))
+    return SD, PPV
+
+
+def _cost_airblast(p, d):
+    import math
+
+    denom = max(1e-9, d["Q_delay"] ** (1.0 / 3.0))
+    L = p["Ka"] + p["Ba"] * math.log10(max(1e-12, p["R"] / denom))
+    return L
+
+
+def _cost_fragmentation(p, d):
+    import math
+
+    A = max(0.0, p["Ak"])
+    RWS = max(1e-9, p["rws"])
+    n = max(0.5, p["nrr"])
+    K_pf = d["PF"]
+    Q_ph = d["m_per_hole"]
+    if A > 0.0 and K_pf > 0.0 and Q_ph > 0.0 and RWS > 0.0:
+        Xm = A * (K_pf ** -0.8) * (Q_ph ** (1.0 / 6.0)) * ((115.0 / RWS) ** (19.0 / 20.0))
+        lam = Xm / math.gamma(1.0 + 1.0 / n)
+        X50 = lam * (math.log(2.0) ** (1.0 / n))
+        oversize = math.exp(-((p["x_ov"] / max(1e-9, lam)) ** n))
+        return Xm, X50, oversize
+    V_over_Q = d["vol"] / max(1e-9, d["m_total"])
+    X50_legacy = p["Ak"] * (V_over_Q ** 0.8)
+    lam = X50_legacy / (math.log(2.0) ** (1.0 / n))
+    Xm_legacy = lam * math.gamma(1.0 + 1.0 / n)
+    oversize = math.exp(-((p["x_ov"] / max(1e-9, lam)) ** n))
+    return Xm_legacy, X50_legacy, oversize
+
+
+def _cost_metrics(p):
+    d = _cost_derived(p)
+    cost, ci, ce, cd = _cost_cost(p, d)
+    SD, PPV = _cost_vibration(p, d)
+    L = _cost_airblast(p, d)
+    Xm, X50, ov = _cost_fragmentation(p, d)
+    return {
+        "inputs": p,
+        "derived": d,
+        "cost": cost,
+        "cost_break": (ci, ce, cd),
+        "SD": SD,
+        "PPV": PPV,
+        "L": L,
+        "Xm": Xm,
+        "X50": X50,
+        "oversize": ov,
+    }
+
+
+def _cost_penalties(p, res, weights, use_ppv, use_air, use_frag):
+    pen_frag = pen_ppv = pen_air = 0.0
+    if use_frag:
+        X50, ov = res["X50"], res["oversize"]
+        pen_x50 = max(0.0, (X50 - p["x50_target"]) / max(1e-9, p["x50_target"]))
+        pen_ov = max(0.0, ov - p["ov_max"])
+        pen_frag = weights["frag"] * (10.0 * pen_x50**2 + 20.0 * pen_ov**2)
+    if use_ppv:
+        pen_ppv = weights["ppv"] * (15.0 * max(0.0, (res["PPV"] - p["ppv_lim"]) / max(1e-9, p["ppv_lim"]))**2)
+    if use_air:
+        pen_air = weights["air"] * (10.0 * max(0.0, (res["L"] - p["air_lim"]) / max(1e-9, p["air_lim"]))**2)
+    return {"frag": pen_frag, "ppv": pen_ppv, "air": pen_air}
+
+
+def _cost_constraints(p):
+    cons = []
+    def c_spacing_min(x): B, S, sub = x; return S - p["kS_min"] * B
+    def c_spacing_max(x): B, S, sub = x; return p["kS_max"] * B - S
+    def c_stem_min(x): B, S, sub = x; return p["stem"] - p["kStem_min"] * B
+    def c_stem_max(x): B, S, sub = x; return p["kStem_max"] * B - p["stem"]
+    def c_sub_min(x): B, S, sub = x; return sub - p["kSub_min"] * B
+    def c_sub_max(x): B, S, sub = x; return p["kSub_max"] * B - sub
+    def c_stiff_min(x): B, S, sub = x; return (p["bench"] / max(1e-9, B)) - p["stiff_min"]
+    def c_stiff_max(x): B, S, sub = x; return p["stiff_max"] - (p["bench"] / max(1e-9, B))
+    for fn in [c_spacing_min, c_spacing_max, c_stem_min, c_stem_max, c_sub_min, c_sub_max, c_stiff_min, c_stiff_max]:
+        cons.append({"type": "ineq", "fun": fn})
+    return cons
+
+
+def _cost_bounds(p):
+    B_lo, B_hi = p["Bmin"], p["Bmax"]
+    S_lo, S_hi = 0.5, 8.0
+    sub_lo, sub_hi = 0.0, max(6.0, p["bench"])
+    return [(B_lo, B_hi), (S_lo, S_hi), (sub_lo, sub_hi)]
+
+
+@app.get("/v1/cost/defaults")
+def cost_defaults(_token: str = Depends(require_auth)):
+    return _cost_defaults()
+
+
+@app.post("/v1/cost/compute")
+def cost_compute(payload: dict = Body(default={}), _token: str = Depends(require_auth)):
+    p = _cost_defaults()
+    p.update(payload or {})
+    res = _cost_metrics(p)
+    return res
+
+
+@app.post("/v1/cost/optimize")
+def cost_optimize(payload: dict = Body(default={}), _token: str = Depends(require_auth)):
+    import numpy as np
+    from scipy.optimize import minimize
+
+    p = _cost_defaults()
+    p.update(payload or {})
+    weights = payload.get("weights", {"frag": 1.0, "ppv": 1.0, "air": 0.7})
+    use_frag = bool(payload.get("use_frag", True))
+    use_ppv = bool(payload.get("use_ppv", True))
+    use_air = bool(payload.get("use_air", True))
+    method = payload.get("method", "SLSQP")
+
+    def obj(x):
+        trial = p.copy()
+        trial["B"], trial["S"], trial["sub"] = float(x[0]), float(x[1]), float(x[2])
+        res = _cost_metrics(trial)
+        pen = _cost_penalties(trial, res, weights, use_ppv, use_air, use_frag)
+        return res["cost"] + pen["frag"] + pen["ppv"] + pen["air"]
+
+    x0 = np.array([p["B"], p["S"], p["sub"]], dtype=float)
+    res = minimize(
+        obj,
+        x0,
+        method=("SLSQP" if method == "SLSQP" else "trust-constr"),
+        bounds=_cost_bounds(p),
+        constraints=_cost_constraints(p),
+        options=dict(maxiter=300, ftol=1e-7),
+    )
+    best = p.copy()
+    best["B"], best["S"], best["sub"] = float(res.x[0]), float(res.x[1]), float(res.x[2])
+    return {"success": bool(res.success), "message": str(res.message), "result": _cost_metrics(best)}
+
+
+@app.post("/v1/cost/pareto")
+def cost_pareto(payload: dict = Body(default={}), _token: str = Depends(require_auth)):
+    import numpy as np
+    from scipy.optimize import minimize
+
+    p = _cost_defaults()
+    p.update(payload or {})
+    w_list = [0.0, 1.0, 2.0]
+    rows = []
+    x0 = np.array([p["B"], p["S"], p["sub"]], dtype=float)
+    method = payload.get("method", "SLSQP")
+
+    for wf in w_list:
+        for wp in w_list:
+            for wa in w_list:
+                weights = {"frag": wf, "ppv": wp, "air": wa}
+                def obj(x):
+                    trial = p.copy()
+                    trial["B"], trial["S"], trial["sub"] = float(x[0]), float(x[1]), float(x[2])
+                    res = _cost_metrics(trial)
+                    pen = _cost_penalties(trial, res, weights, wp > 0, wa > 0, wf > 0)
+                    return res["cost"] + pen["frag"] + pen["ppv"] + pen["air"]
+                try:
+                    res = minimize(
+                        obj,
+                        x0,
+                        method=("SLSQP" if method == "SLSQP" else "trust-constr"),
+                        bounds=_cost_bounds(p),
+                        constraints=_cost_constraints(p),
+                        options=dict(maxiter=200, ftol=1e-7),
+                    )
+                    x = res.x if res.success else x0
+                except Exception:
+                    x = x0
+                trial = p.copy()
+                trial["B"], trial["S"], trial["sub"] = float(x[0]), float(x[1]), float(x[2])
+                met = _cost_metrics(trial)
+                rows.append(
+                    {
+                        "wf": wf,
+                        "wp": wp,
+                        "wa": wa,
+                        "B": trial["B"],
+                        "S": trial["S"],
+                        "sub": trial["sub"],
+                        "cost": met["cost"],
+                        "PPV": met["PPV"],
+                        "Air": met["L"],
+                        "Oversize%": 100.0 * met["oversize"],
+                        "X50": met["X50"],
+                        "Xm": met["Xm"],
+                        "PF": met["derived"]["PF"],
+                        "Qdelay": met["derived"]["Q_delay"],
+                        "R": trial["R"],
+                    }
+                )
+                x0 = x
+    return {"rows": rows}
 
