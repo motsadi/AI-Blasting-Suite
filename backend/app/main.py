@@ -24,9 +24,12 @@ origins = [o.strip() for o in (settings.cors_origins or "*").split(",") if o.str
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if origins == ["*"] else origins,
-    allow_credentials=True,
+    # We authenticate via Authorization header (refresh_token), not cookies.
+    # Keeping allow_credentials=False makes wildcard origins safe when needed.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_origin_regex=settings.cors_origin_regex,
 )
 
 _assets = load_local_assets(core_bundle_path)

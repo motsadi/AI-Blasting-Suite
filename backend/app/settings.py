@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="BLAST_", extra="ignore")
 
     cors_origins: str = "*"  # comma-separated, overridden in prod
+    cors_origin_regex: Optional[str] = None  # e.g. https://.*\\.vercel\\.app
 
     # Optional: GCS bucket for model/data assets
     gcs_bucket: Optional[str] = None
