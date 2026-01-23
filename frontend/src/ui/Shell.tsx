@@ -534,29 +534,59 @@ function PredictPanel({ apiBaseUrl, token, meta }: { apiBaseUrl: string; token: 
   const [busy, setBusy] = useState(false);
   const [out, setOut] = useState<any>(null);
   const [inputs, setInputs] = useState<Record<string, number>>({});
-  const [rrN, setRrN] = useState(1.8);
-  const [rrMode, setRrMode] = useState<"manual" | "estimate">("estimate");
-  const [rrXov, setRrXov] = useState(500);
-  const [hpdOverride, setHpdOverride] = useState(1);
-  const [wantMl, setWantMl] = useState(true);
-  const outputs: string[] = meta?.outputs ?? ["Ground Vibration", "Airblast", "Fragmentation"];
-  const empiricalDefaults = meta?.empirical_defaults ?? {
+  const [ranges, setRanges] = useState<Record<string, { min: number; max: number; median: number }>>({});
+  const [empirical, setEmpirical] = useState({
     K_ppv: 1000,
     beta: 1.6,
     K_air: 170,
     B_air: 20,
     A_kuz: 22,
     RWS: 115,
-  };
+  });
+  const [hpdOverride, setHpdOverride] = useState(1);
+  const [rrMode, setRrMode] = useState<"manual" | "estimate">("estimate");
+  const [rrN, setRrN] = useState(1.8);
+  const [rrXov, setRrXov] = useState(500);
+  const [tab, setTab] = useState<"outputs" | "rr">("outputs");
+  const [wantMl, setWantMl] = useState(true);
+  const [thresholds, setThresholds] = useState<Record<string, number>>({});
+  const outputs: string[] = meta?.outputs ?? ["Ground Vibration", "Airblast", "Fragmentation"];
 
   useEffect(() => {
     if (!meta?.input_labels) return;
-    const defaults: Record<string, number> = {};
+    const nextInputs: Record<string, number> = {};
+    const nextRanges: Record<string, { min: number; max: number; median: number }> = {};
     for (const k of meta.input_labels) {
-      defaults[k] = meta?.input_stats?.[k]?.median ?? 0;
+      const stat = meta?.input_stats?.[k] ?? { min: 0, max: 1, median: 0 };
+      nextInputs[k] = stat.median ?? 0;
+      nextRanges[k] = { min: stat.min ?? 0, max: stat.max ?? 1, median: stat.median ?? 0 };
     }
-    setInputs(defaults);
+    setInputs(nextInputs);
+    setRanges(nextRanges);
   }, [meta]);
+
+  useEffect(() => {
+    if (!meta?.empirical_defaults) return;
+    setEmpirical(meta.empirical_defaults);
+  }, [meta]);
+
+  function useMedians() {
+    const next = { ...inputs };
+    Object.entries(ranges).forEach(([k, r]) => {
+      next[k] = r.median;
+    });
+    setInputs(next);
+  }
+
+  function resetRanges() {
+    if (!meta?.input_labels) return;
+    const nextRanges: Record<string, { min: number; max: number; median: number }> = {};
+    for (const k of meta.input_labels) {
+      const stat = meta?.input_stats?.[k] ?? { min: 0, max: 1, median: 0 };
+      nextRanges[k] = { min: stat.min ?? 0, max: stat.max ?? 1, median: stat.median ?? 0 };
+    }
+    setRanges(nextRanges);
+  }
 
   async function run() {
     if (!apiBaseUrl) {
@@ -574,11 +604,11 @@ function PredictPanel({ apiBaseUrl, token, meta }: { apiBaseUrl: string; token: 
         body: JSON.stringify({
           inputs,
           hpd_override: hpdOverride,
-          empirical: empiricalDefaults,
+          empirical,
           want_ml: wantMl,
-          rr_n: rrN,
+          rr_n: rrMode === "manual" ? rrN : undefined,
           rr_mode: rrMode,
-          rr_x_ov: rrXov
+          rr_x_ov: rrXov,
         }),
       });
       const json = await res.json();
@@ -590,105 +620,195 @@ function PredictPanel({ apiBaseUrl, token, meta }: { apiBaseUrl: string; token: 
     }
   }
 
+  const logText = useMemo(() => {
+    if (!out?.json) return "";
+    const emp = out.json.empirical ?? {};
+    const ml = out.json.ml ?? {};
+    const lines: string[] = [];
+    outputs.forEach((o) => {
+      const mlv = ml?.[o];
+      const empv = emp?.[o];
+      const mlTxt = Number.isFinite(mlv) ? Number(mlv).toFixed(3) : "NA";
+      const empTxt = Number.isFinite(empv) ? Number(empv).toFixed(3) : "NA";
+      lines.push(`${o}: ML=${mlTxt} | Emp=${empTxt}`);
+    });
+    const alerts: string[] = [];
+    outputs.forEach((o) => {
+      const thr = thresholds[o];
+      if (!thr) return;
+      const v = Number.isFinite(out?.json?.ml?.[o]) ? out.json.ml[o] : out?.json?.empirical?.[o];
+      if (Number.isFinite(v) && v > thr) {
+        alerts.push(`${o} exceeds ${thr.toFixed(3)} (=${Number(v).toFixed(3)})`);
+      }
+    });
+    if (alerts.length) {
+      lines.push("");
+      lines.push("Alerts (checked against ML if present, otherwise empirical):");
+      alerts.forEach((a) => lines.push(`• ${a}`));
+    }
+    return lines.join("\n");
+  }, [out, outputs, thresholds]);
+
+  function exportResult() {
+    if (!out?.json) return;
+    const row: Record<string, any> = { ...inputs };
+    outputs.forEach((o) => {
+      row[`ML ${o}`] = out.json.ml?.[o] ?? "";
+      row[`Empirical ${o}`] = out.json.empirical?.[o] ?? "";
+    });
+    row["RR n"] = out.json.rr?.n ?? "";
+    row["KuzRam Xm (mm)"] = out.json.rr?.xm ?? "";
+    row["RR X50 (mm)"] = out.json.rr?.x50 ?? "";
+    downloadCsv([row], Object.keys(row), "prediction_result.csv");
+  }
+
   return (
     <div style={{ display: "grid", gap: 14 }}>
-      <div className="card">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-          <div>
-            <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Predict</div>
-            <div style={{ color: "var(--muted)", marginTop: 6 }}>
-              Calls FastAPI <code>/v1/predict</code> (wrapping existing Python functions, unchanged).
-            </div>
-          </div>
-          <button onClick={run} disabled={busy} className={`btn btnPrimary`}>
-            {busy ? "Running…" : "Run sample prediction"}
-          </button>
-        </div>
-
-        <div style={{ marginTop: 12 }} className="grid3">
-          {outputs.map((k) => (
-            <div key={k} className="kpi">
-              <div className="kpiTitle">{k}</div>
-              <div className="kpiValue">
-                {out?.json?.ml?.[k] != null
-                  ? Number(out.json.ml[k]).toFixed(2)
-                  : out?.json?.empirical?.[k] != null
-                    ? Number(out.json.empirical[k]).toFixed(2)
-                    : "—"}
-              </div>
-              <div style={{ fontSize: 12, color: "var(--muted)" }}>
-                {out?.json?.ml?.[k] != null ? "ML" : out?.json?.empirical?.[k] != null ? "Empirical" : ""}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {meta?.input_labels?.length ? (
+      <div className="grid2">
         <div className="card">
-          <div className="label" style={{ marginBottom: 8 }}>Inputs (defaults from combinedv2Orapa.csv)</div>
-          <div className="grid3">
-            {meta.input_labels.map((k: string) => (
-              <div key={k}>
-                <label className="label">{k}</label>
-                <input
-                  className="input"
-                  type="number"
-                  value={inputs[k] ?? 0}
-                  onChange={(e) => setInputs({ ...inputs, [k]: Number(e.target.value) })}
-                />
+          <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Inputs</div>
+          <div className="subtitle">Dataset: combinedv2Orapa.csv</div>
+
+          <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+            <button className="btn" onClick={useMedians}>Use Medians</button>
+            <button className="btn" onClick={resetRanges}>Reset Ranges</button>
+          </div>
+
+          <div style={{ marginTop: 10, display: "grid", gap: 10, maxHeight: 360, overflow: "auto" }}>
+            {(meta?.input_labels ?? []).map((k: string) => {
+              const r = ranges[k] ?? { min: 0, max: 1, median: 0 };
+              const value = inputs[k] ?? r.median ?? 0;
+              return (
+                <div key={k}>
+                  <label className="label">{k}</label>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 90px", gap: 8 }}>
+                    <input
+                      className="input"
+                      type="range"
+                      min={r.min}
+                      max={r.max}
+                      step={(r.max - r.min) / 200 || 0.01}
+                      value={value}
+                      onChange={(e) => setInputs({ ...inputs, [k]: Number(e.target.value) })}
+                    />
+                    <input
+                      className="input"
+                      type="number"
+                      value={value}
+                      onChange={(e) => setInputs({ ...inputs, [k]: Number(e.target.value) })}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="card" style={{ marginTop: 12 }}>
+            <div className="label">Empirical settings (USBM & Kuz–Ram)</div>
+            <div className="grid3" style={{ marginTop: 8 }}>
+              {Object.entries(empirical).map(([k, v]) => (
+                <div key={k}>
+                  <label className="label">{k}</label>
+                  <input className="input" type="number" value={v} onChange={(e) => setEmpirical({ ...empirical, [k]: Number(e.target.value) })} />
+                </div>
+              ))}
+            </div>
+            <div className="grid3" style={{ marginTop: 8 }}>
+              <div>
+                <label className="label">HPD (holes/delay)</label>
+                <input className="input" type="number" value={hpdOverride} onChange={(e) => setHpdOverride(Number(e.target.value))} />
               </div>
-            ))}
-          </div>
-          <div className="grid3" style={{ marginTop: 12 }}>
-            <div>
-              <label className="label">HPD override</label>
-              <input
-                className="input"
-                type="number"
-                value={hpdOverride}
-                onChange={(e) => setHpdOverride(Number(e.target.value))}
-              />
+              <div>
+                <label className="label">Oversize threshold (mm)</label>
+                <input className="input" type="number" value={rrXov} onChange={(e) => setRrXov(Number(e.target.value))} />
+              </div>
+              <div>
+                <label className="label">RR n mode</label>
+                <select className="input" value={rrMode} onChange={(e) => setRrMode(e.target.value as any)}>
+                  <option value="estimate">Estimate (Kuz–Ram)</option>
+                  <option value="manual">Manual (n)</option>
+                </select>
+              </div>
             </div>
-            <div>
-              <label className="label">Use ML</label>
-              <select className="input" value={wantMl ? "yes" : "no"} onChange={(e) => setWantMl(e.target.value === "yes")}>
-                <option value="yes">Yes</option>
-                <option value="no">No (empirical only)</option>
-              </select>
+            <div className="grid3" style={{ marginTop: 8 }}>
+              <div>
+                <label className="label">Manual n</label>
+                <input className="input" type="number" value={rrN} onChange={(e) => setRrN(Number(e.target.value))} />
+              </div>
+              <div>
+                <label className="label">Use ML</label>
+                <select className="input" value={wantMl ? "yes" : "no"} onChange={(e) => setWantMl(e.target.value === "yes")}>
+                  <option value="yes">Yes</option>
+                  <option value="no">No (empirical only)</option>
+                </select>
+              </div>
+              <div>
+                <label className="label">n display</label>
+                <div className="pill">
+                  {rrMode === "manual" ? `n (manual): ${rrN.toFixed(3)}` : `n (estimated): ${out?.json?.rr?.n?.toFixed?.(3) ?? "—"}`}
+                </div>
+              </div>
             </div>
-            <div />
+            <div className="subtitle" style={{ marginTop: 8 }}>
+              PPV = K_ppv·(R/√Qd)^-β; Air = K_air + B_air·log10(Qd^(1/3)/R).
+            </div>
           </div>
         </div>
-      ) : null}
 
-      {out?.json?.rr ? (
         <div className="card">
-          <div className="label" style={{ marginBottom: 8 }}>Rosin–Rammler (CDF)</div>
-          <div className="grid3">
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
             <div>
-              <label className="label">n mode</label>
-              <select className="input" value={rrMode} onChange={(e) => setRrMode(e.target.value as any)}>
-                <option value="estimate">Estimate</option>
-                <option value="manual">Manual</option>
-              </select>
+              <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Simultaneous Prediction</div>
+              <div className="subtitle">Predict (ML + Empirical) with RR curve.</div>
             </div>
-            <div>
-              <label className="label">n (manual)</label>
-              <input className="input" type="number" value={rrN} onChange={(e) => setRrN(Number(e.target.value))} />
-            </div>
-            <div>
-              <label className="label">Oversize (mm)</label>
-              <input className="input" type="number" value={rrXov} onChange={(e) => setRrXov(Number(e.target.value))} />
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn btnPrimary" onClick={run} disabled={busy}>
+                {busy ? "Running…" : "Predict (ML + Empirical)"}
+              </button>
+              <button className="btn" onClick={exportResult} disabled={!out?.json}>
+                Export Result CSV
+              </button>
             </div>
           </div>
-          <RRChart rr={out.json.rr} />
-        </div>
-      ) : null}
 
-      <div className="card">
-        <div className="label" style={{ marginBottom: 10 }}>Response</div>
-        <pre style={pre}>{JSON.stringify(out, null, 2)}</pre>
+          <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+            <button className={`btn ${tab === "outputs" ? "btnPrimary" : ""}`} onClick={() => setTab("outputs")}>
+              Outputs (Empirical vs ML)
+            </button>
+            <button className={`btn ${tab === "rr" ? "btnPrimary" : ""}`} onClick={() => setTab("rr")}>
+              Fragmentation (RR Curve)
+            </button>
+          </div>
+
+          {tab === "outputs" && (
+            <div style={{ marginTop: 12 }}>
+              <BarCompareChart outputs={outputs} empirical={out?.json?.empirical} ml={out?.json?.ml} thresholds={thresholds} />
+            </div>
+          )}
+          {tab === "rr" && (
+            <div style={{ marginTop: 12 }}>
+              {out?.json?.rr ? <RRChart rr={out.json.rr} /> : <div className="subtitle">Run prediction to see RR curve.</div>}
+            </div>
+          )}
+
+          <div className="card" style={{ marginTop: 12 }}>
+            <div className="label">Thresholds & Alerts</div>
+            <div className="grid3" style={{ marginTop: 8 }}>
+              {outputs.map((o) => (
+                <div key={o}>
+                  <label className="label">{o}</label>
+                  <input
+                    className="input"
+                    type="number"
+                    value={thresholds[o] ?? ""}
+                    onChange={(e) => setThresholds({ ...thresholds, [o]: Number(e.target.value) })}
+                  />
+                </div>
+              ))}
+            </div>
+            <pre style={{ ...pre, marginTop: 10 }}>{logText || "Run predictions to populate log."}</pre>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -1150,18 +1270,35 @@ function RRChart({ rr }: { rr: any }) {
   const xmax = Math.max(...xlog);
   const ymin = 0;
   const ymax = 100;
+  const findXAt = (pct: number) => {
+    for (let i = 0; i < ys.length; i++) {
+      if (ys[i] >= pct) return xs[i];
+    }
+    return xs[xs.length - 1];
+  };
+  const x20 = findXAt(20);
+  const x50 = rr?.x50 ?? findXAt(50);
+  const x80 = findXAt(80);
+  const xOv = rr?.x_ov ?? 500;
   const pts = xlog.map((x: number, i: number) => {
     const px = ((x - xmin) / (xmax - xmin)) * (w - 20) + 10;
     const py = h - ((ys[i] - ymin) / (ymax - ymin)) * (h - 20) - 10;
     return `${px},${py}`;
   });
+  const vlineX = (x: number) => ((Math.log10(Math.max(0.1, x)) - xmin) / (xmax - xmin)) * (w - 20) + 10;
   return (
     <div style={{ marginTop: 10 }}>
       <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
         <polyline fill="none" stroke="#60a5fa" strokeWidth="2" points={pts.join(" ")} />
+        {[{ x: x20, label: "X20" }, { x: x50, label: "X50" }, { x: x80, label: "X80" }].map((m) => (
+          <g key={m.label}>
+            <line x1={vlineX(m.x)} x2={vlineX(m.x)} y1={10} y2={h - 10} stroke="#94a3b8" strokeDasharray="4 2" />
+          </g>
+        ))}
+        <line x1={vlineX(xOv)} x2={vlineX(xOv)} y1={10} y2={h - 10} stroke="#fbbf24" strokeDasharray="2 2" />
       </svg>
       <div className="label" style={{ marginTop: 6 }}>
-        n={rr.n?.toFixed(2)} · Xm={rr.xm?.toFixed(1)} mm · X50={rr.x50?.toFixed(1)} mm · Oversize@{rr.x_ov}={rr.oversize_pct?.toFixed(1)}%
+        n={rr.n?.toFixed(2)} · Xm={rr.xm?.toFixed(1)} mm · X50={x50?.toFixed?.(1)} mm · Oversize@{xOv}={rr.oversize_pct?.toFixed(1)}%
       </div>
     </div>
   );
@@ -1296,6 +1433,55 @@ function BarChart({ labels, values }: { labels: string[]; values: number[] }) {
             <text x={x + (barW - 24) / 2} y={h - 6} fill="#94a3b8" fontSize="10" textAnchor="middle">
               {labels[i]}
             </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function BarCompareChart({
+  outputs,
+  empirical,
+  ml,
+  thresholds,
+}: {
+  outputs: string[];
+  empirical?: Record<string, number>;
+  ml?: Record<string, number>;
+  thresholds: Record<string, number>;
+}) {
+  const w = 620;
+  const h = 260;
+  const vals = outputs.flatMap((o) => [empirical?.[o], ml?.[o]]).filter((v) => Number.isFinite(Number(v)));
+  const vmax = Math.max(...vals.map((v) => Number(v)), 1);
+  const barW = w / Math.max(1, outputs.length);
+  return (
+    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+      {outputs.map((o, i) => {
+        const em = Number(empirical?.[o]);
+        const mlv = Number(ml?.[o]);
+        const emH = Number.isFinite(em) ? (em / vmax) * (h - 40) : 0;
+        const mlH = Number.isFinite(mlv) ? (mlv / vmax) * (h - 40) : 0;
+        const x0 = i * barW + 12;
+        const mid = x0 + (barW - 24) / 2;
+        return (
+          <g key={o}>
+            <rect x={x0} y={h - 24 - emH} width={(barW - 24) / 2 - 2} height={emH} fill="#a78bfa" rx={4} />
+            <rect x={mid + 2} y={h - 24 - mlH} width={(barW - 24) / 2 - 2} height={mlH} fill="#60a5fa" rx={4} />
+            <text x={x0 + (barW - 24) / 2} y={h - 8} fill="#94a3b8" fontSize="10" textAnchor="middle">
+              {o}
+            </text>
+            {Number.isFinite(thresholds[o]) && thresholds[o] > 0 ? (
+              <line
+                x1={x0}
+                x2={x0 + (barW - 24)}
+                y1={h - 24 - (thresholds[o] / vmax) * (h - 40)}
+                y2={h - 24 - (thresholds[o] / vmax) * (h - 40)}
+                stroke="#fbbf24"
+                strokeDasharray="4 2"
+              />
+            ) : null}
           </g>
         );
       })}
