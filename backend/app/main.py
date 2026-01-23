@@ -427,46 +427,11 @@ def _feature_map_synonyms():
     }
 
 
-def _resolve_map(df_cols, expected, synonyms_map):
-    import re
-
-    def _norm(s: str) -> str:
-        return re.sub(r"[^a-z0-9]+", "", str(s).lower())
-
-    cols = list(df_cols)
-    lower = {c.lower(): c for c in cols}
-    norm = {_norm(c): c for c in cols}
-    result = []
-    for name in expected:
-        if name in cols:
-            result.append(name)
-            continue
-        if name.lower() in lower:
-            result.append(lower[name.lower()])
-            continue
-        chosen = None
-        syns = synonyms_map.get(name.lower(), [])
-        for s in [name] + syns:
-            if s in cols:
-                chosen = s
-                break
-            if s.lower() in lower:
-                chosen = lower[s.lower()]
-                break
-            if _norm(s) in norm:
-                chosen = norm[_norm(s)]
-                break
-        result.append(chosen)
-    return result
-
-
-@app.get("/v1/feature/importance")
-def feature_importance_dataset(top_k: int = 12, _token: str = Depends(require_auth)):
+def _feature_importance_df(df, top_k: int):
     import numpy as np
     import pandas as pd
     from sklearn.ensemble import RandomForestRegressor
 
-    df = _combined_df()
     syn = _feature_map_synonyms()
     in_res = _resolve_map(df.columns, INPUT_LABELS, syn["inputs"])
     out_res = _resolve_map(df.columns, ["Fragmentation", "Ground Vibration", "Airblast"], syn["outputs"])
@@ -521,14 +486,12 @@ def feature_importance_dataset(top_k: int = 12, _token: str = Depends(require_au
     }
 
 
-@app.get("/v1/feature/pca")
-def feature_pca(_token: str = Depends(require_auth)):
+def _feature_pca_df(df):
     import numpy as np
     import pandas as pd
     from sklearn.preprocessing import StandardScaler
     from sklearn.decomposition import PCA
 
-    df = _combined_df()
     syn = _feature_map_synonyms()
     in_res = _resolve_map(df.columns, INPUT_LABELS, syn["inputs"])
     name_mode_ok = not any(v is None for v in in_res)
@@ -557,6 +520,7 @@ def feature_pca(_token: str = Depends(require_auth)):
         pairs = list(zip(Xraw.columns, loadings[i]))
         pairs.sort(key=lambda p: abs(p[1]), reverse=True)
         out.append([{"feature": k, "loading": float(v)} for k, v in pairs[: min(10, len(pairs))]])
+
     points = comps[:, :2]
     if len(points) > 800:
         points = points[np.random.choice(len(points), 800, replace=False)]
@@ -568,6 +532,69 @@ def feature_pca(_token: str = Depends(require_auth)):
         "rows_used": int(len(Xnum)),
         "inputs": list(Xraw.columns),
     }
+
+def _resolve_map(df_cols, expected, synonyms_map):
+    import re
+
+    def _norm(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(s).lower())
+
+    cols = list(df_cols)
+    lower = {c.lower(): c for c in cols}
+    norm = {_norm(c): c for c in cols}
+    result = []
+    for name in expected:
+        if name in cols:
+            result.append(name)
+            continue
+        if name.lower() in lower:
+            result.append(lower[name.lower()])
+            continue
+        chosen = None
+        syns = synonyms_map.get(name.lower(), [])
+        for s in [name] + syns:
+            if s in cols:
+                chosen = s
+                break
+            if s.lower() in lower:
+                chosen = lower[s.lower()]
+                break
+            if _norm(s) in norm:
+                chosen = norm[_norm(s)]
+                break
+        result.append(chosen)
+    return result
+
+
+@app.get("/v1/feature/importance")
+def feature_importance_dataset(top_k: int = 12, _token: str = Depends(require_auth)):
+    df = _combined_df()
+    return _feature_importance_df(df, top_k)
+
+
+@app.post("/v1/feature/importance")
+def feature_importance_dataset_upload(
+    file: UploadFile | None = File(default=None),
+    top_k: int = Form(default=12),
+    _token: str = Depends(require_auth),
+):
+    df = _read_upload_df(file, DATASETS["combined"])
+    return _feature_importance_df(df, top_k)
+
+
+@app.get("/v1/feature/pca")
+def feature_pca(_token: str = Depends(require_auth)):
+    df = _combined_df()
+    return _feature_pca_df(df)
+
+
+@app.post("/v1/feature/pca")
+def feature_pca_upload(
+    file: UploadFile | None = File(default=None),
+    _token: str = Depends(require_auth),
+):
+    df = _read_upload_df(file, DATASETS["combined"])
+    return feature_pca(_token=_token) if file is None else _feature_pca_df(df)
 
 
 @app.post("/v1/flyrock/predict")
@@ -1044,20 +1071,11 @@ def _split_inputs_outputs(df):
     return num, inputs, outputs
 
 
-@app.get("/v1/param/meta")
-def param_meta(_token: str = Depends(require_auth)):
-    df = _combined_df()
-    _, inputs, outputs = _split_inputs_outputs(df)
-    return {"inputs": inputs, "outputs": outputs}
-
-
-@app.post("/v1/param/surface")
-def param_surface(payload: dict = Body(...), _token: str = Depends(require_auth)):
+def _param_surface_df(df, payload):
     import numpy as np
     import pandas as pd
     from sklearn.ensemble import RandomForestRegressor
 
-    df = _combined_df()
     num, inputs, outputs = _split_inputs_outputs(df)
     output = payload.get("output", outputs[0])
     x1 = payload.get("x1", inputs[0])
@@ -1128,13 +1146,11 @@ def param_surface(payload: dict = Body(...), _token: str = Depends(require_auth)
     }
 
 
-@app.post("/v1/param/goal-seek")
-def param_goal_seek(payload: dict = Body(...), _token: str = Depends(require_auth)):
+def _param_goal_seek_df(df, payload):
     import numpy as np
     import pandas as pd
     from sklearn.ensemble import RandomForestRegressor
 
-    df = _combined_df()
     num, inputs, outputs = _split_inputs_outputs(df)
     output = payload.get("output", outputs[0])
     target = float(payload.get("target", 0.0))
@@ -1170,6 +1186,71 @@ def param_goal_seek(payload: dict = Body(...), _token: str = Depends(require_aut
             best_in = {"predicted": pred, "inputs": vec}
 
     return {"target": target, "best": best_in}
+
+
+@app.get("/v1/param/meta")
+def param_meta(_token: str = Depends(require_auth)):
+    df = _combined_df()
+    _, inputs, outputs = _split_inputs_outputs(df)
+    return {"inputs": inputs, "outputs": outputs}
+
+
+@app.post("/v1/param/meta")
+def param_meta_upload(
+    file: UploadFile | None = File(default=None),
+    _token: str = Depends(require_auth),
+):
+    df = _read_upload_df(file, DATASETS["combined"])
+    _, inputs, outputs = _split_inputs_outputs(df)
+    return {"inputs": inputs, "outputs": outputs}
+
+
+@app.post("/v1/param/surface")
+def param_surface(payload: dict = Body(...), _token: str = Depends(require_auth)):
+    df = _combined_df()
+    return _param_surface_df(df, payload)
+
+
+@app.post("/v1/param/surface/upload")
+def param_surface_upload(
+    file: UploadFile | None = File(default=None),
+    payload_json: str | None = Form(default=None),
+    _token: str = Depends(require_auth),
+):
+    import json
+
+    payload = {}
+    if payload_json:
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            payload = {}
+    df = _read_upload_df(file, DATASETS["combined"])
+    return _param_surface_df(df, payload)
+
+
+@app.post("/v1/param/goal-seek")
+def param_goal_seek(payload: dict = Body(...), _token: str = Depends(require_auth)):
+    df = _combined_df()
+    return _param_goal_seek_df(df, payload)
+
+
+@app.post("/v1/param/goal-seek/upload")
+def param_goal_seek_upload(
+    file: UploadFile | None = File(default=None),
+    payload_json: str | None = Form(default=None),
+    _token: str = Depends(require_auth),
+):
+    import json
+
+    payload = {}
+    if payload_json:
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            payload = {}
+    df = _read_upload_df(file, DATASETS["combined"])
+    return _param_goal_seek_df(df, payload)
 
 
 def _cost_defaults():

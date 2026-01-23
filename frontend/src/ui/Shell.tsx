@@ -36,6 +36,11 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
   const [tab, setTab] = useState<TabKey>("predict");
   const [meta, setMeta] = useState<any>(null);
   const [metaErr, setMetaErr] = useState<string | null>(null);
+  const [dataset, setDataset] = useState<{
+    file?: File | null;
+    rows: Array<Record<string, any>>;
+    columns: string[];
+  }>({ file: null, rows: [], columns: [] });
 
   const headerRight = useMemo(() => {
     return (
@@ -67,7 +72,7 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
       <div className="topbar">
         <div>
           <div className="title">AI Blasting Suite</div>
-          <div className="subtitle">Secure auth • Cloud Run API • GCS assets • Modern UI</div>
+          <div className="subtitle">Local layout mirrored</div>
         </div>
         {headerRight}
       </div>
@@ -98,13 +103,13 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
         <main style={{ minHeight: 600 }}>
           {metaErr && <div className="error">{metaErr}</div>}
           {tab === "predict" ? (
-            <PredictPanel apiBaseUrl={apiBaseUrl} token={session.token} meta={meta} />
+            <PredictPanel apiBaseUrl={apiBaseUrl} token={session.token} meta={meta} dataset={dataset} />
           ) : tab === "data" ? (
-            <DataPanel apiBaseUrl={apiBaseUrl} token={session.token} />
+            <DataPanel apiBaseUrl={apiBaseUrl} token={session.token} dataset={dataset} onDatasetChange={setDataset} />
           ) : tab === "feature" ? (
-            <FeaturePanel apiBaseUrl={apiBaseUrl} token={session.token} />
+            <FeaturePanel apiBaseUrl={apiBaseUrl} token={session.token} dataset={dataset} />
           ) : tab === "param" ? (
-            <ParamPanel apiBaseUrl={apiBaseUrl} token={session.token} />
+            <ParamPanel apiBaseUrl={apiBaseUrl} token={session.token} dataset={dataset} />
           ) : tab === "cost" ? (
             <CostPanel apiBaseUrl={apiBaseUrl} token={session.token} />
           ) : tab === "backbreak" ? (
@@ -135,10 +140,20 @@ function PlaceholderPanel({ title }: { title: string }) {
   );
 }
 
-function DataPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
-  const [data, setData] = useState<Array<Record<string, any>>>([]);
-  const [filtered, setFiltered] = useState<Array<Record<string, any>>>([]);
-  const [columns, setColumns] = useState<string[]>([]);
+function DataPanel({
+  apiBaseUrl,
+  token,
+  dataset,
+  onDatasetChange,
+}: {
+  apiBaseUrl: string;
+  token: string;
+  dataset: { file?: File | null; rows: Array<Record<string, any>>; columns: string[] };
+  onDatasetChange: (d: { file?: File | null; rows: Array<Record<string, any>>; columns: string[] }) => void;
+}) {
+  const [data, setData] = useState<Array<Record<string, any>>>(dataset.rows ?? []);
+  const [filtered, setFiltered] = useState<Array<Record<string, any>>>(dataset.rows ?? []);
+  const [columns, setColumns] = useState<string[]>(dataset.columns ?? []);
   const [tab, setTab] = useState<"table" | "summary" | "visuals" | "corr" | "filters" | "calib" | "export">("table");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -181,9 +196,11 @@ function DataPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error ?? "Preview failed");
       const rows = json.sample ?? [];
+      const cols = json.columns ?? [];
       setData(rows);
       setFiltered(rows);
-      setColumns(json.columns ?? []);
+      setColumns(cols);
+      onDatasetChange({ file: null, rows, columns: cols });
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -207,6 +224,7 @@ function DataPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
         setFilters({});
         setQuery("");
         setSearch("");
+        onDatasetChange({ file, rows, columns: nextCols });
       } else {
         const mergedCols = Array.from(new Set([...columns, ...nextCols]));
         const normal = rows.map((r) => normalizeRow(r, mergedCols));
@@ -215,6 +233,7 @@ function DataPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
         setColumns(mergedCols);
         setData(merged);
         setFiltered(merged);
+        onDatasetChange({ file: null, rows: merged, columns: mergedCols });
       }
     } catch (e: any) {
       setErr(String(e?.message ?? e));
@@ -276,8 +295,10 @@ function DataPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
       row[c] = "";
     });
     const withId = ensureRowId(row);
-    setData([...data, withId]);
+    const next = [...data, withId];
+    setData(next);
     setFiltered([...filtered, withId]);
+    onDatasetChange({ file: dataset.file ?? null, rows: next, columns });
   }
 
   function updateCell(idx: number, col: string, value: string) {
@@ -288,6 +309,7 @@ function DataPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     const nextData = data.map((r) => (r.__id === id ? { ...r, [col]: value } : r));
     setFiltered(nextFiltered);
     setData(nextData);
+    onDatasetChange({ file: dataset.file ?? null, rows: nextData, columns });
   }
 
   const summaryText = useMemo(() => buildSummary(filtered, numericCols), [filtered, numericCols]);
@@ -530,7 +552,17 @@ function DataPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
   );
 }
 
-function PredictPanel({ apiBaseUrl, token, meta }: { apiBaseUrl: string; token: string; meta: any }) {
+function PredictPanel({
+  apiBaseUrl,
+  token,
+  meta,
+  dataset,
+}: {
+  apiBaseUrl: string;
+  token: string;
+  meta: any;
+  dataset: { file?: File | null; rows: Array<Record<string, any>>; columns: string[] };
+}) {
   const [busy, setBusy] = useState(false);
   const [out, setOut] = useState<any>(null);
   const [inputs, setInputs] = useState<Record<string, number>>({});
@@ -554,16 +586,17 @@ function PredictPanel({ apiBaseUrl, token, meta }: { apiBaseUrl: string; token: 
 
   useEffect(() => {
     if (!meta?.input_labels) return;
+    const statsFromDataset = computeInputStatsFromDataset(meta.input_labels, dataset);
     const nextInputs: Record<string, number> = {};
     const nextRanges: Record<string, { min: number; max: number; median: number }> = {};
     for (const k of meta.input_labels) {
-      const stat = meta?.input_stats?.[k] ?? { min: 0, max: 1, median: 0 };
+      const stat = statsFromDataset[k] ?? meta?.input_stats?.[k] ?? { min: 0, max: 1, median: 0 };
       nextInputs[k] = stat.median ?? 0;
       nextRanges[k] = { min: stat.min ?? 0, max: stat.max ?? 1, median: stat.median ?? 0 };
     }
     setInputs(nextInputs);
     setRanges(nextRanges);
-  }, [meta]);
+  }, [meta, dataset.rows, dataset.columns]);
 
   useEffect(() => {
     if (!meta?.empirical_defaults) return;
@@ -969,7 +1002,7 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
               </select>
             </div>
             {surface?.Z ? (
-              <SurfaceHeatmap gridX={surface.grid_x} gridY={surface.grid_y} Z={surface.Z} x1={surface.x_name} x2={surface.y_name} />
+              <SurfaceIsoPlot gridX={surface.grid_x} gridY={surface.grid_y} Z={surface.Z} />
             ) : (
               <div className="subtitle" style={{ marginTop: 10 }}>
                 Run prediction to enable the flyrock surface.
@@ -1043,7 +1076,7 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
         headers: { ...authHeaders(token) },
         body: fd,
       });
-      const json = await res.json();
+      const json = await res.json().catch(() => ({}));
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Slope failed");
       setResp(json);
     } catch (e: any) {
@@ -1052,11 +1085,6 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
       setBusy(false);
     }
   }
-
-  useEffect(() => {
-    if (!resp?.features?.length) return;
-    run();
-  }, [params, resp?.features?.length]);
 
   return (
     <div className="card">
@@ -1132,7 +1160,7 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
         headers: { ...authHeaders(token) },
         body: fd,
       });
-      const json = await res.json();
+      const json = await res.json().catch(() => ({}));
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Delay failed");
       setResp(json);
       if (json?.points?.length) {
@@ -1245,7 +1273,15 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   );
 }
 
-function FeaturePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+function FeaturePanel({
+  apiBaseUrl,
+  token,
+  dataset,
+}: {
+  apiBaseUrl: string;
+  token: string;
+  dataset: { file?: File | null; rows: Array<Record<string, any>>; columns: string[] };
+}) {
   const [resp, setResp] = useState<any>(null);
   const [pca, setPca] = useState<any>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -1258,9 +1294,26 @@ function FeaturePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
     setBusy(true);
     setErr(null);
     try {
-      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/feature/importance?top_k=${topK}`, {
-        headers: { ...authHeaders(token) },
-      });
+      let res: Response;
+      if (dataset?.file || dataset?.rows?.length) {
+        const fd = new FormData();
+        if (dataset.file) {
+          fd.append("file", dataset.file);
+        } else {
+          const blob = datasetToCsvBlob(dataset);
+          if (blob) fd.append("file", blob, "dataset.csv");
+        }
+        fd.append("top_k", String(topK));
+        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/feature/importance`, {
+          method: "POST",
+          headers: { ...authHeaders(token) },
+          body: fd,
+        });
+      } else {
+        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/feature/importance?top_k=${topK}`, {
+          headers: { ...authHeaders(token) },
+        });
+      }
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Failed");
       setResp(json);
@@ -1279,9 +1332,25 @@ function FeaturePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
     setBusy(true);
     setErr(null);
     try {
-      const p = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/feature/pca`, {
-        headers: { ...authHeaders(token) },
-      });
+      let p: Response;
+      if (dataset?.file || dataset?.rows?.length) {
+        const fd = new FormData();
+        if (dataset.file) {
+          fd.append("file", dataset.file);
+        } else {
+          const blob = datasetToCsvBlob(dataset);
+          if (blob) fd.append("file", blob, "dataset.csv");
+        }
+        p = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/feature/pca`, {
+          method: "POST",
+          headers: { ...authHeaders(token) },
+          body: fd,
+        });
+      } else {
+        p = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/feature/pca`, {
+          headers: { ...authHeaders(token) },
+        });
+      }
       const json = await p.json();
       if (!p.ok || json?.error) throw new Error(json?.error ?? "Failed");
       setPca(json);
@@ -1476,7 +1545,7 @@ function RRChart({ rr }: { rr: any }) {
   const vlineX = (x: number) => ((Math.log10(Math.max(0.1, x)) - xmin) / (xmax - xmin)) * (w - 20) + 10;
   return (
     <div style={{ marginTop: 10 }}>
-      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
         <polyline fill="none" stroke="#60a5fa" strokeWidth="2" points={pts.join(" ")} />
         {[{ x: x20, label: "X20" }, { x: x50, label: "X50" }, { x: x80, label: "X80" }].map((m) => (
           <g key={m.label}>
@@ -1519,13 +1588,14 @@ function PlanView({
   const smin = Math.min(...ss.filter((v) => Number.isFinite(v)));
   const smax = Math.max(...ss.filter((v) => Number.isFinite(v)));
   const norm = (v: number, a: number, b: number) => (b - a === 0 ? 0.5 : (v - a) / (b - a));
+  const cutoff = timeCutoff ?? Number.POSITIVE_INFINITY;
   return (
     <div style={{ marginTop: 12 }}>
       <div className="label">Plan View (color by {colorBy}, size by {sizeBy})</div>
-      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
         {points.slice(0, 800).map((p, i) => {
           const delay = Number(p.Delay);
-          if (Number.isFinite(timeCutoff) && Number.isFinite(delay) && delay > timeCutoff) return null;
+          if (Number.isFinite(delay) && delay > cutoff) return null;
           const x = 10 + norm(p.X, xmin, xmax) * (w - 20);
           const y = 10 + (1 - norm(p.Y, ymin, ymax)) * (h - 20);
           const t = norm(Number(p[colorBy]) || 0, cmin, cmax);
@@ -1576,7 +1646,7 @@ function SurfaceHeatmap({
 
   return (
     <div style={{ marginTop: 10 }}>
-      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
         {Z.map((row, i) =>
           row.map((v, j) => {
             const t = norm(v);
@@ -1603,13 +1673,75 @@ function SurfaceHeatmap({
   );
 }
 
+function SurfaceIsoPlot({ gridX, gridY, Z }: { gridX: number[]; gridY: number[]; Z: number[][] }) {
+  if (!gridX?.length || !gridY?.length || !Z?.length) return null;
+  const w = 620;
+  const h = 360;
+  const maxZ = Math.max(...Z.flat().filter((v) => Number.isFinite(v)));
+  const minZ = Math.min(...Z.flat().filter((v) => Number.isFinite(v)));
+  const scale = 0.6;
+  const proj = (x: number, y: number, z: number) => {
+    const px = (x - y) * scale;
+    const py = (x + y) * scale * 0.5 - z * scale * 0.4;
+    return { x: px, y: py };
+  };
+  const cells: Array<{ points: string; color: string }> = [];
+  const allX: number[] = [];
+  const allY: number[] = [];
+  for (let i = 0; i < gridX.length - 1; i++) {
+    for (let j = 0; j < gridY.length - 1; j++) {
+      const z00 = Z[j]?.[i];
+      const z10 = Z[j]?.[i + 1];
+      const z01 = Z[j + 1]?.[i];
+      const z11 = Z[j + 1]?.[i + 1];
+      if (![z00, z10, z01, z11].every((v) => Number.isFinite(v))) continue;
+      const zAvg = (z00 + z10 + z01 + z11) / 4;
+      const t = (zAvg - minZ) / (maxZ - minZ || 1);
+      const color = `hsl(${220 - 200 * t}, 80%, 55%)`;
+      const p00 = proj(gridX[i], gridY[j], z00);
+      const p10 = proj(gridX[i + 1], gridY[j], z10);
+      const p11 = proj(gridX[i + 1], gridY[j + 1], z11);
+      const p01 = proj(gridX[i], gridY[j + 1], z01);
+      const pts = [p00, p10, p11, p01];
+      pts.forEach((p) => {
+        allX.push(p.x);
+        allY.push(p.y);
+      });
+      cells.push({ points: pts.map((p) => `${p.x},${p.y}`).join(" "), color });
+    }
+  }
+  const xmin = Math.min(...allX);
+  const xmax = Math.max(...allX);
+  const ymin = Math.min(...allY);
+  const ymax = Math.max(...allY);
+  const sx = (x: number) => 20 + ((x - xmin) / (xmax - xmin || 1)) * (w - 40);
+  const sy = (y: number) => h - 20 - ((y - ymin) / (ymax - ymin || 1)) * (h - 40);
+  return (
+    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
+      {cells.map((c, i) => (
+        <polygon
+          key={i}
+          points={c.points.split(" ").map((pt) => {
+            const [x, y] = pt.split(",").map(Number);
+            return `${sx(x)},${sy(y)}`;
+          }).join(" ")}
+          fill={c.color}
+          opacity={0.85}
+          stroke="#ffffff"
+          strokeWidth={0.2}
+        />
+      ))}
+    </svg>
+  );
+}
+
 function BarChart({ labels, values }: { labels: string[]; values: number[] }) {
   const w = 620;
   const h = 220;
   const vmax = Math.max(...values.map((v) => Number(v) || 0), 1);
   const barW = w / Math.max(1, labels.length);
   return (
-    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
       {values.map((v, i) => {
         const val = Number(v) || 0;
         const bh = (val / vmax) * (h - 30);
@@ -1645,7 +1777,7 @@ function BarCompareChart({
   const vmax = Math.max(...vals.map((v) => Number(v)), 1);
   const barW = w / Math.max(1, outputs.length);
   return (
-    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
       {outputs.map((o, i) => {
         const em = Number(empirical?.[o]);
         const mlv = Number(ml?.[o]);
@@ -1695,7 +1827,7 @@ function HorizontalBarChart({ labels, values }: { labels: string[]; values: numb
   const h = Math.max(180, labels.length * 18 + 30);
   const vmax = Math.max(...values.map((v) => Number(v)), 1);
   return (
-    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
       {labels.map((label, i) => {
         const y = 20 + i * 16;
         const v = Number(values[i]) || 0;
@@ -1749,7 +1881,7 @@ function ParetoScatter({ rows }: { rows: Array<Record<string, any>> }) {
   const norm = (v: number, a: number, b: number) => (b - a === 0 ? 0.5 : (v - a) / (b - a));
   return (
     <div style={{ marginTop: 10 }}>
-      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
         {rows.map((r, i) => {
           const x = 10 + norm(Number(r.cost) || 0, xmin, xmax) * (w - 20);
           const y = 10 + (1 - norm(Number(r["Oversize%"]) || 0, ymin, ymax)) * (h - 20);
@@ -1843,6 +1975,57 @@ function getNumericColumns(data: Array<Record<string, any>>, columns: string[]) 
     const vals = data.map((r) => toNum(r[c])).filter((v) => Number.isFinite(v));
     return vals.length >= Math.max(3, data.length * 0.3);
   });
+}
+
+function normalizeKey(s: string) {
+  return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+const INPUT_SYNS: Record<string, string[]> = {
+  "hole depth (m)": ["hole depth (m)", "hole depth", "depth", "depthm", "hdepthm"],
+  "hole diameter (mm)": ["hole diameter (mm)", "hole diameter", "diameter", "diametermm", "holedia"],
+  "burden (m)": ["burden (m)", "burden", "bm"],
+  "spacing (m)": ["spacing (m)", "spacing", "sm"],
+  "stemming (m)": ["stemming (m)", "stemming"],
+  "distance (m)": ["distance (m)", "distance", "monitor distance", "distancem", "r"],
+  "powder factor (kg/m³)": ["powder factor (kg/m³)", "powder factor", "powderfactorkg/m3", "pf"],
+  "rock density (t/m³)": ["rock density (t/m³)", "rock density", "density", "densityt/m3"],
+  "linear charge (kg/m)": ["linear charge (kg/m)", "linear charge", "kg/m", "chargeperm"],
+  "explosive mass (kg)": ["explosive mass (kg)", "explosive mass", "chargemass", "masskg"],
+  "blast volume (m³)": ["blast volume (m³)", "blast volume", "volume"],
+  "# holes": ["# holes", "number of holes", "noholes", "holes", "holescount"],
+};
+
+function resolveInputColumn(label: string, columns: string[]) {
+  const lower = new Map(columns.map((c) => [c.toLowerCase(), c]));
+  const norm = new Map(columns.map((c) => [normalizeKey(c), c]));
+  if (columns.includes(label)) return label;
+  if (lower.has(label.toLowerCase())) return lower.get(label.toLowerCase())!;
+  const syns = INPUT_SYNS[label.toLowerCase()] ?? [];
+  for (const s of [label, ...syns]) {
+    if (columns.includes(s)) return s;
+    if (lower.has(s.toLowerCase())) return lower.get(s.toLowerCase())!;
+    const nk = normalizeKey(s);
+    if (norm.has(nk)) return norm.get(nk)!;
+  }
+  return null;
+}
+
+function computeInputStatsFromDataset(labels: string[], dataset: { rows: Array<Record<string, any>>; columns: string[] }) {
+  const out: Record<string, { min: number; max: number; median: number }> = {};
+  if (!dataset?.rows?.length || !dataset?.columns?.length) return out;
+  labels.forEach((label) => {
+    const col = resolveInputColumn(label, dataset.columns);
+    if (!col) return;
+    const vals = dataset.rows.map((r) => toNum(r[col])).filter((v) => Number.isFinite(v));
+    if (!vals.length) return;
+    out[label] = {
+      min: quantile(vals, 0.02),
+      max: quantile(vals, 0.98),
+      median: quantile(vals, 0.5),
+    };
+  });
+  return out;
 }
 
 function quantile(arr: number[], q: number) {
@@ -2096,6 +2279,22 @@ function downloadCsv(rows: Array<Record<string, any>>, columns: string[], filena
   URL.revokeObjectURL(url);
 }
 
+function datasetToCsvBlob(dataset: { rows: Array<Record<string, any>>; columns: string[] }) {
+  if (!dataset?.rows?.length || !dataset?.columns?.length) return null;
+  const lines = [dataset.columns.join(",")];
+  dataset.rows.forEach((r) => {
+    lines.push(
+      dataset.columns
+        .map((c) => {
+          const v = String(r[c] ?? "");
+          return v.includes(",") || v.includes('"') ? `"${v.replace(/"/g, '""')}"` : v;
+        })
+        .join(",")
+    );
+  });
+  return new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+}
+
 function downloadJson(obj: Record<string, any>, filename: string) {
   const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
@@ -2144,7 +2343,7 @@ function DataPlot({
     });
     const ymax = Math.max(...counts, 1);
     return (
-      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
         {counts.map((c, i) => {
           const bw = (w - 2 * pad) / bins;
           const bh = (c / ymax) * (h - 2 * pad);
@@ -2164,7 +2363,7 @@ function DataPlot({
     const max = Math.max(...vals);
     const scaleY = (v: number) => h - pad - ((v - min) / (max - min || 1)) * (h - 2 * pad);
     return (
-      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
         <line x1={w / 2} x2={w / 2} y1={scaleY(min)} y2={scaleY(max)} stroke="#94a3b8" />
         <rect x={w / 2 - 40} y={scaleY(q3)} width={80} height={scaleY(q1) - scaleY(q3)} fill="rgba(96,165,250,0.6)" />
         <line x1={w / 2 - 40} x2={w / 2 + 40} y1={scaleY(q2)} y2={scaleY(q2)} stroke="#e2e8f0" />
@@ -2189,7 +2388,7 @@ function DataPlot({
     });
     const maxC = Math.max(...grid.flat(), 1);
     return (
-      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
         {grid.map((col, i) =>
           col.map((c, j) => {
             const bw = (w - 2 * pad) / bins;
@@ -2256,7 +2455,7 @@ function DataPlot({
     const labels = Object.keys(groups);
     const values = labels.map((k) => groups[k].reduce((a, b) => a + b, 0) / groups[k].length);
     return (
-      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
         {values.map((v, i) => {
           const bw = (w - 2 * pad) / Math.max(1, values.length);
           const bh = (v / Math.max(...values, 1)) * (h - 2 * pad);
@@ -2288,7 +2487,7 @@ function ScatterPlot({ points, width, height, fit }: { points: { x: number; y: n
     ? `${sx(xmin)},${sy(fit.a + fit.b * xmin)} ${sx(xmax)},${sy(fit.a + fit.b * xmax)}`
     : null;
   return (
-    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
       {points.map((p, i) => (
         <circle key={i} cx={sx(p.x)} cy={sy(p.y)} r={3} fill="#60a5fa" opacity={0.8} />
       ))}
@@ -2309,7 +2508,7 @@ function PolylinePlot({ points, width, height }: { points: { x: number; y: numbe
   const sy = (v: number) => height - pad - ((v - ymin) / (ymax - ymin || 1)) * (height - 2 * pad);
   const pts = points.map((p) => `${sx(p.x)},${sy(p.y)}`).join(" ");
   return (
-    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
       <polyline points={pts} fill="none" stroke="#60a5fa" strokeWidth="2" />
     </svg>
   );
@@ -2342,7 +2541,7 @@ function CorrelationHeatmap({ data, columns }: { data: Array<Record<string, any>
   const cellW = w / columns.length;
   const cellH = h / columns.length;
   return (
-    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
       {matrix.map((row, i) =>
         row.map((v, j) => {
           const t = (v + 1) / 2;
@@ -2410,7 +2609,7 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
   const col = prob == null ? "#64748b" : prob >= 0.5 ? "#22c55e" : "#ef4444";
 
   return (
-    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
       <polygon
         points={`${sx(x0)},${sy(y0)} ${sx(x1)},${sy(y1)} ${sx(x2)},${sy(y2)} ${sx(x3)},${sy(y3)}`}
         fill="#d6d7db"
@@ -2434,7 +2633,15 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
   );
 }
 
-function ParamPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+function ParamPanel({
+  apiBaseUrl,
+  token,
+  dataset,
+}: {
+  apiBaseUrl: string;
+  token: string;
+  dataset: { file?: File | null; rows: Array<Record<string, any>>; columns: string[] };
+}) {
   const [meta, setMeta] = useState<any>(null);
   const [resp, setResp] = useState<any>(null);
   const [goal, setGoal] = useState<any>(null);
@@ -2447,13 +2654,34 @@ function ParamPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   const [target, setTarget] = useState(0);
   const [grid, setGrid] = useState(25);
   const [samples, setSamples] = useState(40);
+  const [msg, setMsg] = useState(
+    "Creates an optimisation surface by minimising/maximising the chosen output.\n" +
+      "Other inputs are optimised via random sampling within observed bounds.\n\n" +
+      "Use 'Goal Seek' to set a target output and search for an input recipe."
+  );
 
   useEffect(() => {
     if (!apiBaseUrl) return;
     (async () => {
-      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/meta`, {
-        headers: { ...authHeaders(token) },
-      });
+      let res: Response;
+      if (dataset?.file || dataset?.rows?.length) {
+        const fd = new FormData();
+        if (dataset.file) {
+          fd.append("file", dataset.file);
+        } else {
+          const blob = datasetToCsvBlob(dataset);
+          if (blob) fd.append("file", blob, "dataset.csv");
+        }
+        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/meta`, {
+          method: "POST",
+          headers: { ...authHeaders(token) },
+          body: fd,
+        });
+      } else {
+        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/meta`, {
+          headers: { ...authHeaders(token) },
+        });
+      }
       const json = await res.json();
       setMeta(json);
       if (json?.outputs?.length) setOutput(json.outputs[0]);
@@ -2469,14 +2697,34 @@ function ParamPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     setBusy(true);
     setErr(null);
     try {
-      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface`, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...authHeaders(token) },
-        body: JSON.stringify({ output, x1, x2, objective, grid, samples }),
-      });
+      let res: Response;
+      if (dataset?.file || dataset?.rows?.length) {
+        const fd = new FormData();
+        if (dataset.file) {
+          fd.append("file", dataset.file);
+        } else {
+          const blob = datasetToCsvBlob(dataset);
+          if (blob) fd.append("file", blob, "dataset.csv");
+        }
+        fd.append("payload_json", JSON.stringify({ output, x1, x2, objective, grid, samples }));
+        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface/upload`, {
+          method: "POST",
+          headers: { ...authHeaders(token) },
+          body: fd,
+        });
+      } else {
+        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface`, {
+          method: "POST",
+          headers: { "content-type": "application/json", ...authHeaders(token) },
+          body: JSON.stringify({ output, x1, x2, objective, grid, samples }),
+        });
+      }
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Surface failed");
       setResp(json);
+      setMsg(
+        `Optimised surface built.\nOutput: ${json.output}\nAxes: ${json.x1}, ${json.x2}\nBest value: ${formatNum(json?.best?.value)}`
+      );
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -2489,14 +2737,34 @@ function ParamPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     setBusy(true);
     setErr(null);
     try {
-      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/goal-seek`, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...authHeaders(token) },
-        body: JSON.stringify({ output, target }),
-      });
+      let res: Response;
+      if (dataset?.file || dataset?.rows?.length) {
+        const fd = new FormData();
+        if (dataset.file) {
+          fd.append("file", dataset.file);
+        } else {
+          const blob = datasetToCsvBlob(dataset);
+          if (blob) fd.append("file", blob, "dataset.csv");
+        }
+        fd.append("payload_json", JSON.stringify({ output, target }));
+        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/goal-seek/upload`, {
+          method: "POST",
+          headers: { ...authHeaders(token) },
+          body: fd,
+        });
+      } else {
+        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/goal-seek`, {
+          method: "POST",
+          headers: { "content-type": "application/json", ...authHeaders(token) },
+          body: JSON.stringify({ output, target }),
+        });
+      }
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Goal seek failed");
       setGoal(json);
+      setMsg(
+        `Goal seek target: ${formatNum(json?.target)}\nPredicted: ${formatNum(json?.best?.predicted)}`
+      );
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -2507,8 +2775,9 @@ function ParamPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   return (
     <div className="card">
       <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Parameter Optimisation</div>
-      <div className="subtitle">Using default dataset: combinedv2Orapa.csv</div>
-      <div className="grid3" style={{ marginTop: 10 }}>
+      <div className="subtitle">Mirror of the local optimisation surface + goal seek.</div>
+
+      <div style={{ marginTop: 10 }} className="grid3">
         <div>
           <label className="label">Output</label>
           <select className="input" value={output} onChange={(e) => setOutput(e.target.value)}>
@@ -2518,7 +2787,7 @@ function ParamPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
           </select>
         </div>
         <div>
-          <label className="label">X-axis</label>
+          <label className="label">Input 1 (X-axis)</label>
           <select className="input" value={x1} onChange={(e) => setX1(e.target.value)}>
             {(meta?.inputs ?? []).map((o: string) => (
               <option key={o} value={o}>{o}</option>
@@ -2526,7 +2795,7 @@ function ParamPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
           </select>
         </div>
         <div>
-          <label className="label">Y-axis</label>
+          <label className="label">Input 2 (Y-axis)</label>
           <select className="input" value={x2} onChange={(e) => setX2(e.target.value)}>
             {(meta?.inputs ?? []).map((o: string) => (
               <option key={o} value={o}>{o}</option>
@@ -2534,63 +2803,53 @@ function ParamPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
           </select>
         </div>
       </div>
-      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+
+      <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
         <button className="btn btnPrimary" onClick={runSurface} disabled={busy}>
-          {busy ? "Running…" : "Optimise Surface"}
+          {busy ? "Running…" : "Optimise & Plot Surface"}
+        </button>
+        <button className="btn" onClick={() => downloadCsv(resp?.Z?.flatMap((row: any, i: number) => row.map((z: number, j: number) => ({
+          [resp?.x1]: resp?.grid_x?.[i],
+          [resp?.x2]: resp?.grid_y?.[j],
+          [resp?.output]: z,
+        }))) ?? [], resp?.x1 ? [resp.x1, resp.x2, resp.output] : [], "param_surface.csv")} disabled={!resp?.Z}>
+          Export surface CSV
         </button>
         <select className="input" value={objective} onChange={(e) => setObjective(e.target.value as any)} style={{ width: 120 }}>
           <option value="max">Maximise</option>
           <option value="min">Minimise</option>
         </select>
-        <input
-          className="input"
-          type="number"
-          value={grid}
-          onChange={(e) => setGrid(Number(e.target.value))}
-          style={{ width: 120 }}
-          placeholder="Grid"
-        />
-        <input
-          className="input"
-          type="number"
-          value={samples}
-          onChange={(e) => setSamples(Number(e.target.value))}
-          style={{ width: 140 }}
-          placeholder="Samples"
-        />
+        <input className="input" type="number" value={grid} onChange={(e) => setGrid(Number(e.target.value))} style={{ width: 120 }} />
+        <input className="input" type="number" value={samples} onChange={(e) => setSamples(Number(e.target.value))} style={{ width: 140 }} />
       </div>
-      <div className="grid2" style={{ marginTop: 12 }}>
-        <div>
-          <label className="label">Goal Seek Target</label>
-          <input className="input" type="number" value={target} onChange={(e) => setTarget(Number(e.target.value))} />
-          <button className="btn" style={{ marginTop: 8 }} onClick={runGoal} disabled={busy}>
-            {busy ? "Running…" : "Goal Seek"}
+
+      <div className="card" style={{ marginTop: 12 }}>
+        <div className="label">Inverse Design (Goal Seek)</div>
+        <div className="grid3" style={{ marginTop: 8 }}>
+          <input className="input" type="number" value={target} onChange={(e) => setTarget(Number(e.target.value))} placeholder="Target output" />
+          <button className="btn" onClick={runGoal} disabled={busy}>
+            {busy ? "Running…" : "Run Goal Seek (All Inputs)"}
           </button>
         </div>
-        <div>{err && <div className="error">{err}</div>}</div>
       </div>
-      {resp?.best && (
-        <div className="kpi" style={{ marginTop: 12 }}>
-          <div className="kpiTitle">Best {resp.output}</div>
-          <div className="kpiValue">{Number(resp.best.value).toFixed(2)}</div>
-        </div>
-      )}
+
+      {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
+
+      <div className="card" style={{ marginTop: 12 }}>
+        <div className="label">Message</div>
+        <pre style={pre}>{msg}</pre>
+      </div>
+
       {resp?.Z && (
         <div className="card" style={{ marginTop: 12 }}>
-          <div className="label">Surface</div>
-          <SurfaceHeatmap
-            gridX={resp.grid_x}
-            gridY={resp.grid_y}
-            Z={resp.Z}
-            best={resp.best}
-            x1={resp.x1}
-            x2={resp.x2}
-          />
+          <div className="label">Optimisation Surface</div>
+          <SurfaceIsoPlot gridX={resp.grid_x} gridY={resp.grid_y} Z={resp.Z} />
         </div>
       )}
+
       {resp?.best?.inputs && (
         <div className="card" style={{ marginTop: 12 }}>
-          <div className="label">Best Inputs</div>
+          <div className="label">Optimised Other Inputs</div>
           <div className="grid3" style={{ marginTop: 8 }}>
             {Object.entries(resp.best.inputs).map(([k, v]: any) => (
               <div key={k} className="kpi">
@@ -2601,12 +2860,7 @@ function ParamPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
           </div>
         </div>
       )}
-      {goal?.best && (
-        <div className="kpi" style={{ marginTop: 12 }}>
-          <div className="kpiTitle">Goal Seek Predicted</div>
-          <div className="kpiValue">{Number(goal.best.predicted).toFixed(2)}</div>
-        </div>
-      )}
+
       {goal?.best?.inputs && (
         <div className="card" style={{ marginTop: 12 }}>
           <div className="label">Goal Seek Inputs</div>
@@ -2636,6 +2890,7 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
   const [method, setMethod] = useState("SLSQP");
   const [pareto, setPareto] = useState<any[] | null>(null);
   const [paretoBusy, setParetoBusy] = useState(false);
+  const [objectiveMode, setObjectiveMode] = useState("Min Cost + Frag + PPV/Air");
 
   useEffect(() => {
     if (!apiBaseUrl) return;
@@ -2705,45 +2960,150 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     }
   }
 
+  useEffect(() => {
+    if (objectiveMode === "Min Cost") {
+      setUseFrag(false);
+      setUsePpv(false);
+      setUseAir(false);
+    } else if (objectiveMode === "Min Cost + Frag") {
+      setUseFrag(true);
+      setUsePpv(false);
+      setUseAir(false);
+    } else {
+      setUseFrag(true);
+      setUsePpv(true);
+      setUseAir(true);
+    }
+  }, [objectiveMode]);
+
+  const groups = [
+    {
+      title: "Geometry & Pattern",
+      fields: [
+        ["d_mm", "Diameter (mm)"],
+        ["bench", "Bench height (m)"],
+        ["B", "Burden (m)"],
+        ["S", "Spacing (m)"],
+        ["sub", "Subdrilling (m)"],
+        ["stem", "Stemming (m)"],
+        ["n_holes", "Number of holes"],
+        ["hpd", "Holes per delay (HPD)"],
+        ["vol", "Block Volume (m³, 0=auto)"],
+      ],
+    },
+    {
+      title: "Explosive & Costs",
+      fields: [
+        ["rho_gcc", "Explosive density (g/cc)"],
+        ["rws", "RWS (relative strength)"],
+        ["ci", "Initiation cost / hole (BWP)"],
+        ["ce", "Explosive cost / kg (BWP)"],
+        ["cd", "Drilling cost / m (BWP)"],
+      ],
+    },
+    {
+      title: "Site Effects & Limits",
+      fields: [
+        ["R", "Distance R (m)"],
+        ["Kp", "PPV K"],
+        ["beta", "PPV β"],
+        ["ppv_lim", "PPV limit (mm/s)"],
+        ["Ka", "Airblast K_air"],
+        ["Ba", "Airblast B_air"],
+        ["air_lim", "Airblast limit (dB)"],
+      ],
+    },
+    {
+      title: "Fragmentation (Kuz–Ram / Rosin–Rammler)",
+      fields: [
+        ["Ak", "Rock factor A (Kuz–Ram)"],
+        ["nrr", "Uniformity n (RR)"],
+        ["x50_target", "Target X50 (mm)"],
+        ["x_ov", "Oversize threshold (mm)"],
+        ["ov_max", "Allow oversize (%)"],
+      ],
+    },
+    {
+      title: "Engineering Constraints",
+      fields: [
+        ["Bmin", "Burden min (m)"],
+        ["Bmax", "Burden max (m)"],
+        ["kS_min", "Spacing/Burden min"],
+        ["kS_max", "Spacing/Burden max"],
+        ["kStem_min", "Stemming/Burden min"],
+        ["kStem_max", "Stemming/Burden max"],
+        ["kSub_min", "Subdrill/Burden min"],
+        ["kSub_max", "Subdrill/Burden max"],
+        ["stiff_min", "Stiffness ratio min (Bench/B)"],
+        ["stiff_max", "Stiffness ratio max (Bench/B)"],
+      ],
+    },
+  ];
+
   return (
     <div className="card">
       <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Cost Optimisation</div>
-      <div className="subtitle">Mirrors the CTk cost model with KPI + Pareto visuals.</div>
-      <div className="grid3" style={{ marginTop: 10 }}>
-        {Object.keys(defaults).map((k) => (
-          <div key={k}>
-            <label className="label">{k}</label>
-            <input
-              className="input"
-              type="number"
-              value={defaults[k]}
-              onChange={(e) => setDefaults({ ...defaults, [k]: Number(e.target.value) })}
-            />
+      <div className="subtitle">Matches the local CTk layout and naming.</div>
+
+      <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
+        {groups.map((group) => (
+          <div key={group.title} className="card">
+            <div className="label">{group.title}</div>
+            <div className="grid3" style={{ marginTop: 8 }}>
+              {group.fields.map(([key, label]) => (
+                <div key={key}>
+                  <label className="label">{label}</label>
+                  <input
+                    className="input"
+                    type="number"
+                    value={key === "ov_max" ? (defaults[key] ?? 0) * 100 : defaults[key] ?? ""}
+                    onChange={(e) =>
+                      setDefaults({
+                        ...defaults,
+                        [key]: key === "ov_max" ? Number(e.target.value) / 100 : Number(e.target.value),
+                      })
+                    }
+                  />
+                </div>
+              ))}
+            </div>
           </div>
         ))}
-      </div>
-      <div className="grid3" style={{ marginTop: 12 }}>
-        <div>
-          <label className="label">Method</label>
-          <select className="input" value={method} onChange={(e) => setMethod(e.target.value)}>
-            <option value="SLSQP">SLSQP</option>
-            <option value="trust-constr">trust-constr</option>
-          </select>
-        </div>
-        <div>
-          <label className="label">Weights</label>
-          <div className="grid3">
-            <input className="input" type="number" value={weights.frag} onChange={(e) => setWeights({ ...weights, frag: Number(e.target.value) })} />
-            <input className="input" type="number" value={weights.ppv} onChange={(e) => setWeights({ ...weights, ppv: Number(e.target.value) })} />
-            <input className="input" type="number" value={weights.air} onChange={(e) => setWeights({ ...weights, air: Number(e.target.value) })} />
-          </div>
-        </div>
-        <div>
-          <label className="label">Constraints</label>
-          <div style={{ display: "grid", gap: 6 }}>
-            <label className="label"><input type="checkbox" checked={useFrag} onChange={(e) => setUseFrag(e.target.checked)} /> Use fragmentation</label>
-            <label className="label"><input type="checkbox" checked={usePpv} onChange={(e) => setUsePpv(e.target.checked)} /> Constrain PPV</label>
-            <label className="label"><input type="checkbox" checked={useAir} onChange={(e) => setUseAir(e.target.checked)} /> Constrain Airblast</label>
+
+        <div className="card">
+          <div className="label">Optimisation Settings</div>
+          <div className="grid3" style={{ marginTop: 8 }}>
+            <div>
+              <label className="label">Method</label>
+              <select className="input" value={method} onChange={(e) => setMethod(e.target.value)}>
+                <option value="SLSQP">SLSQP</option>
+                <option value="trust-constr">trust-constr</option>
+              </select>
+            </div>
+            <div>
+              <label className="label">Objective</label>
+              <select className="input" value={objectiveMode} onChange={(e) => setObjectiveMode(e.target.value)}>
+                <option value="Min Cost">Min Cost</option>
+                <option value="Min Cost + Frag">Min Cost + Frag</option>
+                <option value="Min Cost + Frag + PPV/Air">Min Cost + Frag + PPV/Air</option>
+              </select>
+            </div>
+            <div>
+              <label className="label">Weights (Frag / PPV / Air)</label>
+              <div className="grid3">
+                <input className="input" type="number" value={weights.frag} onChange={(e) => setWeights({ ...weights, frag: Number(e.target.value) })} />
+                <input className="input" type="number" value={weights.ppv} onChange={(e) => setWeights({ ...weights, ppv: Number(e.target.value) })} />
+                <input className="input" type="number" value={weights.air} onChange={(e) => setWeights({ ...weights, air: Number(e.target.value) })} />
+              </div>
+            </div>
+            <div>
+              <label className="label">Objective Toggles</label>
+              <div style={{ display: "grid", gap: 6 }}>
+                <label className="label"><input type="checkbox" checked={useFrag} onChange={(e) => setUseFrag(e.target.checked)} /> Use fragmentation in objective</label>
+                <label className="label"><input type="checkbox" checked={usePpv} onChange={(e) => setUsePpv(e.target.checked)} /> Constrain PPV</label>
+                <label className="label"><input type="checkbox" checked={useAir} onChange={(e) => setUseAir(e.target.checked)} /> Constrain Airblast</label>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -2814,8 +3174,8 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
 }
 
 const pre = {
-  background: "#0b1220",
-  color: "#e2e8f0",
+  background: "#f8fafc",
+  color: "#111827",
   borderRadius: 12,
   padding: 14,
   overflow: "auto",
