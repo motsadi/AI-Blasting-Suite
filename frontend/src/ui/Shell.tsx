@@ -136,36 +136,54 @@ function PlaceholderPanel({ title }: { title: string }) {
 }
 
 function DataPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
-  const [preview, setPreview] = useState<any>(null);
-  const [busy, setBusy] = useState(false);
+  const [data, setData] = useState<Array<Record<string, any>>>([]);
+  const [filtered, setFiltered] = useState<Array<Record<string, any>>>([]);
+  const [columns, setColumns] = useState<string[]>([]);
+  const [tab, setTab] = useState<"table" | "summary" | "visuals" | "corr" | "filters" | "calib" | "export">("table");
   const [err, setErr] = useState<string | null>(null);
-  const [file, setFile] = useState<File | null>(null);
-  const [uploadResp, setUploadResp] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("Rows: 0 | Columns: 0");
+  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
+  const [filters, setFilters] = useState<Record<string, { min?: string; max?: string }>>({});
+  const [auditInputs, setAuditInputs] = useState({ ppv: "12.5", air: "134", hpd: "1" });
+  const [calibHpd, setCalibHpd] = useState("1");
+  const [calibLog, setCalibLog] = useState<string[]>([]);
+  const [siteModel, setSiteModel] = useState<Record<string, any>>({});
+  const [plotType, setPlotType] = useState("Scatter");
+  const [xVar, setXVar] = useState("");
+  const [yVar, setYVar] = useState("");
+  const [logX, setLogX] = useState(false);
+  const [logY, setLogY] = useState(false);
+  const [loadFile, setLoadFile] = useState<File | null>(null);
+  const [appendFile, setAppendFile] = useState<File | null>(null);
 
-  async function runPreview(customFile?: File | null) {
+  const numericCols = useMemo(() => getNumericColumns(data, columns), [data, columns]);
+
+  useEffect(() => {
+    setStatus(`Rows: ${filtered.length} | Columns: ${columns.length}`);
+  }, [filtered.length, columns.length]);
+
+  useEffect(() => {
+    if (!columns.length) return;
+    if (!xVar) setXVar(columns[0]);
+    if (!yVar) setYVar(columns[1] ?? columns[0]);
+  }, [columns, xVar, yVar]);
+
+  async function loadDefaultSample() {
     if (!apiBaseUrl) return;
-    setErr(null);
     setBusy(true);
+    setErr(null);
     try {
-      if (customFile) {
-        const fd = new FormData();
-        fd.append("file", customFile);
-        const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/data/preview`, {
-          method: "POST",
-          headers: { ...authHeaders(token) },
-          body: fd,
-        });
-        const json = await res.json();
-        if (!res.ok) throw new Error(json?.error ?? "Preview failed");
-        setPreview(json);
-        return;
-      }
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/data/default`, {
         headers: { ...authHeaders(token) },
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error ?? "Preview failed");
-      setPreview(json);
+      const rows = json.sample ?? [];
+      setData(rows);
+      setFiltered(rows);
+      setColumns(json.columns ?? []);
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -173,100 +191,341 @@ function DataPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     }
   }
 
-  async function runUpload() {
-    if (!apiBaseUrl || !file) return;
-    setErr(null);
+  async function handleLoad(file: File | null, append: boolean) {
+    if (!file) return;
     setBusy(true);
-    setUploadResp(null);
+    setErr(null);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/data/upload`, {
-        method: "POST",
-        headers: { ...authHeaders(token) },
-        body: fd,
-      });
-      const json = await res.json();
-      if (!res.ok || json?.error) throw new Error(json?.error ?? "Upload failed");
-      setUploadResp(json);
+      const text = await file.text();
+      const parsed = parseCsv(text);
+      const nextCols = parsed.columns;
+      const rows = parsed.rows;
+      if (!append) {
+        setColumns(nextCols);
+        setData(rows);
+        setFiltered(rows);
+        setFilters({});
+        setQuery("");
+        setSearch("");
+      } else {
+        const mergedCols = Array.from(new Set([...columns, ...nextCols]));
+        const normal = rows.map((r) => normalizeRow(r, mergedCols));
+        const existing = data.map((r) => normalizeRow(r, mergedCols));
+        const merged = [...existing, ...normal];
+        setColumns(mergedCols);
+        setData(merged);
+        setFiltered(merged);
+      }
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  function resetFilters() {
+    setFiltered(data);
+    setFilters({});
+    setQuery("");
+    setSearch("");
+  }
+
+  function applySearch() {
+    if (!search.trim()) {
+      setFiltered(data);
+      return;
+    }
+    const q = search.toLowerCase();
+    const rows = data.filter((row) =>
+      columns.some((c) => String(row[c] ?? "").toLowerCase().includes(q))
+    );
+    setFiltered(rows);
+  }
+
+  function applyFilters() {
+    let rows = [...data];
+    numericCols.forEach((c) => {
+      const f = filters[c];
+      if (!f) return;
+      if (f.min != null && f.min !== "") {
+        const v = Number(f.min);
+        if (Number.isFinite(v)) rows = rows.filter((r) => Number(r[c]) >= v);
+      }
+      if (f.max != null && f.max !== "") {
+        const v = Number(f.max);
+        if (Number.isFinite(v)) rows = rows.filter((r) => Number(r[c]) <= v);
+      }
+    });
+    setFiltered(rows);
+  }
+
+  function applyQuery() {
+    if (!query.trim()) return;
+    try {
+      const fn = buildRowQuery(query);
+      setFiltered(filtered.filter((row) => fn(row)));
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    }
+  }
+
+  function addRow() {
+    if (!columns.length) return;
+    const row: Record<string, any> = {};
+    columns.forEach((c) => {
+      row[c] = "";
+    });
+    const withId = ensureRowId(row);
+    setData([...data, withId]);
+    setFiltered([...filtered, withId]);
+  }
+
+  function updateCell(idx: number, col: string, value: string) {
+    const row = filtered[idx];
+    if (!row) return;
+    const id = row.__id;
+    const nextFiltered = filtered.map((r, i) => (i === idx ? { ...r, [col]: value } : r));
+    const nextData = data.map((r) => (r.__id === id ? { ...r, [col]: value } : r));
+    setFiltered(nextFiltered);
+    setData(nextData);
+  }
+
+  const summaryText = useMemo(() => buildSummary(filtered, numericCols), [filtered, numericCols]);
+  const auditText = useMemo(
+    () => buildAudit(filtered, auditInputs),
+    [filtered, auditInputs]
+  );
+
+  function runCalibration(kind: "ppv" | "air" | "frag") {
+    const result = calibrateSiteModel(kind, filtered, calibHpd);
+    if (result.error) {
+      setErr(result.error);
+      return;
+    }
+    if (result.entry) {
+      setCalibLog((prev) => [...prev, result.entry]);
+    }
+    if (result.modelUpdate) {
+      setSiteModel((prev) => ({ ...prev, ...result.modelUpdate }));
     }
   }
 
   return (
     <div className="card">
-      <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Data</div>
-      <div className="subtitle">Upload a CSV or preview the default combined dataset.</div>
-
-      <div style={{ marginTop: 12 }} className="grid2">
+      <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
         <div>
-          <label className="label">Upload CSV</label>
-          <input
-            className="input"
-            type="file"
-            accept=".csv"
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-          />
-          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-            <button className="btn btnPrimary" onClick={() => runPreview(file)} disabled={busy || !file}>
-              {busy ? "Loading…" : "Preview Upload"}
-            </button>
-            <button className="btn" onClick={() => runPreview(null)} disabled={busy}>
-              {busy ? "Loading…" : "Preview Default"}
-            </button>
-            <button className="btn" onClick={runUpload} disabled={busy || !file}>
-              {busy ? "Uploading…" : "Upload to GCS"}
-            </button>
-          </div>
+          <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Data Management</div>
+          <div className="subtitle">Mirror of the local Data Management module.</div>
         </div>
-        <div>
-          {err && <div className="error">{err}</div>}
-          {uploadResp?.gs_uri && (
-            <div className="pill" style={{ marginTop: 8 }}>
-              Uploaded: {uploadResp.gs_uri}
-            </div>
-          )}
-          {preview && (
-            <div style={{ marginTop: 8 }}>
-              <div className="label">Rows: {preview.rows}</div>
-              <div className="label">Columns: {preview.columns?.length}</div>
-            </div>
-          )}
-        </div>
+        <div className="pill">{status}</div>
       </div>
 
-      {preview?.sample?.length ? (
-        <div style={{ marginTop: 12, overflow: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-            <thead>
-              <tr>
-                {preview.columns.map((c: string) => (
-                  <th
-                    key={c}
-                    style={{ textAlign: "left", borderBottom: "1px solid var(--border)", padding: "6px 4px" }}
-                  >
-                    {c}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {preview.sample.map((row: any, idx: number) => (
-                <tr key={idx}>
-                  {preview.columns.map((c: string) => (
-                    <td key={c} style={{ padding: "6px 4px", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                      {row?.[c] ?? ""}
-                    </td>
+      <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 8 }}>
+        <input className="input" type="file" accept=".csv" onChange={(e) => setLoadFile(e.target.files?.[0] ?? null)} />
+        <button className="btn btnPrimary" onClick={() => handleLoad(loadFile, false)} disabled={busy || !loadFile}>
+          {busy ? "Loading…" : "Load CSV"}
+        </button>
+        <input className="input" type="file" accept=".csv" onChange={(e) => setAppendFile(e.target.files?.[0] ?? null)} />
+        <button className="btn" onClick={() => handleLoad(appendFile, true)} disabled={busy || !appendFile}>
+          {busy ? "Loading…" : "Append CSV"}
+        </button>
+        <button className="btn" onClick={resetFilters} disabled={busy}>
+          Reset Filters
+        </button>
+        <button className="btn" onClick={loadDefaultSample} disabled={busy}>
+          Load Default Sample
+        </button>
+      </div>
+
+      {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
+
+      <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {[
+          { key: "table", label: "Table" },
+          { key: "summary", label: "Summary" },
+          { key: "visuals", label: "Visuals" },
+          { key: "corr", label: "Correlations" },
+          { key: "filters", label: "Filters" },
+          { key: "calib", label: "Calibration" },
+          { key: "export", label: "Export" },
+        ].map((t) => (
+          <button
+            key={t.key}
+            className={`btn ${tab === t.key ? "btnPrimary" : ""}`}
+            onClick={() => setTab(t.key as any)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "table" && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input className="input" placeholder="Search (contains)" value={search} onChange={(e) => setSearch(e.target.value)} />
+            <button className="btn" onClick={applySearch}>Apply</button>
+            <button className="btn" onClick={() => { setSearch(""); setFiltered(data); }}>Clear</button>
+            <button className="btn" onClick={addRow}>Add Row</button>
+          </div>
+          <div style={{ marginTop: 12, overflow: "auto", maxHeight: 520 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr>
+                  {columns.map((c) => (
+                    <th key={c} style={{ textAlign: "left", borderBottom: "1px solid var(--border)", padding: "6px 4px" }}>{c}</th>
                   ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {filtered.map((row, idx) => (
+                  <tr key={idx}>
+                    {columns.map((c) => (
+                      <td key={c} style={{ padding: "6px 4px", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                        <input
+                          className="input"
+                          style={{ padding: "4px 6px" }}
+                          value={row[c] ?? ""}
+                          onChange={(e) => updateCell(idx, c, e.target.value)}
+                        />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
-      ) : null}
+      )}
+
+      {tab === "summary" && (
+        <div style={{ marginTop: 12 }} className="grid2">
+          <div className="card">
+            <div className="label">Descriptive Statistics</div>
+            <pre style={pre}>{summaryText || "No data loaded."}</pre>
+          </div>
+          <div className="card">
+            <div className="label">Quick Audits (computed columns)</div>
+            <div className="grid3" style={{ marginTop: 8 }}>
+              <input className="input" placeholder="PPV limit" value={auditInputs.ppv} onChange={(e) => setAuditInputs({ ...auditInputs, ppv: e.target.value })} />
+              <input className="input" placeholder="Air limit" value={auditInputs.air} onChange={(e) => setAuditInputs({ ...auditInputs, air: e.target.value })} />
+              <input className="input" placeholder="HPD" value={auditInputs.hpd} onChange={(e) => setAuditInputs({ ...auditInputs, hpd: e.target.value })} />
+            </div>
+            <pre style={{ ...pre, marginTop: 10 }}>{auditText || "No KPIs computed."}</pre>
+          </div>
+        </div>
+      )}
+
+      {tab === "visuals" && (
+        <div style={{ marginTop: 12 }} className="grid2">
+          <div className="card">
+            <div className="label">Plot Controls</div>
+            <select className="input" value={plotType} onChange={(e) => setPlotType(e.target.value)}>
+              {[
+                "Scatter",
+                "Line",
+                "Bar",
+                "Histogram",
+                "Box",
+                "Hexbin",
+                "PPV vs Scaled Distance",
+                "Airblast Scaling",
+                "Fragmentation vs PF",
+              ].map((v) => (
+                <option key={v} value={v}>{v}</option>
+              ))}
+            </select>
+            <div className="grid2" style={{ marginTop: 8 }}>
+              <select className="input" value={xVar} onChange={(e) => setXVar(e.target.value)}>
+                {columns.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <select className="input" value={yVar} onChange={(e) => setYVar(e.target.value)}>
+                {columns.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <label className="label"><input type="checkbox" checked={logX} onChange={(e) => setLogX(e.target.checked)} /> Log X</label>
+              <label className="label"><input type="checkbox" checked={logY} onChange={(e) => setLogY(e.target.checked)} /> Log Y</label>
+            </div>
+          </div>
+          <div className="card">
+            <div className="label">Plot</div>
+            <DataPlot
+              type={plotType}
+              data={filtered}
+              x={xVar}
+              y={yVar}
+              logX={logX}
+              logY={logY}
+            />
+          </div>
+        </div>
+      )}
+
+      {tab === "corr" && (
+        <div style={{ marginTop: 12 }} className="card">
+          <div className="label">Correlation Heatmap</div>
+          <CorrelationHeatmap data={filtered} columns={numericCols} />
+        </div>
+      )}
+
+      {tab === "filters" && (
+        <div style={{ marginTop: 12 }} className="card">
+          <div className="label">Filters</div>
+          <div className="grid3" style={{ marginTop: 8 }}>
+            {numericCols.map((c) => (
+              <div key={c}>
+                <div className="label">{c}</div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input className="input" placeholder="min" value={filters[c]?.min ?? ""} onChange={(e) => setFilters({ ...filters, [c]: { ...(filters[c] ?? {}), min: e.target.value } })} />
+                  <input className="input" placeholder="max" value={filters[c]?.max ?? ""} onChange={(e) => setFilters({ ...filters, [c]: { ...(filters[c] ?? {}), max: e.target.value } })} />
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <input className="input" placeholder="Query (use backticks for columns)" value={query} onChange={(e) => setQuery(e.target.value)} />
+          </div>
+          <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+            <button className="btn btnPrimary" onClick={applyFilters}>Apply Filters</button>
+            <button className="btn" onClick={applyQuery}>Apply Query</button>
+            <button className="btn" onClick={resetFilters}>Clear Filters</button>
+          </div>
+        </div>
+      )}
+
+      {tab === "calib" && (
+        <div style={{ marginTop: 12 }} className="grid2">
+          <div className="card">
+            <div className="label">Site Calibration</div>
+            <input className="input" placeholder="HPD (holes/delay)" value={calibHpd} onChange={(e) => setCalibHpd(e.target.value)} />
+            <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
+              <button className="btn" onClick={() => runCalibration("ppv")}>Calibrate PPV (K, β)</button>
+              <button className="btn" onClick={() => runCalibration("air")}>Calibrate Airblast (K_air, B_air)</button>
+              <button className="btn" onClick={() => runCalibration("frag")}>Calibrate Fragmentation (A_kuz, exponent)</button>
+              <button className="btn" onClick={() => downloadJson(siteModel, "site_model.json")}>Save Site Model JSON</button>
+            </div>
+          </div>
+          <div className="card">
+            <div className="label">Calibration Log</div>
+            <pre style={pre}>{calibLog.join("\n") || "No calibration yet."}</pre>
+          </div>
+        </div>
+      )}
+
+      {tab === "export" && (
+        <div style={{ marginTop: 12 }} className="card">
+          <div className="label">Export</div>
+          <button className="btn btnPrimary" onClick={() => downloadCsv(filtered, columns, "filtered.csv")}>
+            Export Filtered → CSV
+          </button>
+          <button className="btn" style={{ marginLeft: 8 }} onClick={() => downloadCsv(filtered, columns, "filtered.xlsx")}>
+            Export Filtered → Excel
+          </button>
+          <div className="subtitle" style={{ marginTop: 10 }}>
+            Tip: Use Filters/Query to subset by compliance (e.g., `Ground Vibration <= 12.5`).
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -604,6 +863,10 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
+  const [colorBy, setColorBy] = useState("Delay");
+  const [sizeBy, setSizeBy] = useState("Delay");
+  const [animate, setAnimate] = useState(false);
+  const [timeCutoff, setTimeCutoff] = useState<number | undefined>(undefined);
 
   async function run() {
     if (!apiBaseUrl) return;
@@ -620,12 +883,39 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Delay failed");
       setResp(json);
+      if (json?.points?.length) {
+        const keys = Object.keys(json.points[0] ?? {});
+        if (keys.includes("Delay")) {
+          setColorBy("Delay");
+          setSizeBy("Delay");
+          const delays = json.points.map((p: any) => Number(p.Delay)).filter((v: number) => Number.isFinite(v));
+          if (delays.length) {
+            setTimeCutoff(Math.min(...delays));
+          }
+        }
+      }
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
       setBusy(false);
     }
   }
+
+  useEffect(() => {
+    if (!animate || !resp?.points?.length) return;
+    const delays = resp.points.map((p: any) => Number(p.Delay)).filter((v: number) => Number.isFinite(v));
+    if (!delays.length) return;
+    const minD = Math.min(...delays);
+    const maxD = Math.max(...delays);
+    let t = timeCutoff ?? minD;
+    const step = (maxD - minD) / 50;
+    const id = setInterval(() => {
+      t += step;
+      if (t > maxD) t = minD;
+      setTimeCutoff(t);
+    }, 200);
+    return () => clearInterval(id);
+  }, [animate, resp, timeCutoff]);
 
   return (
     <div className="card">
@@ -637,7 +927,7 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
           <input className="input" type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
         </div>
         <div style={{ display: "flex", alignItems: "flex-end" }}>
-          <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict"}</button>
+          <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict Delays"}</button>
         </div>
       </div>
       {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
@@ -647,7 +937,58 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
           <div className="kpiValue">{resp.points.length}</div>
         </div>
       ) : null}
-      {resp?.points?.length ? <PlanView points={resp.points} /> : null}
+      {resp?.points?.length ? (
+        <div style={{ marginTop: 12 }}>
+          {(() => {
+            const delays = resp.points.map((p: any) => Number(p.Delay)).filter((v: number) => Number.isFinite(v));
+            const minDelay = delays.length ? Math.min(...delays) : 0;
+            const maxDelay = delays.length ? Math.max(...delays) : 100;
+            return (
+              <>
+          <div className="grid3">
+            <div>
+              <label className="label">Color by</label>
+              <select className="input" value={colorBy} onChange={(e) => setColorBy(e.target.value)}>
+                {Object.keys(resp.points[0] ?? {}).map((k) => (
+                  <option key={k} value={k}>{k}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Size by</label>
+              <select className="input" value={sizeBy} onChange={(e) => setSizeBy(e.target.value)}>
+                {Object.keys(resp.points[0] ?? {}).map((k) => (
+                  <option key={k} value={k}>{k}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Simulate blast</label>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input type="checkbox" checked={animate} onChange={(e) => setAnimate(e.target.checked)} />
+                <input
+                  className="input"
+                  type="range"
+                  min={minDelay}
+                  max={maxDelay}
+                  step="1"
+                  value={timeCutoff ?? minDelay}
+                  onChange={(e) => setTimeCutoff(Number(e.target.value))}
+                />
+              </div>
+            </div>
+          </div>
+          <PlanView points={resp.points} colorBy={colorBy} sizeBy={sizeBy} timeCutoff={animate ? timeCutoff : undefined} />
+          <div style={{ marginTop: 10 }}>
+            <button className="btn" onClick={() => downloadCsv(resp.points, Object.keys(resp.points[0] ?? {}), "delay_predictions.csv")}>
+              Export CSV
+            </button>
+          </div>
+              </>
+            );
+          })()}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -826,29 +1167,46 @@ function RRChart({ rr }: { rr: any }) {
   );
 }
 
-function PlanView({ points }: { points: Array<{ X: number; Y: number; Delay: number }> }) {
+function PlanView({
+  points,
+  colorBy,
+  sizeBy,
+  timeCutoff,
+}: {
+  points: Array<Record<string, any>>;
+  colorBy: string;
+  sizeBy: string;
+  timeCutoff?: number;
+}) {
   const w = 620;
   const h = 360;
-  const xs = points.map((p) => p.X);
-  const ys = points.map((p) => p.Y);
-  const ds = points.map((p) => p.Delay);
+  const xs = points.map((p) => Number(p.X));
+  const ys = points.map((p) => Number(p.Y));
+  const cs = points.map((p) => Number(p[colorBy]));
+  const ss = points.map((p) => Number(p[sizeBy]));
+  const ds = points.map((p) => Number(p.Delay));
   const xmin = Math.min(...xs);
   const xmax = Math.max(...xs);
   const ymin = Math.min(...ys);
   const ymax = Math.max(...ys);
-  const dmin = Math.min(...ds);
-  const dmax = Math.max(...ds);
+  const cmin = Math.min(...cs.filter((v) => Number.isFinite(v)));
+  const cmax = Math.max(...cs.filter((v) => Number.isFinite(v)));
+  const smin = Math.min(...ss.filter((v) => Number.isFinite(v)));
+  const smax = Math.max(...ss.filter((v) => Number.isFinite(v)));
   const norm = (v: number, a: number, b: number) => (b - a === 0 ? 0.5 : (v - a) / (b - a));
   return (
     <div style={{ marginTop: 12 }}>
-      <div className="label">Plan View (color by delay)</div>
+      <div className="label">Plan View (color by {colorBy}, size by {sizeBy})</div>
       <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
         {points.slice(0, 800).map((p, i) => {
+          const delay = Number(p.Delay);
+          if (Number.isFinite(timeCutoff) && Number.isFinite(delay) && delay > timeCutoff) return null;
           const x = 10 + norm(p.X, xmin, xmax) * (w - 20);
           const y = 10 + (1 - norm(p.Y, ymin, ymax)) * (h - 20);
-          const t = norm(p.Delay, dmin, dmax);
+          const t = norm(Number(p[colorBy]) || 0, cmin, cmax);
+          const s = norm(Number(p[sizeBy]) || 0, smin, smax);
           const color = `hsl(${(1 - t) * 220}, 80%, 60%)`;
-          return <circle key={i} cx={x} cy={y} r={3} fill={color} />;
+          return <circle key={i} cx={x} cy={y} r={2 + s * 4} fill={color} />;
         })}
       </svg>
     </div>
@@ -971,6 +1329,595 @@ function ParetoScatter({ rows }: { rows: Array<Record<string, any>> }) {
         X: Cost · Y: Oversize% · Color: PPV
       </div>
     </div>
+  );
+}
+
+let _rowIdSeed = 1;
+
+function ensureRowId(row: Record<string, any>) {
+  if (row.__id == null) {
+    row.__id = _rowIdSeed++;
+  }
+  return row;
+}
+
+function parseCsv(text: string) {
+  const rows: string[][] = [];
+  let current: string[] = [];
+  let cell = "";
+  let inQuotes = false;
+  const pushCell = () => {
+    current.push(cell);
+    cell = "";
+  };
+  const pushRow = () => {
+    rows.push(current);
+    current = [];
+  };
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"') {
+      if (inQuotes && text[i + 1] === '"') {
+        cell += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === "," && !inQuotes) {
+      pushCell();
+    } else if ((ch === "\n" || ch === "\r") && !inQuotes) {
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+      pushCell();
+      pushRow();
+    } else {
+      cell += ch;
+    }
+  }
+  if (cell.length || current.length) {
+    pushCell();
+    pushRow();
+  }
+  const cleaned = rows.filter((r) => r.some((v) => String(v).trim() !== ""));
+  if (!cleaned.length) return { columns: [], rows: [] as Array<Record<string, any>> };
+  const columns = cleaned[0].map((c) => c.trim());
+  const dataRows = cleaned.slice(1).map((r) => {
+    const obj: Record<string, any> = {};
+    columns.forEach((c, idx) => {
+      obj[c] = r[idx] ?? "";
+    });
+    return ensureRowId(obj);
+  });
+  return { columns, rows: dataRows };
+}
+
+function normalizeRow(row: Record<string, any>, columns: string[]) {
+  const out: Record<string, any> = {};
+  if (row.__id != null) out.__id = row.__id;
+  columns.forEach((c) => {
+    out[c] = row[c] ?? "";
+  });
+  return ensureRowId(out);
+}
+
+function toNum(v: any) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function getNumericColumns(data: Array<Record<string, any>>, columns: string[]) {
+  return columns.filter((c) => {
+    const vals = data.map((r) => toNum(r[c])).filter((v) => Number.isFinite(v));
+    return vals.length >= Math.max(3, data.length * 0.3);
+  });
+}
+
+function quantile(arr: number[], q: number) {
+  if (!arr.length) return NaN;
+  const sorted = [...arr].sort((a, b) => a - b);
+  const pos = (sorted.length - 1) * q;
+  const base = Math.floor(pos);
+  const rest = pos - base;
+  if (sorted[base + 1] !== undefined) {
+    return sorted[base] + rest * (sorted[base + 1] - sorted[base]);
+  }
+  return sorted[base];
+}
+
+function buildSummary(rows: Array<Record<string, any>>, numericCols: string[]) {
+  if (!rows.length) return "";
+  const lines: string[] = [];
+  lines.push("Numeric Summary");
+  lines.push("col | count | mean | std | min | 25% | 50% | 75% | max");
+  numericCols.forEach((c) => {
+    const vals = rows.map((r) => toNum(r[c])).filter((v) => Number.isFinite(v));
+    if (!vals.length) return;
+    const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const std = Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, vals.length - 1));
+    lines.push(
+      `${c} | ${vals.length} | ${mean.toFixed(3)} | ${std.toFixed(3)} | ${Math.min(...vals).toFixed(3)} | ${quantile(vals, 0.25).toFixed(3)} | ${quantile(vals, 0.5).toFixed(3)} | ${quantile(vals, 0.75).toFixed(3)} | ${Math.max(...vals).toFixed(3)}`
+    );
+  });
+  lines.push("\nMissing values");
+  const cols = Object.keys(rows[0] ?? {});
+  cols.forEach((c) => {
+    const missing = rows.filter((r) => r[c] === "" || r[c] == null).length;
+    lines.push(`${c}: ${missing}`);
+  });
+  lines.push("\nRanges");
+  numericCols.forEach((c) => {
+    const vals = rows.map((r) => toNum(r[c])).filter((v) => Number.isFinite(v));
+    if (!vals.length) return;
+    lines.push(`${c}: min=${Math.min(...vals).toFixed(3)}, max=${Math.max(...vals).toFixed(3)}, median=${quantile(vals, 0.5).toFixed(3)}`);
+  });
+  return lines.join("\n");
+}
+
+function estimateMassPerHole(rows: Array<Record<string, any>>) {
+  const m1 = rows.map((r) => {
+    const lin = toNum(r["Linear charge"]);
+    const depth = toNum(r["Hole depth"]);
+    const stem = toNum(r["Stemming"]);
+    if (!Number.isFinite(lin) || !Number.isFinite(depth) || !Number.isFinite(stem)) return NaN;
+    return lin * Math.max(0, depth - stem);
+  });
+  const m2 = rows.map((r) => {
+    const exp = toNum(r["Explosive mass"]);
+    const holes = toNum(r["Number of holes"]);
+    if (!Number.isFinite(exp) || !Number.isFinite(holes) || holes === 0) return NaN;
+    return exp / holes;
+  });
+  const out = rows.map((_, i) => {
+    const a = m1[i];
+    const b = m2[i];
+    if (Number.isFinite(a) && Number.isFinite(b)) return (a + b) / 2;
+    if (Number.isFinite(a)) return a;
+    if (Number.isFinite(b)) return b;
+    return NaN;
+  });
+  return out.some((v) => Number.isFinite(v)) ? out : null;
+}
+
+function getPowderFactor(row: Record<string, any>) {
+  const pf = toNum(row["Powder factor"]);
+  if (Number.isFinite(pf)) return pf;
+  const mass = toNum(row["Explosive mass"]);
+  const vol = toNum(row["Blast volume"]);
+  if (Number.isFinite(mass) && Number.isFinite(vol) && vol > 0) return mass / vol;
+  return NaN;
+}
+
+function buildAudit(rows: Array<Record<string, any>>, inputs: { ppv: string; air: string; hpd: string }) {
+  if (!rows.length) return "";
+  const out: string[] = [];
+  const ppvLim = Number(inputs.ppv);
+  const airLim = Number(inputs.air);
+  const hpd = Math.max(1, Math.floor(Number(inputs.hpd) || 1));
+  const data = rows.map((r) => ({ ...r }));
+  const mHole = estimateMassPerHole(data);
+  if (mHole) {
+    data.forEach((r, i) => {
+      if (Number.isFinite(mHole[i])) r["Mass/hole"] = mHole[i];
+      if (Number.isFinite(mHole[i])) r["Q/delay"] = hpd * mHole[i];
+    });
+  }
+  data.forEach((r) => {
+    if (Number.isFinite(toNum(r["Explosive mass"])) && Number.isFinite(toNum(r["Blast volume"]))) {
+      r["PF (from provided)"] = toNum(r["Explosive mass"]) / Math.max(1e-9, toNum(r["Blast volume"]));
+    }
+  });
+  if (Number.isFinite(ppvLim)) {
+    const vals = data.map((r) => toNum(r["Ground Vibration"])).filter((v) => Number.isFinite(v));
+    if (vals.length) {
+      const pass = vals.filter((v) => v <= ppvLim).length / vals.length;
+      out.push(`PPV pass rate (@${ppvLim} mm/s): ${(pass * 100).toFixed(1)}%`);
+    }
+  }
+  if (Number.isFinite(airLim)) {
+    const vals = data.map((r) => toNum(r["Airblast"])).filter((v) => Number.isFinite(v));
+    if (vals.length) {
+      const pass = vals.filter((v) => v <= airLim).length / vals.length;
+      out.push(`Airblast pass rate (@${airLim} dB): ${(pass * 100).toFixed(1)}%`);
+    }
+  }
+  const pfVals = data.map((r) => getPowderFactor(r)).filter((v) => Number.isFinite(v));
+  if (pfVals.length) {
+    out.push(`Powder Factor: mean=${(pfVals.reduce((a, b) => a + b, 0) / pfVals.length).toFixed(3)} kg/m³ (min=${Math.min(...pfVals).toFixed(3)}, max=${Math.max(...pfVals).toFixed(3)})`);
+  }
+  const fragVals = data.map((r) => toNum(r["Fragmentation"])).filter((v) => Number.isFinite(v));
+  if (fragVals.length) {
+    out.push(`Fragmentation X50: mean=${(fragVals.reduce((a, b) => a + b, 0) / fragVals.length).toFixed(3)} mm (min=${Math.min(...fragVals).toFixed(3)}, max=${Math.max(...fragVals).toFixed(3)})`);
+  }
+  ["Ground Vibration", "Airblast", "Powder factor", "Fragmentation"].forEach((c) => {
+    const vals = data.map((r) => toNum(r[c])).filter((v) => Number.isFinite(v));
+    if (vals.length >= 4) {
+      const q1 = quantile(vals, 0.25);
+      const q3 = quantile(vals, 0.75);
+      const iqr = q3 - q1;
+      if (Number.isFinite(iqr) && iqr > 0) {
+        const outliers = vals.filter((v) => v < q1 - 1.5 * iqr || v > q3 + 1.5 * iqr).length;
+        out.push(`Outliers ${c}: ${outliers} rows (IQR rule)`);
+      }
+    }
+  });
+  return out.join("\n");
+}
+
+function buildRowQuery(expr: string) {
+  const replaced = expr
+    .replace(/`([^`]+)`/g, (_m, p1) => `row[${JSON.stringify(p1)}]`)
+    .replace(/\band\b/gi, "&&")
+    .replace(/\bor\b/gi, "||");
+  return new Function("row", `return (${replaced});`) as (row: Record<string, any>) => boolean;
+}
+
+function linearRegression(xs: number[], ys: number[]) {
+  const n = Math.min(xs.length, ys.length);
+  if (n < 2) return null;
+  const xmean = xs.reduce((a, b) => a + b, 0) / n;
+  const ymean = ys.reduce((a, b) => a + b, 0) / n;
+  let num = 0;
+  let den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (xs[i] - xmean) * (ys[i] - ymean);
+    den += (xs[i] - xmean) ** 2;
+  }
+  if (den === 0) return null;
+  const b = num / den;
+  const a = ymean - b * xmean;
+  const yhat = xs.map((x) => a + b * x);
+  const ssRes = ys.reduce((acc, y, i) => acc + (y - yhat[i]) ** 2, 0);
+  const ssTot = ys.reduce((acc, y) => acc + (y - ymean) ** 2, 0);
+  const r2 = ssTot ? 1 - ssRes / ssTot : 0;
+  return { a, b, r2 };
+}
+
+function calibrateSiteModel(kind: "ppv" | "air" | "frag", rows: Array<Record<string, any>>, hpdRaw: string) {
+  const hpd = Math.max(1, Math.floor(Number(hpdRaw) || 1));
+  const mHole = estimateMassPerHole(rows);
+  if (!rows.length) return { error: "No data loaded." };
+  if (kind === "ppv") {
+    if (!rows.some((r) => r["Ground Vibration"] != null) || !rows.some((r) => r["Distance"] != null)) {
+      return { error: "Need Ground Vibration and Distance columns." };
+    }
+    if (!mHole) return { error: "Cannot estimate mass per hole." };
+    const xs: number[] = [];
+    const ys: number[] = [];
+    rows.forEach((r, i) => {
+      const qd = hpd * (mHole[i] ?? NaN);
+      const R = toNum(r["Distance"]);
+      const ppv = toNum(r["Ground Vibration"]);
+      if (Number.isFinite(qd) && Number.isFinite(R) && Number.isFinite(ppv) && qd > 0 && R > 0 && ppv > 0) {
+        const sd = R / Math.sqrt(qd);
+        xs.push(Math.log10(sd));
+        ys.push(Math.log10(ppv));
+      }
+    });
+    const fit = linearRegression(xs, ys);
+    if (!fit) return { error: "Not enough valid points." };
+    const beta = -fit.b;
+    const K = 10 ** fit.a;
+    return {
+      entry: `PPV calibration:\n  K ≈ ${K.toFixed(1)}\n  β ≈ ${beta.toFixed(3)}\n  R² ≈ ${fit.r2.toFixed(3)}\n  (HPD assumed ${hpd})\n`,
+      modelUpdate: { PPV: { K, beta, R2: fit.r2, HPD_assumed: hpd } },
+    };
+  }
+  if (kind === "air") {
+    if (!rows.some((r) => r["Airblast"] != null) || !rows.some((r) => r["Distance"] != null)) {
+      return { error: "Need Airblast and Distance columns." };
+    }
+    if (!mHole) return { error: "Cannot estimate mass per hole." };
+    const xs: number[] = [];
+    const ys: number[] = [];
+    rows.forEach((r, i) => {
+      const qd = hpd * (mHole[i] ?? NaN);
+      const R = toNum(r["Distance"]);
+      const L = toNum(r["Airblast"]);
+      if (Number.isFinite(qd) && Number.isFinite(R) && Number.isFinite(L) && qd > 0 && R > 0) {
+        xs.push(Math.log10((qd ** (1 / 3)) / R));
+        ys.push(L);
+      }
+    });
+    const fit = linearRegression(xs, ys);
+    if (!fit) return { error: "Not enough valid points." };
+    return {
+      entry: `Airblast calibration:\n  K_air ≈ ${fit.a.toFixed(2)}\n  B_air ≈ ${fit.b.toFixed(2)}\n  R² ≈ ${fit.r2.toFixed(3)}\n  (HPD assumed ${hpd})\n`,
+      modelUpdate: { Airblast: { K_air: fit.a, B_air: fit.b, R2: fit.r2, HPD_assumed: hpd } },
+    };
+  }
+  if (kind === "frag") {
+    const pairs = rows.map((r) => {
+      const pf = getPowderFactor(r);
+      const x50 = toNum(r["Fragmentation"]);
+      if (!Number.isFinite(pf) || !Number.isFinite(x50) || pf <= 0 || x50 <= 0) return null;
+      return { pf, x50 };
+    }).filter(Boolean) as Array<{ pf: number; x50: number }>;
+    if (pairs.length < 3) return { error: "Need Powder factor and Fragmentation columns." };
+    const xs = pairs.map((p) => Math.log(1 / p.pf));
+    const ys = pairs.map((p) => Math.log(p.x50));
+    const fit = linearRegression(xs, ys);
+    if (!fit) return { error: "Not enough valid points." };
+    const A = Math.exp(fit.a);
+    return {
+      entry: `Fragmentation calibration:\n  A_kuz ≈ ${A.toFixed(1)} mm\n  exponent ≈ ${fit.b.toFixed(3)}\n  R² ≈ ${fit.r2.toFixed(3)}\n`,
+      modelUpdate: { Fragmentation: { A_kuz: A, exponent: fit.b, R2: fit.r2 } },
+    };
+  }
+  return { error: "Invalid calibration." };
+}
+
+function downloadCsv(rows: Array<Record<string, any>>, columns: string[], filename: string) {
+  const lines = [columns.join(",")];
+  rows.forEach((r) => {
+    lines.push(columns.map((c) => {
+      const v = String(r[c] ?? "");
+      return v.includes(",") || v.includes('"') ? `"${v.replace(/"/g, '""')}"` : v;
+    }).join(","));
+  });
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function downloadJson(obj: Record<string, any>, filename: string) {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function DataPlot({
+  type,
+  data,
+  x,
+  y,
+  logX,
+  logY,
+}: {
+  type: string;
+  data: Array<Record<string, any>>;
+  x: string;
+  y: string;
+  logX: boolean;
+  logY: boolean;
+}) {
+  if (!data.length || !x || !y) return <div className="subtitle">Load data to plot.</div>;
+  const w = 620;
+  const h = 320;
+  const pad = 24;
+
+  const num = (v: any) => toNum(v);
+  const points = data
+    .map((r) => ({ x: num(r[x]), y: num(r[y]) }))
+    .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+
+  if (type === "Histogram") {
+    const vals = data.map((r) => num(r[y])).filter((v) => Number.isFinite(v));
+    const bins = 20;
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    const step = (max - min) / bins || 1;
+    const counts = new Array(bins).fill(0);
+    vals.forEach((v) => {
+      const idx = Math.min(bins - 1, Math.floor((v - min) / step));
+      counts[idx] += 1;
+    });
+    const ymax = Math.max(...counts, 1);
+    return (
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+        {counts.map((c, i) => {
+          const bw = (w - 2 * pad) / bins;
+          const bh = (c / ymax) * (h - 2 * pad);
+          return <rect key={i} x={pad + i * bw} y={h - pad - bh} width={bw - 2} height={bh} fill="#60a5fa" />;
+        })}
+      </svg>
+    );
+  }
+
+  if (type === "Box") {
+    const vals = data.map((r) => num(r[y])).filter((v) => Number.isFinite(v));
+    if (!vals.length) return <div className="subtitle">No numeric data.</div>;
+    const q1 = quantile(vals, 0.25);
+    const q2 = quantile(vals, 0.5);
+    const q3 = quantile(vals, 0.75);
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    const scaleY = (v: number) => h - pad - ((v - min) / (max - min || 1)) * (h - 2 * pad);
+    return (
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+        <line x1={w / 2} x2={w / 2} y1={scaleY(min)} y2={scaleY(max)} stroke="#94a3b8" />
+        <rect x={w / 2 - 40} y={scaleY(q3)} width={80} height={scaleY(q1) - scaleY(q3)} fill="rgba(96,165,250,0.6)" />
+        <line x1={w / 2 - 40} x2={w / 2 + 40} y1={scaleY(q2)} y2={scaleY(q2)} stroke="#e2e8f0" />
+      </svg>
+    );
+  }
+
+  if (type === "Hexbin") {
+    const bins = 20;
+    if (!points.length) return <div className="subtitle">No numeric data.</div>;
+    const xs = points.map((p) => p.x);
+    const ys = points.map((p) => p.y);
+    const xmin = Math.min(...xs);
+    const xmax = Math.max(...xs);
+    const ymin = Math.min(...ys);
+    const ymax = Math.max(...ys);
+    const grid = Array.from({ length: bins }, () => Array(bins).fill(0));
+    points.forEach((p) => {
+      const xi = Math.min(bins - 1, Math.floor(((p.x - xmin) / (xmax - xmin || 1)) * bins));
+      const yi = Math.min(bins - 1, Math.floor(((p.y - ymin) / (ymax - ymin || 1)) * bins));
+      grid[xi][yi] += 1;
+    });
+    const maxC = Math.max(...grid.flat(), 1);
+    return (
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+        {grid.map((col, i) =>
+          col.map((c, j) => {
+            const bw = (w - 2 * pad) / bins;
+            const bh = (h - 2 * pad) / bins;
+            const t = c / maxC;
+            const color = `hsl(${220 - 200 * t}, 80%, 55%)`;
+            return <rect key={`${i}-${j}`} x={pad + i * bw} y={pad + (bins - j - 1) * bh} width={bw} height={bh} fill={color} opacity={0.9} />;
+          })
+        )}
+      </svg>
+    );
+  }
+
+  if (type === "PPV vs Scaled Distance" || type === "Airblast Scaling" || type === "Fragmentation vs PF") {
+    const mHole = estimateMassPerHole(data);
+    if (!mHole) return <div className="subtitle">Cannot estimate mass per hole.</div>;
+    const pts: { x: number; y: number }[] = [];
+    data.forEach((r, i) => {
+      const qd = mHole[i];
+      if (!Number.isFinite(qd) || qd <= 0) return;
+      if (type === "PPV vs Scaled Distance") {
+        const R = num(r["Distance"]);
+        const PPV = num(r["Ground Vibration"]);
+        if (Number.isFinite(R) && Number.isFinite(PPV) && R > 0 && PPV > 0) {
+          pts.push({ x: Math.log10(R / Math.sqrt(qd)), y: Math.log10(PPV) });
+        }
+      } else if (type === "Airblast Scaling") {
+        const R = num(r["Distance"]);
+        const L = num(r["Airblast"]);
+        if (Number.isFinite(R) && Number.isFinite(L) && R > 0) {
+          pts.push({ x: Math.log10((qd ** (1 / 3)) / R), y: L });
+        }
+      } else if (type === "Fragmentation vs PF") {
+        const PF = getPowderFactor(r);
+        const X50 = num(r["Fragmentation"]);
+        if (Number.isFinite(PF) && Number.isFinite(X50) && PF > 0 && X50 > 0) {
+          pts.push({ x: Math.log(1 / PF), y: Math.log(X50) });
+        }
+      }
+    });
+    if (!pts.length) return <div className="subtitle">Not enough valid points.</div>;
+    const xs = pts.map((p) => p.x);
+    const ys = pts.map((p) => p.y);
+    const fit = linearRegression(xs, ys);
+    return <ScatterPlot points={pts} width={w} height={h} fit={fit ?? undefined} />;
+  }
+
+  if (!points.length) return <div className="subtitle">No numeric data.</div>;
+  let xs = points.map((p) => p.x);
+  let ys = points.map((p) => p.y);
+  if (logX) xs = xs.map((v) => Math.log10(Math.max(1e-9, v)));
+  if (logY) ys = ys.map((v) => Math.log10(Math.max(1e-9, v)));
+  const pts = xs.map((vx, i) => ({ x: vx, y: ys[i] }));
+
+  if (type === "Bar") {
+    const groups: Record<string, number[]> = {};
+    data.forEach((r) => {
+      const key = String(r[x] ?? "");
+      const val = num(r[y]);
+      if (!Number.isFinite(val)) return;
+      groups[key] = groups[key] || [];
+      groups[key].push(val);
+    });
+    const labels = Object.keys(groups);
+    const values = labels.map((k) => groups[k].reduce((a, b) => a + b, 0) / groups[k].length);
+    return (
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+        {values.map((v, i) => {
+          const bw = (w - 2 * pad) / Math.max(1, values.length);
+          const bh = (v / Math.max(...values, 1)) * (h - 2 * pad);
+          return <rect key={i} x={pad + i * bw} y={h - pad - bh} width={bw - 4} height={bh} fill="#60a5fa" />;
+        })}
+      </svg>
+    );
+  }
+
+  if (type === "Line") {
+    const sorted = pts.slice().sort((a, b) => a.x - b.x);
+    return <PolylinePlot points={sorted} width={w} height={h} />;
+  }
+
+  return <ScatterPlot points={pts} width={w} height={h} />;
+}
+
+function ScatterPlot({ points, width, height, fit }: { points: { x: number; y: number }[]; width: number; height: number; fit?: { a: number; b: number } }) {
+  const pad = 24;
+  const xs = points.map((p) => p.x);
+  const ys = points.map((p) => p.y);
+  const xmin = Math.min(...xs);
+  const xmax = Math.max(...xs);
+  const ymin = Math.min(...ys);
+  const ymax = Math.max(...ys);
+  const sx = (v: number) => pad + ((v - xmin) / (xmax - xmin || 1)) * (width - 2 * pad);
+  const sy = (v: number) => height - pad - ((v - ymin) / (ymax - ymin || 1)) * (height - 2 * pad);
+  const line = fit
+    ? `${sx(xmin)},${sy(fit.a + fit.b * xmin)} ${sx(xmax)},${sy(fit.a + fit.b * xmax)}`
+    : null;
+  return (
+    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+      {points.map((p, i) => (
+        <circle key={i} cx={sx(p.x)} cy={sy(p.y)} r={3} fill="#60a5fa" opacity={0.8} />
+      ))}
+      {line && <polyline points={line} fill="none" stroke="#fbbf24" strokeWidth="2" />}
+    </svg>
+  );
+}
+
+function PolylinePlot({ points, width, height }: { points: { x: number; y: number }[]; width: number; height: number }) {
+  const pad = 24;
+  const xs = points.map((p) => p.x);
+  const ys = points.map((p) => p.y);
+  const xmin = Math.min(...xs);
+  const xmax = Math.max(...xs);
+  const ymin = Math.min(...ys);
+  const ymax = Math.max(...ys);
+  const sx = (v: number) => pad + ((v - xmin) / (xmax - xmin || 1)) * (width - 2 * pad);
+  const sy = (v: number) => height - pad - ((v - ymin) / (ymax - ymin || 1)) * (height - 2 * pad);
+  const pts = points.map((p) => `${sx(p.x)},${sy(p.y)}`).join(" ");
+  return (
+    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+      <polyline points={pts} fill="none" stroke="#60a5fa" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function CorrelationHeatmap({ data, columns }: { data: Array<Record<string, any>>; columns: string[] }) {
+  if (!data.length || !columns.length) return <div className="subtitle">No numeric columns.</div>;
+  const matrix = columns.map((c1) =>
+    columns.map((c2) => {
+      const xs = data.map((r) => toNum(r[c1]));
+      const ys = data.map((r) => toNum(r[c2]));
+      const pairs = xs.map((x, i) => [x, ys[i]]).filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y));
+      if (pairs.length < 3) return 0;
+      const xmean = pairs.reduce((a, [x]) => a + x, 0) / pairs.length;
+      const ymean = pairs.reduce((a, [, y]) => a + y, 0) / pairs.length;
+      let num = 0;
+      let denx = 0;
+      let deny = 0;
+      pairs.forEach(([x, y]) => {
+        num += (x - xmean) * (y - ymean);
+        denx += (x - xmean) ** 2;
+        deny += (y - ymean) ** 2;
+      });
+      const denom = Math.sqrt(denx * deny) || 1;
+      return num / denom;
+    })
+  );
+  const w = 620;
+  const h = 360;
+  const cellW = w / columns.length;
+  const cellH = h / columns.length;
+  return (
+    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+      {matrix.map((row, i) =>
+        row.map((v, j) => {
+          const t = (v + 1) / 2;
+          const color = `hsl(${220 - 200 * t}, 80%, 55%)`;
+          return <rect key={`${i}-${j}`} x={j * cellW} y={i * cellH} width={cellW} height={cellH} fill={color} opacity={0.9} />;
+        })
+      )}
+    </svg>
   );
 }
 

@@ -868,6 +868,7 @@ def delay_predict(
     Dc = getc("depth", "hole depth (m)", "hole_depth")
     Cc = getc("charge", "explosive mass", "charge_kg")
     Zc = getc("z", "elev", "elevation", "rl")
+    Hc = getc("holeid", "hole id", "id", "hole")
     Tc = getc("delay", "predicted delay (ms)")
 
     if None in (Xc, Yc, Dc, Cc):
@@ -894,7 +895,17 @@ def delay_predict(
             "Y": pd.to_numeric(df[Yc], errors="coerce"),
             "Delay": yhat,
         }
-    ).dropna()
+    )
+    if Dc:
+        dfv["Depth"] = pd.to_numeric(df[Dc], errors="coerce")
+    if Cc:
+        dfv["Charge"] = pd.to_numeric(df[Cc], errors="coerce")
+    if Zc:
+        dfv["Z"] = pd.to_numeric(df[Zc], errors="coerce")
+    if Hc:
+        dfv["HoleID"] = df[Hc].astype(str)
+
+    dfv = dfv.dropna(subset=["X", "Y", "Delay"])
 
     # limit to 2000 points for payload size
     if len(dfv) > 2000:
