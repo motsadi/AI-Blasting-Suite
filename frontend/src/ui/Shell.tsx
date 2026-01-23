@@ -522,7 +522,7 @@ function DataPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
             Export Filtered → Excel
           </button>
           <div className="subtitle" style={{ marginTop: 10 }}>
-            Tip: Use Filters/Query to subset by compliance (e.g., `Ground Vibration <= 12.5`).
+            Tip: Use Filters/Query to subset by compliance (e.g., <code>Ground Vibration &lt;= 12.5</code>).
           </div>
         </div>
       )}
