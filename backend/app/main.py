@@ -475,11 +475,13 @@ def feature_importance_dataset(top_k: int = 12, _token: str = Depends(require_au
     if name_mode_ok:
         Xraw = df[in_res].copy()
         Yraw = df[out_res].copy()
+        note = "Mapped by column names/synonyms."
     else:
         if df.shape[1] < 4:
             return {"error": "Dataset needs at least 4 columns."}
         Xraw = df.iloc[:, : df.shape[1] - 3].copy()
         Yraw = df.iloc[:, df.shape[1] - 3 :].copy()
+        note = "Name mapping failed — used positional split (inputs = first N−3, outputs = last 3)."
 
     Xnum = Xraw.copy()
     for c in Xnum.columns:
@@ -509,7 +511,14 @@ def feature_importance_dataset(top_k: int = 12, _token: str = Depends(require_au
         ]
         items.sort(key=lambda r: r["importance"], reverse=True)
         out[out_name] = items[: max(3, int(top_k))]
-    return {"feature_importance": out}
+    return {
+        "feature_importance": out,
+        "note": note,
+        "rows_used": int(work.shape[0]),
+        "inputs": list(Xraw.columns),
+        "outputs": list(ydf.columns),
+        "top_k": max(3, int(top_k)),
+    }
 
 
 @app.get("/v1/feature/pca")
@@ -525,10 +534,12 @@ def feature_pca(_token: str = Depends(require_auth)):
     name_mode_ok = not any(v is None for v in in_res)
     if name_mode_ok:
         Xraw = df[in_res].copy()
+        note = "Mapped by column names/synonyms."
     else:
         if df.shape[1] < 4:
             return {"error": "Dataset needs at least 4 columns."}
         Xraw = df.iloc[:, : df.shape[1] - 3].copy()
+        note = "Name mapping failed — used positional split (inputs = first N−3)."
 
     Xnum = Xraw.copy()
     for c in Xnum.columns:
@@ -546,9 +557,16 @@ def feature_pca(_token: str = Depends(require_auth)):
         pairs = list(zip(Xraw.columns, loadings[i]))
         pairs.sort(key=lambda p: abs(p[1]), reverse=True)
         out.append([{"feature": k, "loading": float(v)} for k, v in pairs[: min(10, len(pairs))]])
+    points = comps[:, :2]
+    if len(points) > 800:
+        points = points[np.random.choice(len(points), 800, replace=False)]
     return {
         "explained_variance_ratio": [float(v) for v in pca.explained_variance_ratio_],
         "top_loadings": out,
+        "points": [{"pc1": float(p[0]), "pc2": float(p[1])} for p in points],
+        "note": note,
+        "rows_used": int(len(Xnum)),
+        "inputs": list(Xraw.columns),
     }
 
 

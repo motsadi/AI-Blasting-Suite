@@ -1118,22 +1118,44 @@ function FeaturePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
   const [pca, setPca] = useState<any>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [topK, setTopK] = useState(12);
+  const [msg, setMsg] = useState("Tip: Load/confirm dataset in Data Manager. Inputs = first N−3 if names can't be mapped.");
 
-  async function run() {
+  async function runImportance() {
     if (!apiBaseUrl) return;
     setBusy(true);
     setErr(null);
     try {
-      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/feature/importance`, {
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/feature/importance?top_k=${topK}`, {
         headers: { ...authHeaders(token) },
       });
       const json = await res.json();
-      if (!res.ok) throw new Error("Failed");
+      if (!res.ok || json?.error) throw new Error(json?.error ?? "Failed");
       setResp(json);
+      setMsg(
+        `Dataset: ${json?.note ?? ""}\nRows used: ${json?.rows_used ?? "?"} | Inputs: ${json?.inputs?.length ?? "?"} | Outputs: ${json?.outputs?.length ?? "?"}\nPlotted top-${json?.top_k ?? topK} features for each output.`
+      );
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runPca() {
+    if (!apiBaseUrl) return;
+    setBusy(true);
+    setErr(null);
+    try {
       const p = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/feature/pca`, {
         headers: { ...authHeaders(token) },
       });
-      setPca(await p.json());
+      const json = await p.json();
+      if (!p.ok || json?.error) throw new Error(json?.error ?? "Failed");
+      setPca(json);
+      setMsg(
+        `PCA based on dataset: ${json?.note ?? ""}\nShape used: ${json?.rows_used ?? "?"} rows × ${json?.inputs?.length ?? "?"} inputs`
+      );
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -1143,37 +1165,38 @@ function FeaturePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
 
   return (
     <div className="card">
-      <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Feature Importance</div>
-      <div className="subtitle">Uses model feature importances from the RF models.</div>
-      <div style={{ marginTop: 10 }}>
-        <button className="btn btnPrimary" onClick={run} disabled={busy}>
-          {busy ? "Loading…" : "Load Importances"}
+      <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Feature Importance & PCA</div>
+      <div className="subtitle">Mirror of the local RF importance and PCA analysis.</div>
+      <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <button className="btn btnPrimary" onClick={runImportance} disabled={busy}>
+          {busy ? "Loading…" : "Compute RF Importance"}
         </button>
+        <button className="btn" onClick={runPca} disabled={busy}>
+          {busy ? "Loading…" : "Run PCA Analysis"}
+        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span className="label">Top-K features</span>
+          <input
+            className="input"
+            type="number"
+            min={5}
+            max={30}
+            value={topK}
+            onChange={(e) => setTopK(Number(e.target.value))}
+            style={{ width: 80 }}
+          />
+        </div>
       </div>
       {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
+      <pre style={{ ...pre, marginTop: 10 }}>{msg}</pre>
       {resp?.feature_importance && (
         <div style={{ marginTop: 12 }}>
-          {Object.entries(resp.feature_importance).map(([name, items]: any) => (
-            <div key={name} style={{ marginBottom: 12 }}>
-              <div className="label">{name}</div>
-              <div>
-                {(items as any[]).slice(0, 8).map((it) => (
-                  <div key={it.feature} className="kpi" style={{ marginTop: 6 }}>
-                    <div className="kpiTitle">{it.feature}</div>
-                    <div className="kpiValue">{Number(it.importance).toFixed(3)}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
+          <FeatureImportanceCharts data={resp.feature_importance} />
         </div>
       )}
       {pca?.explained_variance_ratio && (
         <div style={{ marginTop: 12 }}>
-          <div className="label">PCA Explained Variance</div>
-          <div className="pill" style={{ marginTop: 6 }}>
-            {pca.explained_variance_ratio.map((v: number, i: number) => `PC${i + 1}: ${(v * 100).toFixed(1)}%`).join(" · ")}
-          </div>
+          <PCAViz pca={pca} />
         </div>
       )}
     </div>
@@ -1486,6 +1509,65 @@ function BarCompareChart({
         );
       })}
     </svg>
+  );
+}
+
+function FeatureImportanceCharts({ data }: { data: Record<string, Array<{ feature: string; importance: number }>> }) {
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      {Object.entries(data).map(([name, items]) => (
+        <div key={name} className="card">
+          <div className="label">{name}</div>
+          <HorizontalBarChart labels={items.map((i) => i.feature)} values={items.map((i) => i.importance)} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function HorizontalBarChart({ labels, values }: { labels: string[]; values: number[] }) {
+  const w = 620;
+  const h = Math.max(180, labels.length * 18 + 30);
+  const vmax = Math.max(...values.map((v) => Number(v)), 1);
+  return (
+    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+      {labels.map((label, i) => {
+        const y = 20 + i * 16;
+        const v = Number(values[i]) || 0;
+        const bw = (v / vmax) * (w - 180);
+        return (
+          <g key={label}>
+            <text x={10} y={y + 10} fill="#94a3b8" fontSize="10">{label}</text>
+            <rect x={140} y={y} width={bw} height={10} fill="#60a5fa" rx={3} />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function PCAViz({ pca }: { pca: any }) {
+  const vr = pca?.explained_variance_ratio ?? [];
+  const points = pca?.points ?? [];
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <div className="card">
+        <div className="label">PCA — Explained Variance</div>
+        <BarChart labels={vr.map((_: number, i: number) => `PC${i + 1}`)} values={vr.map((v: number) => v * 100)} />
+      </div>
+      <div className="card">
+        <div className="label">PC1 vs PC2</div>
+        {points.length ? (
+          <ScatterPlot
+            points={points.map((p: any) => ({ x: p.pc1, y: p.pc2 }))}
+            width={620}
+            height={260}
+          />
+        ) : (
+          <div className="subtitle">No PCA points available.</div>
+        )}
+      </div>
+    </div>
   );
 }
 
