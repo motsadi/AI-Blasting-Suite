@@ -5,7 +5,7 @@ const requireAuthEnv = (import.meta.env.VITE_REQUIRE_AUTH as string | undefined)
 export const REQUIRE_AUTH =
   requireAuthEnv !== null
     ? requireAuthEnv.toLowerCase() === "true"
-    : Boolean(appId);
+    : true;
 
 // We export a lazily-initialized db to avoid hard-crashing the app when env vars are missing.
 export function getDb() {

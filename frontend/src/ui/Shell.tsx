@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { REQUIRE_AUTH } from "../instant";
 
 type Session = { token: string; email: string };
 type Props = {
@@ -31,8 +30,7 @@ const TABS: Array<{ key: TabKey; title: string; desc: string }> = [
   { key: "delay", title: "Delay", desc: "Delay prediction & plan view" },
 ];
 
-const authHeaders = (token: string) =>
-  REQUIRE_AUTH ? { authorization: `Bearer ${token}` } : {};
+const authHeaders = (token: string) => ({ authorization: `Bearer ${token}` });
 
 export function Shell({ apiBaseUrl, session, onLogout }: Props) {
   const [tab, setTab] = useState<TabKey>("predict");
@@ -40,7 +38,6 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
   const [metaErr, setMetaErr] = useState<string | null>(null);
 
   const headerRight = useMemo(() => {
-    if (!REQUIRE_AUTH) return null;
     return (
       <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
         <span className="pill">{session.email}</span>
