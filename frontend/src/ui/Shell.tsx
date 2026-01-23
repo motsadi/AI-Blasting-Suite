@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { REQUIRE_AUTH } from "../instant";
 
 type Session = { token: string; email: string };
 type Props = {
@@ -30,12 +31,16 @@ const TABS: Array<{ key: TabKey; title: string; desc: string }> = [
   { key: "delay", title: "Delay", desc: "Delay prediction & plan view" },
 ];
 
+const authHeaders = (token: string) =>
+  REQUIRE_AUTH ? { authorization: `Bearer ${token}` } : {};
+
 export function Shell({ apiBaseUrl, session, onLogout }: Props) {
   const [tab, setTab] = useState<TabKey>("predict");
   const [meta, setMeta] = useState<any>(null);
   const [metaErr, setMetaErr] = useState<string | null>(null);
 
   const headerRight = useMemo(() => {
+    if (!REQUIRE_AUTH) return null;
     return (
       <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
         <span className="pill">{session.email}</span>
@@ -137,14 +142,29 @@ function DataPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
   const [preview, setPreview] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [uploadResp, setUploadResp] = useState<any>(null);
 
-  async function runPreview() {
+  async function runPreview(customFile?: File | null) {
     if (!apiBaseUrl) return;
     setErr(null);
     setBusy(true);
     try {
+      if (customFile) {
+        const fd = new FormData();
+        fd.append("file", customFile);
+        const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/data/preview`, {
+          method: "POST",
+          headers: { ...authHeaders(token) },
+          body: fd,
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json?.error ?? "Preview failed");
+        setPreview(json);
+        return;
+      }
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/data/default`, {
-        headers: { authorization: `Bearer ${token}` },
+        headers: { ...authHeaders(token) },
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error ?? "Preview failed");
@@ -156,23 +176,64 @@ function DataPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     }
   }
 
+  async function runUpload() {
+    if (!apiBaseUrl || !file) return;
+    setErr(null);
+    setBusy(true);
+    setUploadResp(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/data/upload`, {
+        method: "POST",
+        headers: { ...authHeaders(token) },
+        body: fd,
+      });
+      const json = await res.json();
+      if (!res.ok || json?.error) throw new Error(json?.error ?? "Upload failed");
+      setUploadResp(json);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="card">
       <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Data</div>
-      <div className="subtitle">Using default dataset: combinedv2Orapa.csv</div>
+      <div className="subtitle">Upload a CSV or preview the default combined dataset.</div>
 
       <div style={{ marginTop: 12 }} className="grid2">
         <div>
+          <label className="label">Upload CSV</label>
+          <input
+            className="input"
+            type="file"
+            accept=".csv"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          />
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-            <button className="btn btnPrimary" onClick={runPreview} disabled={busy}>
-              {busy ? "Loading…" : "Load Preview"}
+            <button className="btn btnPrimary" onClick={() => runPreview(file)} disabled={busy || !file}>
+              {busy ? "Loading…" : "Preview Upload"}
+            </button>
+            <button className="btn" onClick={() => runPreview(null)} disabled={busy}>
+              {busy ? "Loading…" : "Preview Default"}
+            </button>
+            <button className="btn" onClick={runUpload} disabled={busy || !file}>
+              {busy ? "Uploading…" : "Upload to GCS"}
             </button>
           </div>
         </div>
         <div>
           {err && <div className="error">{err}</div>}
+          {uploadResp?.gs_uri && (
+            <div className="pill" style={{ marginTop: 8 }}>
+              Uploaded: {uploadResp.gs_uri}
+            </div>
+          )}
           {preview && (
-            <div>
+            <div style={{ marginTop: 8 }}>
               <div className="label">Rows: {preview.rows}</div>
               <div className="label">Columns: {preview.columns?.length}</div>
             </div>
@@ -186,7 +247,12 @@ function DataPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
             <thead>
               <tr>
                 {preview.columns.map((c: string) => (
-                  <th key={c} style={{ textAlign: "left", borderBottom: "1px solid var(--border)", padding: "6px 4px" }}>{c}</th>
+                  <th
+                    key={c}
+                    style={{ textAlign: "left", borderBottom: "1px solid var(--border)", padding: "6px 4px" }}
+                  >
+                    {c}
+                  </th>
                 ))}
               </tr>
             </thead>
@@ -215,6 +281,8 @@ function PredictPanel({ apiBaseUrl, token, meta }: { apiBaseUrl: string; token: 
   const [rrN, setRrN] = useState(1.8);
   const [rrMode, setRrMode] = useState<"manual" | "estimate">("estimate");
   const [rrXov, setRrXov] = useState(500);
+  const [hpdOverride, setHpdOverride] = useState(1);
+  const [wantMl, setWantMl] = useState(true);
   const outputs: string[] = meta?.outputs ?? ["Ground Vibration", "Airblast", "Fragmentation"];
   const empiricalDefaults = meta?.empirical_defaults ?? {
     K_ppv: 1000,
@@ -245,13 +313,13 @@ function PredictPanel({ apiBaseUrl, token, meta }: { apiBaseUrl: string; token: 
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: `Bearer ${token}`,
+          ...authHeaders(token),
         },
         body: JSON.stringify({
           inputs,
-          hpd_override: 1,
+          hpd_override: hpdOverride,
           empirical: empiricalDefaults,
-          want_ml: true,
+          want_ml: wantMl,
           rr_n: rrN,
           rr_mode: rrMode,
           rr_x_ov: rrXov
@@ -316,6 +384,25 @@ function PredictPanel({ apiBaseUrl, token, meta }: { apiBaseUrl: string; token: 
               </div>
             ))}
           </div>
+          <div className="grid3" style={{ marginTop: 12 }}>
+            <div>
+              <label className="label">HPD override</label>
+              <input
+                className="input"
+                type="number"
+                value={hpdOverride}
+                onChange={(e) => setHpdOverride(Number(e.target.value))}
+              />
+            </div>
+            <div>
+              <label className="label">Use ML</label>
+              <select className="input" value={wantMl ? "yes" : "no"} onChange={(e) => setWantMl(e.target.value === "yes")}>
+                <option value="yes">Yes</option>
+                <option value="no">No (empirical only)</option>
+              </select>
+            </div>
+            <div />
+          </div>
         </div>
       ) : null}
 
@@ -356,6 +443,7 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [inputs, setInputs] = useState<Record<string, number>>({});
+  const [file, setFile] = useState<File | null>(null);
 
   async function run() {
     if (!apiBaseUrl) return;
@@ -363,10 +451,11 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
     setErr(null);
     try {
       const fd = new FormData();
+      if (file) fd.append("file", file);
       if (Object.keys(inputs).length) fd.append("inputs_json", JSON.stringify(inputs));
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/flyrock/predict`, {
         method: "POST",
-        headers: { authorization: `Bearer ${token}` },
+        headers: { ...authHeaders(token) },
         body: fd,
       });
       const json = await res.json();
@@ -389,9 +478,17 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
   return (
     <div className="card">
       <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Flyrock</div>
-      <div className="subtitle">Using default dataset: flyrock_synth.csv</div>
-      <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-        <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict"}</button>
+      <div className="subtitle">Upload a CSV or use the default dataset.</div>
+      <div style={{ marginTop: 10 }} className="grid2">
+        <div>
+          <label className="label">Upload CSV</label>
+          <input className="input" type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+        </div>
+        <div style={{ display: "flex", alignItems: "flex-end" }}>
+          <button className="btn btnPrimary" onClick={run} disabled={busy}>
+            {busy ? "Running…" : "Predict"}
+          </button>
+        </div>
       </div>
       {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
       {resp?.prediction != null && (
@@ -411,6 +508,24 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
           ))}
         </div>
       )}
+      {resp?.feature_stats && (
+        <div style={{ marginTop: 12 }}>
+          <div className="label">Inputs</div>
+          <div className="grid3" style={{ marginTop: 8 }}>
+            {Object.keys(resp.feature_stats).map((k) => (
+              <div key={k}>
+                <label className="label">{k}</label>
+                <input
+                  className="input"
+                  type="number"
+                  value={inputs[k] ?? resp.feature_stats[k]?.median ?? 0}
+                  onChange={(e) => setInputs({ ...inputs, [k]: Number(e.target.value) })}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -421,6 +536,7 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   const [err, setErr] = useState<string | null>(null);
 
   const [inputs, setInputs] = useState<Record<string, number>>({});
+  const [file, setFile] = useState<File | null>(null);
 
   async function run() {
     if (!apiBaseUrl) return;
@@ -428,10 +544,11 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     setErr(null);
     try {
       const fd = new FormData();
+      if (file) fd.append("file", file);
       if (Object.keys(inputs).length) fd.append("inputs_json", JSON.stringify(inputs));
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/slope/predict`, {
         method: "POST",
-        headers: { authorization: `Bearer ${token}` },
+        headers: { ...authHeaders(token) },
         body: fd,
       });
       const json = await res.json();
@@ -454,7 +571,16 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   return (
     <div className="card">
       <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Slope Stability</div>
-      <div className="subtitle">Using default dataset: slope data.csv</div>
+      <div className="subtitle">Upload a CSV or use the default dataset.</div>
+      <div style={{ marginTop: 10 }} className="grid2">
+        <div>
+          <label className="label">Upload CSV</label>
+          <input className="input" type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+        </div>
+        <div style={{ display: "flex", alignItems: "flex-end" }}>
+          <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict"}</button>
+        </div>
+      </div>
       {Object.keys(inputs).length ? (
         <div className="grid3" style={{ marginTop: 10 }}>
           {Object.entries(inputs).map(([k, v]) => (
@@ -465,9 +591,6 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
           ))}
         </div>
       ) : null}
-      <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-        <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict"}</button>
-      </div>
       {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
       {resp?.prob_stable != null && (
         <div className="kpi" style={{ marginTop: 12 }}>
@@ -483,15 +606,19 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   const [resp, setResp] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [file, setFile] = useState<File | null>(null);
 
   async function run() {
     if (!apiBaseUrl) return;
     setBusy(true);
     setErr(null);
     try {
+      const fd = new FormData();
+      if (file) fd.append("file", file);
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/delay/predict`, {
         method: "POST",
-        headers: { authorization: `Bearer ${token}` },
+        headers: { ...authHeaders(token) },
+        body: fd,
       });
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Delay failed");
@@ -506,9 +633,15 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   return (
     <div className="card">
       <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Delay & Plan View</div>
-      <div className="subtitle">Using default dataset: Hole_data_v1.csv (fallback to v2)</div>
-      <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-        <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict"}</button>
+      <div className="subtitle">Upload a CSV or use the default dataset (Hole_data_v1.csv).</div>
+      <div style={{ marginTop: 10 }} className="grid2">
+        <div>
+          <label className="label">Upload CSV</label>
+          <input className="input" type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+        </div>
+        <div style={{ display: "flex", alignItems: "flex-end" }}>
+          <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict"}</button>
+        </div>
       </div>
       {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
       {resp?.points?.length ? (
@@ -534,13 +667,13 @@ function FeaturePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
     setErr(null);
     try {
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/feature/importance`, {
-        headers: { authorization: `Bearer ${token}` },
+        headers: { ...authHeaders(token) },
       });
       const json = await res.json();
       if (!res.ok) throw new Error("Failed");
       setResp(json);
       const p = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/feature/pca`, {
-        headers: { authorization: `Bearer ${token}` },
+        headers: { ...authHeaders(token) },
       });
       setPca(await p.json());
     } catch (e: any) {
@@ -593,19 +726,32 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
   const [resp, setResp] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [inputs, setInputs] = useState<Record<string, number>>({});
+  const [file, setFile] = useState<File | null>(null);
 
   async function run() {
     if (!apiBaseUrl) return;
     setBusy(true);
     setErr(null);
     try {
+      const fd = new FormData();
+      if (file) fd.append("file", file);
+      if (Object.keys(inputs).length) fd.append("inputs_json", JSON.stringify(inputs));
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/backbreak/predict`, {
         method: "POST",
-        headers: { authorization: `Bearer ${token}` },
+        headers: { ...authHeaders(token) },
+        body: fd,
       });
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Backbreak failed");
       setResp(json);
+      if (json?.feature_stats) {
+        const next: Record<string, number> = {};
+        Object.keys(json.feature_stats).forEach((k) => {
+          next[k] = json.feature_stats[k].median;
+        });
+        setInputs(next);
+      }
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -616,15 +762,39 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
   return (
     <div className="card">
       <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Backbreak</div>
-      <div className="subtitle">Using default dataset: Backbreak.csv</div>
-      <div style={{ marginTop: 10 }}>
-        <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict"}</button>
+      <div className="subtitle">Upload a CSV or use the default dataset.</div>
+      <div style={{ marginTop: 10 }} className="grid2">
+        <div>
+          <label className="label">Upload CSV</label>
+          <input className="input" type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+        </div>
+        <div style={{ display: "flex", alignItems: "flex-end" }}>
+          <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict"}</button>
+        </div>
       </div>
       {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
       {resp?.prediction != null && (
         <div className="kpi" style={{ marginTop: 12 }}>
           <div className="kpiTitle">Predicted Backbreak</div>
           <div className="kpiValue">{Number(resp.prediction).toFixed(2)}</div>
+        </div>
+      )}
+      {resp?.feature_stats && (
+        <div style={{ marginTop: 12 }}>
+          <div className="label">Inputs</div>
+          <div className="grid3" style={{ marginTop: 8 }}>
+            {Object.keys(resp.feature_stats).map((k) => (
+              <div key={k}>
+                <label className="label">{k}</label>
+                <input
+                  className="input"
+                  type="number"
+                  value={inputs[k] ?? resp.feature_stats[k]?.median ?? 0}
+                  onChange={(e) => setInputs({ ...inputs, [k]: Number(e.target.value) })}
+                />
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -688,6 +858,125 @@ function PlanView({ points }: { points: Array<{ X: number; Y: number; Delay: num
   );
 }
 
+function formatNum(v: any) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  return Math.abs(n) >= 1000 ? n.toFixed(0) : n.toFixed(2);
+}
+
+function SurfaceHeatmap({
+  gridX,
+  gridY,
+  Z,
+  best,
+  x1,
+  x2,
+}: {
+  gridX: number[];
+  gridY: number[];
+  Z: number[][];
+  best?: { value: number; inputs: Record<string, number> };
+  x1: string;
+  x2: string;
+}) {
+  if (!gridX?.length || !gridY?.length || !Z?.length) return null;
+  const w = 620;
+  const h = 360;
+  const flat = Z.flat().filter((v) => Number.isFinite(v));
+  const zmin = Math.min(...flat);
+  const zmax = Math.max(...flat);
+  const dx = w / gridX.length;
+  const dy = h / gridY.length;
+  const norm = (v: number) => (zmax - zmin === 0 ? 0.5 : (v - zmin) / (zmax - zmin));
+
+  const bestX = best?.inputs?.[x1];
+  const bestY = best?.inputs?.[x2];
+  const bx = bestX == null ? null : (gridX.length > 1 ? ((bestX - gridX[0]) / (gridX[gridX.length - 1] - gridX[0])) * w : w / 2);
+  const by = bestY == null ? null : (gridY.length > 1 ? (1 - (bestY - gridY[0]) / (gridY[gridY.length - 1] - gridY[0])) * h : h / 2);
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+        {Z.map((row, i) =>
+          row.map((v, j) => {
+            const t = norm(v);
+            const color = `hsl(${220 - 200 * t}, 80%, 55%)`;
+            return (
+              <rect
+                key={`${i}-${j}`}
+                x={i * dx}
+                y={h - (j + 1) * dy}
+                width={dx + 0.5}
+                height={dy + 0.5}
+                fill={color}
+                opacity={0.9}
+              />
+            );
+          })
+        )}
+        {bx != null && by != null ? <circle cx={bx} cy={by} r={5} fill="#fbbf24" /> : null}
+      </svg>
+      <div className="label" style={{ marginTop: 6 }}>
+        {x1} vs {x2} · min {formatNum(zmin)} / max {formatNum(zmax)}
+      </div>
+    </div>
+  );
+}
+
+function BarChart({ labels, values }: { labels: string[]; values: number[] }) {
+  const w = 620;
+  const h = 220;
+  const vmax = Math.max(...values.map((v) => Number(v) || 0), 1);
+  const barW = w / Math.max(1, labels.length);
+  return (
+    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+      {values.map((v, i) => {
+        const val = Number(v) || 0;
+        const bh = (val / vmax) * (h - 30);
+        const x = i * barW + 12;
+        const y = h - bh - 20;
+        return (
+          <g key={labels[i]}>
+            <rect x={x} y={y} width={barW - 24} height={bh} fill="#60a5fa" rx={6} />
+            <text x={x + (barW - 24) / 2} y={h - 6} fill="#94a3b8" fontSize="10" textAnchor="middle">
+              {labels[i]}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function ParetoScatter({ rows }: { rows: Array<Record<string, any>> }) {
+  if (!rows?.length) return null;
+  const w = 620;
+  const h = 260;
+  const xs = rows.map((r) => Number(r.cost) || 0);
+  const ys = rows.map((r) => Number(r["Oversize%"]) || 0);
+  const xmin = Math.min(...xs);
+  const xmax = Math.max(...xs);
+  const ymin = Math.min(...ys);
+  const ymax = Math.max(...ys);
+  const norm = (v: number, a: number, b: number) => (b - a === 0 ? 0.5 : (v - a) / (b - a));
+  return (
+    <div style={{ marginTop: 10 }}>
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+        {rows.map((r, i) => {
+          const x = 10 + norm(Number(r.cost) || 0, xmin, xmax) * (w - 20);
+          const y = 10 + (1 - norm(Number(r["Oversize%"]) || 0, ymin, ymax)) * (h - 20);
+          const t = norm(Number(r.PPV) || 0, Math.min(...rows.map((x) => Number(x.PPV) || 0)), Math.max(...rows.map((x) => Number(x.PPV) || 0)));
+          const color = `hsl(${220 - 200 * t}, 80%, 55%)`;
+          return <circle key={i} cx={x} cy={y} r={4} fill={color} opacity={0.9} />;
+        })}
+      </svg>
+      <div className="label" style={{ marginTop: 6 }}>
+        X: Cost · Y: Oversize% · Color: PPV
+      </div>
+    </div>
+  );
+}
+
 function ParamPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const [meta, setMeta] = useState<any>(null);
   const [resp, setResp] = useState<any>(null);
@@ -699,12 +988,14 @@ function ParamPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   const [x2, setX2] = useState("");
   const [objective, setObjective] = useState<"min" | "max">("max");
   const [target, setTarget] = useState(0);
+  const [grid, setGrid] = useState(25);
+  const [samples, setSamples] = useState(40);
 
   useEffect(() => {
     if (!apiBaseUrl) return;
     (async () => {
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/meta`, {
-        headers: { authorization: `Bearer ${token}` },
+        headers: { ...authHeaders(token) },
       });
       const json = await res.json();
       setMeta(json);
@@ -723,8 +1014,8 @@ function ParamPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     try {
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface`, {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-        body: JSON.stringify({ output, x1, x2, objective }),
+        headers: { "content-type": "application/json", ...authHeaders(token) },
+        body: JSON.stringify({ output, x1, x2, objective, grid, samples }),
       });
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Surface failed");
@@ -743,7 +1034,7 @@ function ParamPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     try {
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/goal-seek`, {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        headers: { "content-type": "application/json", ...authHeaders(token) },
         body: JSON.stringify({ output, target }),
       });
       const json = await res.json();
@@ -794,6 +1085,22 @@ function ParamPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
           <option value="max">Maximise</option>
           <option value="min">Minimise</option>
         </select>
+        <input
+          className="input"
+          type="number"
+          value={grid}
+          onChange={(e) => setGrid(Number(e.target.value))}
+          style={{ width: 120 }}
+          placeholder="Grid"
+        />
+        <input
+          className="input"
+          type="number"
+          value={samples}
+          onChange={(e) => setSamples(Number(e.target.value))}
+          style={{ width: 140 }}
+          placeholder="Samples"
+        />
       </div>
       <div className="grid2" style={{ marginTop: 12 }}>
         <div>
@@ -811,10 +1118,49 @@ function ParamPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
           <div className="kpiValue">{Number(resp.best.value).toFixed(2)}</div>
         </div>
       )}
+      {resp?.Z && (
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="label">Surface</div>
+          <SurfaceHeatmap
+            gridX={resp.grid_x}
+            gridY={resp.grid_y}
+            Z={resp.Z}
+            best={resp.best}
+            x1={resp.x1}
+            x2={resp.x2}
+          />
+        </div>
+      )}
+      {resp?.best?.inputs && (
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="label">Best Inputs</div>
+          <div className="grid3" style={{ marginTop: 8 }}>
+            {Object.entries(resp.best.inputs).map(([k, v]: any) => (
+              <div key={k} className="kpi">
+                <div className="kpiTitle">{k}</div>
+                <div className="kpiValue">{formatNum(v)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {goal?.best && (
         <div className="kpi" style={{ marginTop: 12 }}>
           <div className="kpiTitle">Goal Seek Predicted</div>
           <div className="kpiValue">{Number(goal.best.predicted).toFixed(2)}</div>
+        </div>
+      )}
+      {goal?.best?.inputs && (
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="label">Goal Seek Inputs</div>
+          <div className="grid3" style={{ marginTop: 8 }}>
+            {Object.entries(goal.best.inputs).map(([k, v]: any) => (
+              <div key={k} className="kpi">
+                <div className="kpiTitle">{k}</div>
+                <div className="kpiValue">{formatNum(v)}</div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -826,12 +1172,19 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
   const [busy, setBusy] = useState(false);
   const [resp, setResp] = useState<any>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [weights, setWeights] = useState({ frag: 1.0, ppv: 1.0, air: 0.7 });
+  const [useFrag, setUseFrag] = useState(true);
+  const [usePpv, setUsePpv] = useState(true);
+  const [useAir, setUseAir] = useState(true);
+  const [method, setMethod] = useState("SLSQP");
+  const [pareto, setPareto] = useState<any[] | null>(null);
+  const [paretoBusy, setParetoBusy] = useState(false);
 
   useEffect(() => {
     if (!apiBaseUrl) return;
     (async () => {
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/cost/defaults`, {
-        headers: { authorization: `Bearer ${token}` },
+        headers: { ...authHeaders(token) },
       });
       const json = await res.json();
       setDefaults(json);
@@ -844,8 +1197,8 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     try {
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/cost/compute`, {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-        body: JSON.stringify(defaults),
+        headers: { "content-type": "application/json", ...authHeaders(token) },
+        body: JSON.stringify({ ...defaults, weights, use_frag: useFrag, use_ppv: usePpv, use_air: useAir, method }),
       });
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Compute failed");
@@ -863,8 +1216,8 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     try {
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/cost/optimize`, {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-        body: JSON.stringify(defaults),
+        headers: { "content-type": "application/json", ...authHeaders(token) },
+        body: JSON.stringify({ ...defaults, weights, use_frag: useFrag, use_ppv: usePpv, use_air: useAir, method }),
       });
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Optimise failed");
@@ -876,10 +1229,29 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     }
   }
 
+  async function runPareto() {
+    setParetoBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/cost/pareto`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...authHeaders(token) },
+        body: JSON.stringify({ ...defaults, weights, use_frag: useFrag, use_ppv: usePpv, use_air: useAir, method }),
+      });
+      const json = await res.json();
+      if (!res.ok || json?.error) throw new Error(json?.error ?? "Pareto failed");
+      setPareto(json?.rows ?? []);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setParetoBusy(false);
+    }
+  }
+
   return (
     <div className="card">
       <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Cost Optimisation</div>
-      <div className="subtitle">Uses CTk cost model defaults (no dataset selection).</div>
+      <div className="subtitle">Mirrors the CTk cost model with KPI + Pareto visuals.</div>
       <div className="grid3" style={{ marginTop: 10 }}>
         {Object.keys(defaults).map((k) => (
           <div key={k}>
@@ -893,6 +1265,31 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
           </div>
         ))}
       </div>
+      <div className="grid3" style={{ marginTop: 12 }}>
+        <div>
+          <label className="label">Method</label>
+          <select className="input" value={method} onChange={(e) => setMethod(e.target.value)}>
+            <option value="SLSQP">SLSQP</option>
+            <option value="trust-constr">trust-constr</option>
+          </select>
+        </div>
+        <div>
+          <label className="label">Weights</label>
+          <div className="grid3">
+            <input className="input" type="number" value={weights.frag} onChange={(e) => setWeights({ ...weights, frag: Number(e.target.value) })} />
+            <input className="input" type="number" value={weights.ppv} onChange={(e) => setWeights({ ...weights, ppv: Number(e.target.value) })} />
+            <input className="input" type="number" value={weights.air} onChange={(e) => setWeights({ ...weights, air: Number(e.target.value) })} />
+          </div>
+        </div>
+        <div>
+          <label className="label">Constraints</label>
+          <div style={{ display: "grid", gap: 6 }}>
+            <label className="label"><input type="checkbox" checked={useFrag} onChange={(e) => setUseFrag(e.target.checked)} /> Use fragmentation</label>
+            <label className="label"><input type="checkbox" checked={usePpv} onChange={(e) => setUsePpv(e.target.checked)} /> Constrain PPV</label>
+            <label className="label"><input type="checkbox" checked={useAir} onChange={(e) => setUseAir(e.target.checked)} /> Constrain Airblast</label>
+          </div>
+        </div>
+      </div>
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <button className="btn btnPrimary" onClick={runCompute} disabled={busy}>
           {busy ? "Working…" : "Compute KPIs"}
@@ -900,12 +1297,59 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
         <button className="btn" onClick={runOptimize} disabled={busy}>
           {busy ? "Optimising…" : "Optimise"}
         </button>
+        <button className="btn" onClick={runPareto} disabled={paretoBusy}>
+          {paretoBusy ? "Running…" : "Pareto"}
+        </button>
       </div>
       {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
       {resp && (
+        <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
+          <div className="grid3">
+            <div className="kpi">
+              <div className="kpiTitle">Cost</div>
+              <div className="kpiValue">{formatNum(resp.cost)}</div>
+            </div>
+            <div className="kpi">
+              <div className="kpiTitle">PPV</div>
+              <div className="kpiValue">{formatNum(resp.PPV)}</div>
+            </div>
+            <div className="kpi">
+              <div className="kpiTitle">Airblast</div>
+              <div className="kpiValue">{formatNum(resp.L)}</div>
+            </div>
+            <div className="kpi">
+              <div className="kpiTitle">X50</div>
+              <div className="kpiValue">{formatNum(resp.X50)}</div>
+            </div>
+            <div className="kpi">
+              <div className="kpiTitle">Oversize %</div>
+              <div className="kpiValue">{formatNum(resp.oversize * 100)}</div>
+            </div>
+            <div className="kpi">
+              <div className="kpiTitle">PF</div>
+              <div className="kpiValue">{formatNum(resp.derived?.PF)}</div>
+            </div>
+          </div>
+          {resp.cost_break && (
+            <div className="card">
+              <div className="label">Cost Breakdown</div>
+              <BarChart
+                labels={["Initiation", "Explosive", "Drilling"]}
+                values={resp.cost_break}
+              />
+            </div>
+          )}
+          <div className="card">
+            <div className="label">Derived</div>
+            <pre style={pre}>{JSON.stringify(resp.derived, null, 2)}</pre>
+          </div>
+        </div>
+      )}
+      {pareto && (
         <div className="card" style={{ marginTop: 12 }}>
-          <div className="label">Result</div>
-          <pre style={pre}>{JSON.stringify(resp, null, 2)}</pre>
+          <div className="label">Pareto (Cost vs Oversize%)</div>
+          <ParetoScatter rows={pareto} />
+          <pre style={{ ...pre, marginTop: 10 }}>{JSON.stringify(pareto.slice(0, 12), null, 2)}</pre>
         </div>
       )}
     </div>

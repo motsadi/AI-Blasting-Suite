@@ -9,6 +9,7 @@ class Settings(BaseSettings):
 
     cors_origins: str = "*"  # comma-separated, overridden in prod
     cors_origin_regex: Optional[str] = None  # e.g. https://.*\\.vercel\\.app
+    require_auth: bool = False  # set BLAST_REQUIRE_AUTH=true to enforce auth
 
     # Optional: GCS bucket for model/data assets
     gcs_bucket: Optional[str] = None

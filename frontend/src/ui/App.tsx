@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { LoginCard } from "./LoginCard";
 import { Shell } from "./Shell";
-import { getDb } from "../instant";
+import { getDb, REQUIRE_AUTH } from "../instant";
 
 type Session = {
   token: string;
@@ -9,14 +9,17 @@ type Session = {
 };
 
 export function App() {
-  const [session, setSession] = useState<Session | null>(null);
-  const [booting, setBooting] = useState(true);
+  const [session, setSession] = useState<Session | null>(
+    REQUIRE_AUTH ? null : { token: "local", email: "local" }
+  );
+  const [booting, setBooting] = useState(REQUIRE_AUTH);
 
   const apiBaseUrl = useMemo(() => {
     return (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
   }, []);
 
   useEffect(() => {
+    if (!REQUIRE_AUTH) return;
     // Restore prior session (refresh_token) if present.
     const token = localStorage.getItem("instant_refresh_token");
     const email = localStorage.getItem("instant_email");
@@ -59,9 +62,11 @@ export function App() {
       apiBaseUrl={apiBaseUrl}
       session={session}
       onLogout={() => {
-        localStorage.removeItem("instant_refresh_token");
-        localStorage.removeItem("instant_email");
-        setSession(null);
+        if (REQUIRE_AUTH) {
+          localStorage.removeItem("instant_refresh_token");
+          localStorage.removeItem("instant_email");
+          setSession(null);
+        }
       }}
     />
   );
