@@ -694,6 +694,18 @@ def flyrock_predict(
         "McKenzie_SDoB": emp_mckenzie_sdob(vals_norm),
         "Lundborg_Legacy": emp_lundborg_legacy(vals_norm),
     }
+    empirical_auto = None
+    empirical_method = None
+    for key, method in [
+        ("Lundborg_1981", "Lundborg (1981): 143*d_in*(q-0.2)"),
+        ("McKenzie_SDoB", "McKenzie/SDoB: 10*d_mm^0.667*SDoB^-2.167*(ρ/2.6)"),
+        ("Lundborg_Legacy", "Legacy d-only: 30.745*d_mm^0.66"),
+    ]:
+        val = empirical.get(key)
+        if val is not None and np.isfinite(val):
+            empirical_auto = float(val)
+            empirical_method = method
+            break
 
     return {
         "prediction": yhat,
@@ -701,6 +713,81 @@ def flyrock_predict(
         "features": list(X.columns),
         "feature_stats": stats,
         "empirical": empirical,
+        "empirical_auto": empirical_auto,
+        "empirical_method": empirical_method,
+    }
+
+
+@app.post("/v1/flyrock/surface")
+def flyrock_surface(payload: dict = Body(default={}), _token: str = Depends(require_auth)):
+    import json
+    import numpy as np
+    import pandas as pd
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.model_selection import train_test_split
+
+    x_name = payload.get("x_name")
+    y_name = payload.get("y_name")
+    grid = int(payload.get("grid", 40))
+    inputs_json = payload.get("inputs_json")
+
+    df = _read_upload_df(None, DATASETS["flyrock"])
+    num = df.apply(pd.to_numeric, errors="coerce")
+    y = num.iloc[:, -1]
+    X = num.iloc[:, :-1]
+    mask = X.notna().all(axis=1) & y.notna()
+    X = X[mask]
+    y = y[mask]
+    if X.shape[0] < 30 or X.shape[1] < 2:
+        return {"error": "Need >=30 rows and >=2 numeric features after cleaning."}
+
+    if x_name not in X.columns or y_name not in X.columns or x_name == y_name:
+        return {"error": "Invalid x_name/y_name."}
+
+    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=42)
+    rf = RandomForestRegressor(n_estimators=500, random_state=42).fit(Xtr, ytr)
+
+    stats = {}
+    for c in X.columns:
+        s = X[c].dropna()
+        stats[c] = {
+            "min": float(s.quantile(0.02)),
+            "max": float(s.quantile(0.98)),
+            "median": float(s.median()),
+        }
+
+    inputs = None
+    if isinstance(inputs_json, str):
+        try:
+            inputs = json.loads(inputs_json)
+        except Exception:
+            inputs = None
+    elif isinstance(inputs_json, dict):
+        inputs = inputs_json
+    if not isinstance(inputs, dict):
+        inputs = {c: stats[c]["median"] for c in X.columns}
+
+    x_min, x_max = stats[x_name]["min"], stats[x_name]["max"]
+    y_min, y_max = stats[y_name]["min"], stats[y_name]["max"]
+    xs = np.linspace(x_min, x_max, grid)
+    ys = np.linspace(y_min, y_max, grid)
+    XX, YY = np.meshgrid(xs, ys)
+    base = np.array([[float(inputs.get(c, stats[c]["median"])) for c in X.columns]], dtype=float)
+    G = XX.size
+    DM = np.repeat(base, G, axis=0)
+    ix = list(X.columns).index(x_name)
+    iy = list(X.columns).index(y_name)
+    DM[:, ix] = XX.ravel()
+    DM[:, iy] = YY.ravel()
+    DM_df = pd.DataFrame(DM, columns=X.columns)
+    Z = rf.predict(DM_df).reshape(XX.shape)
+
+    return {
+        "x_name": x_name,
+        "y_name": y_name,
+        "grid_x": xs.tolist(),
+        "grid_y": ys.tolist(),
+        "Z": Z.tolist(),
     }
 
 
@@ -752,6 +839,10 @@ def backbreak_predict(
     order = np.argsort(imp)[::-1]
     feat_names = list(X.columns)
     keep = [feat_names[i] for i in order[: min(6, len(order))]]
+    feat_importance = [
+        {"feature": feat_names[i], "importance": float(imp[i])}
+        for i in order
+    ]
 
     stats = {}
     for name in keep:
@@ -776,7 +867,12 @@ def backbreak_predict(
     xstar = np.array([[float(inputs.get(c, stats[c]["median"])) for c in keep]], dtype=float)
     yhat = float(model.predict(xstar)[0])
 
-    return {"prediction": yhat, "features": keep, "feature_stats": stats}
+    return {
+        "prediction": yhat,
+        "features": keep,
+        "feature_stats": stats,
+        "feature_importance": feat_importance,
+    }
 
 
 @app.post("/v1/slope/predict")

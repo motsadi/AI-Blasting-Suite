@@ -820,6 +820,9 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
   const [err, setErr] = useState<string | null>(null);
   const [inputs, setInputs] = useState<Record<string, number>>({});
   const [file, setFile] = useState<File | null>(null);
+  const [xAxis, setXAxis] = useState("");
+  const [yAxis, setYAxis] = useState("");
+  const [surface, setSurface] = useState<any>(null);
 
   async function run() {
     if (!apiBaseUrl) return;
@@ -844,98 +847,9 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
         });
         setInputs(next);
       }
-    } catch (e: any) {
-      setErr(String(e?.message ?? e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="card">
-      <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Flyrock</div>
-      <div className="subtitle">Upload a CSV or use the default dataset.</div>
-      <div style={{ marginTop: 10 }} className="grid2">
-        <div>
-          <label className="label">Upload CSV</label>
-          <input className="input" type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-        </div>
-        <div style={{ display: "flex", alignItems: "flex-end" }}>
-          <button className="btn btnPrimary" onClick={run} disabled={busy}>
-            {busy ? "Running…" : "Predict"}
-          </button>
-        </div>
-      </div>
-      {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
-      {resp?.prediction != null && (
-        <div className="kpi" style={{ marginTop: 12 }}>
-          <div className="kpiTitle">Predicted flyrock distance</div>
-          <div className="kpiValue">{Number(resp.prediction).toFixed(2)}</div>
-          <div className="label">Train R²: {Number(resp.train_r2).toFixed(3)}</div>
-        </div>
-      )}
-      {resp?.empirical && (
-        <div style={{ marginTop: 12 }}>
-          {Object.entries(resp.empirical).map(([k, v]) => (
-            <div key={k} className="kpi" style={{ marginTop: 6 }}>
-              <div className="kpiTitle">{k}</div>
-              <div className="kpiValue">{Number(v).toFixed(2)}</div>
-            </div>
-          ))}
-        </div>
-      )}
-      {resp?.feature_stats && (
-        <div style={{ marginTop: 12 }}>
-          <div className="label">Inputs</div>
-          <div className="grid3" style={{ marginTop: 8 }}>
-            {Object.keys(resp.feature_stats).map((k) => (
-              <div key={k}>
-                <label className="label">{k}</label>
-                <input
-                  className="input"
-                  type="number"
-                  value={inputs[k] ?? resp.feature_stats[k]?.median ?? 0}
-                  onChange={(e) => setInputs({ ...inputs, [k]: Number(e.target.value) })}
-                />
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
-  const [resp, setResp] = useState<any>(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const [inputs, setInputs] = useState<Record<string, number>>({});
-  const [file, setFile] = useState<File | null>(null);
-
-  async function run() {
-    if (!apiBaseUrl) return;
-    setBusy(true);
-    setErr(null);
-    try {
-      const fd = new FormData();
-      if (file) fd.append("file", file);
-      if (Object.keys(inputs).length) fd.append("inputs_json", JSON.stringify(inputs));
-      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/slope/predict`, {
-        method: "POST",
-        headers: { ...authHeaders(token) },
-        body: fd,
-      });
-      const json = await res.json();
-      if (!res.ok || json?.error) throw new Error(json?.error ?? "Slope failed");
-      setResp(json);
-      if (json?.feature_stats) {
-        const next: Record<string, number> = {};
-        Object.keys(json.feature_stats).forEach((k) => {
-          next[k] = json.feature_stats[k].median;
-        });
-        setInputs(next);
+      if (json?.features?.length) {
+        setXAxis(json.features[0]);
+        setYAxis(json.features[1] ?? json.features[0]);
       }
     } catch (e: any) {
       setErr(String(e?.message ?? e));
@@ -944,36 +858,254 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     }
   }
 
+  async function runSurface(xName?: string, yName?: string) {
+    if (!apiBaseUrl || !resp?.features?.length) return;
+    const x = xName ?? xAxis;
+    const y = yName ?? yAxis;
+    if (!x || !y || x === y) return;
+    try {
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/flyrock/surface`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...authHeaders(token) },
+        body: JSON.stringify({ x_name: x, y_name: y, inputs_json: inputs }),
+      });
+      const json = await res.json();
+      if (!res.ok || json?.error) throw new Error(json?.error ?? "Surface failed");
+      setSurface(json);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    }
+  }
+
+  const empiricalAuto = useMemo(() => {
+    if (resp?.empirical_auto != null) {
+      return { value: resp.empirical_auto, method: resp.empirical_method };
+    }
+    const emp = resp?.empirical ?? {};
+    const order = [
+      ["Lundborg_1981", "Lundborg (1981): 143*d_in*(q-0.2)"],
+      ["McKenzie_SDoB", "McKenzie/SDoB: 10*d_mm^0.667*SDoB^-2.167*(ρ/2.6)"],
+      ["Lundborg_Legacy", "Legacy d-only: 30.745*d_mm^0.66"],
+    ];
+    for (const [k, method] of order) {
+      const v = emp?.[k];
+      if (Number.isFinite(Number(v))) return { value: Number(v), method };
+    }
+    return null;
+  }, [resp]);
+
+  useEffect(() => {
+    if (xAxis && yAxis) runSurface(xAxis, yAxis);
+  }, [xAxis, yAxis]);
+
   return (
     <div className="card">
-      <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Slope Stability</div>
-      <div className="subtitle">Upload a CSV or use the default dataset.</div>
-      <div style={{ marginTop: 10 }} className="grid2">
+      <div className="grid2">
         <div>
-          <label className="label">Upload CSV</label>
-          <input className="input" type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+          <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Flyrock — ML + Empirical</div>
+          <div className="subtitle">Load a CSV to train and explore the surface.</div>
+
+          <div style={{ marginTop: 10 }}>
+            <label className="label">Load CSV</label>
+            <input className="input" type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+          </div>
+
+          <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+            <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict"}</button>
+            <button className="btn" onClick={() => runSurface()} disabled={!resp?.features?.length}>Redraw surface</button>
+          </div>
+
+          <div className="kpi" style={{ marginTop: 12 }}>
+            <div className="kpiTitle">Predicted flyrock</div>
+            <div className="kpiValue">{resp?.prediction != null ? formatNum(resp.prediction) : "—"}</div>
+            {resp?.train_r2 != null && <div className="label">Train R²: {Number(resp.train_r2).toFixed(3)}</div>}
+          </div>
+
+          <div className="kpi" style={{ marginTop: 10 }}>
+            <div className="kpiTitle">Empirical estimate</div>
+            <div className="kpiValue">{empiricalAuto ? formatNum(empiricalAuto.value) : "—"} m</div>
+            {empiricalAuto?.method && <div className="label">{empiricalAuto.method}</div>}
+          </div>
+
+          {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
+
+          {resp?.feature_stats && (
+            <div style={{ marginTop: 12, maxHeight: 420, overflow: "auto" }}>
+              <div className="label">Adjust Inputs</div>
+              {Object.entries(resp.feature_stats).map(([k, stat]: any) => (
+                <div key={k} style={{ marginTop: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span className="label">{k}</span>
+                    <span className="label">{formatNum(inputs[k] ?? stat?.median ?? 0)}</span>
+                  </div>
+                  <input
+                    className="input"
+                    type="range"
+                    min={stat?.min ?? 0}
+                    max={stat?.max ?? 1}
+                    step={(stat?.max - stat?.min) / 200 || 0.01}
+                    value={inputs[k] ?? stat?.median ?? 0}
+                    onChange={(e) => setInputs({ ...inputs, [k]: Number(e.target.value) })}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-        <div style={{ display: "flex", alignItems: "flex-end" }}>
-          <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict"}</button>
+
+        <div>
+          <div className="card">
+            <div className="label">Surface axes</div>
+            <div className="grid2" style={{ marginTop: 8 }}>
+              <select className="input" value={xAxis} onChange={(e) => setXAxis(e.target.value)}>
+                {(resp?.features ?? []).map((f: string) => (
+                  <option key={f} value={f}>{f}</option>
+                ))}
+              </select>
+              <select className="input" value={yAxis} onChange={(e) => setYAxis(e.target.value)}>
+                {(resp?.features ?? []).map((f: string) => (
+                  <option key={f} value={f}>{f}</option>
+                ))}
+              </select>
+            </div>
+            {surface?.Z ? (
+              <SurfaceHeatmap gridX={surface.grid_x} gridY={surface.grid_y} Z={surface.Z} x1={surface.x_name} x2={surface.y_name} />
+            ) : (
+              <div className="subtitle" style={{ marginTop: 10 }}>
+                Run prediction to enable the flyrock surface.
+              </div>
+            )}
+            <div className="subtitle" style={{ marginTop: 8 }}>
+              Empirical: auto-chooses Lundborg (1981), McKenzie/SDoB, or legacy d-only.
+            </div>
+          </div>
         </div>
       </div>
-      {Object.keys(inputs).length ? (
-        <div className="grid3" style={{ marginTop: 10 }}>
-          {Object.entries(inputs).map(([k, v]) => (
-            <div key={k}>
-              <label className="label">{k}</label>
-              <input className="input" type="number" value={v} onChange={(e) => setInputs({ ...inputs, [k]: Number(e.target.value) })} />
+    </div>
+  );
+}
+
+function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+  const [resp, setResp] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [params, setParams] = useState({
+    H: 10,
+    beta: 30,
+    c: 50,
+    phi: 30,
+    gamma: 20,
+    ru: 0.2,
+    B: 4,
+  });
+
+  function resolveFeature(features: string[], synonyms: string[]) {
+    const lower = features.map((f) => f.toLowerCase());
+    for (const s of synonyms) {
+      const idx = lower.findIndex((f) => f === s || f.includes(s));
+      if (idx >= 0) return features[idx];
+    }
+    return null;
+  }
+
+  function buildInputsFromParams(features: string[]) {
+    const mapping = {
+      gamma: resolveFeature(features, ["gamma", "unit weight"]),
+      c: resolveFeature(features, ["c", "cohesion"]),
+      phi: resolveFeature(features, ["phi", "friction angle"]),
+      beta: resolveFeature(features, ["beta", "slope angle"]),
+      H: resolveFeature(features, ["h", "height"]),
+      ru: resolveFeature(features, ["ru", "pore pressure ratio"]),
+    };
+    const inputs: Record<string, number> = {};
+    if (mapping.gamma) inputs[mapping.gamma] = params.gamma;
+    if (mapping.c) inputs[mapping.c] = params.c;
+    if (mapping.phi) inputs[mapping.phi] = params.phi;
+    if (mapping.beta) inputs[mapping.beta] = params.beta;
+    if (mapping.H) inputs[mapping.H] = params.H;
+    if (mapping.ru) inputs[mapping.ru] = params.ru;
+    return inputs;
+  }
+
+  async function run() {
+    if (!apiBaseUrl) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const fd = new FormData();
+      if (file) fd.append("file", file);
+      if (resp?.features?.length) {
+        fd.append("inputs_json", JSON.stringify(buildInputsFromParams(resp.features)));
+      }
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/slope/predict`, {
+        method: "POST",
+        headers: { ...authHeaders(token) },
+        body: fd,
+      });
+      const json = await res.json();
+      if (!res.ok || json?.error) throw new Error(json?.error ?? "Slope failed");
+      setResp(json);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!resp?.features?.length) return;
+    run();
+  }, [params, resp?.features?.length]);
+
+  return (
+    <div className="card">
+      <div className="grid2">
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Slope Stability — Stable / Failure (ML)</div>
+          <div className="subtitle">Load CSV to train, then adjust parameters.</div>
+
+          <div style={{ marginTop: 10 }}>
+            <label className="label">Load CSV</label>
+            <input className="input" type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+          </div>
+
+          <div style={{ marginTop: 10 }}>
+            <button className="btn btnPrimary" onClick={run} disabled={busy}>
+              {busy ? "Running…" : "Predict"}
+            </button>
+          </div>
+
+          <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+            <SliderField label="H (m)" value={params.H} min={1} max={50} step={0.5} onChange={(v) => setParams({ ...params, H: v })} />
+            <SliderField label="β (deg)" value={params.beta} min={5} max={80} step={0.5} onChange={(v) => setParams({ ...params, beta: v })} />
+            <SliderField label="c (kPa)" value={params.c} min={1} max={200} step={0.5} onChange={(v) => setParams({ ...params, c: v })} />
+            <SliderField label="φ (deg)" value={params.phi} min={5} max={60} step={0.5} onChange={(v) => setParams({ ...params, phi: v })} />
+            <SliderField label="γ (kN/m³)" value={params.gamma} min={14} max={28} step={0.1} onChange={(v) => setParams({ ...params, gamma: v })} />
+            <SliderField label="ru (–)" value={params.ru} min={0} max={1} step={0.01} onChange={(v) => setParams({ ...params, ru: v })} />
+            <SliderField label="B (m) — sketch only" value={params.B} min={0} max={30} step={0.5} onChange={(v) => setParams({ ...params, B: v })} />
+          </div>
+
+          {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
+          {resp?.prob_stable != null && (
+            <div className="kpi" style={{ marginTop: 12 }}>
+              <div className="kpiTitle">Prediction</div>
+              <div className="kpiValue">
+                {resp.prob_stable >= 0.5 ? "🟢 Stable" : "🔴 Failure"} (P(stable)={(Number(resp.prob_stable) * 100).toFixed(1)}%)
+              </div>
             </div>
-          ))}
+          )}
         </div>
-      ) : null}
-      {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
-      {resp?.prob_stable != null && (
-        <div className="kpi" style={{ marginTop: 12 }}>
-          <div className="kpiTitle">P(Stable)</div>
-          <div className="kpiValue">{(Number(resp.prob_stable) * 100).toFixed(1)}%</div>
+
+        <div className="card">
+          <SlopeSketch
+            H={params.H}
+            beta={params.beta}
+            B={params.B}
+            prob={resp?.prob_stable}
+          />
         </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -1240,44 +1372,77 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
     }
   }
 
+  function resetMedians() {
+    if (!resp?.feature_stats) return;
+    const next: Record<string, number> = {};
+    Object.keys(resp.feature_stats).forEach((k) => {
+      next[k] = resp.feature_stats[k].median;
+    });
+    setInputs(next);
+  }
+
   return (
     <div className="card">
-      <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Backbreak</div>
-      <div className="subtitle">Upload a CSV or use the default dataset.</div>
-      <div style={{ marginTop: 10 }} className="grid2">
+      <div className="grid2">
         <div>
-          <label className="label">Upload CSV</label>
-          <input className="input" type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+          <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Back Break — Data & Controls</div>
+          <div className="subtitle">Load a CSV to train RF and adjust top features.</div>
+
+          <div style={{ marginTop: 10 }}>
+            <label className="label">Load CSV</label>
+            <input className="input" type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+          </div>
+
+          <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+            <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict Now"}</button>
+            <button className="btn" onClick={resetMedians} disabled={!resp?.feature_stats}>Reset to Medians</button>
+          </div>
+
+          <div className="kpi" style={{ marginTop: 12 }}>
+            <div className="kpiTitle">Predicted Back Break</div>
+            <div className="kpiValue">{resp?.prediction != null ? Number(resp.prediction).toFixed(2) : "—"}</div>
+          </div>
+
+          {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
+
+          {resp?.feature_stats && (
+            <div style={{ marginTop: 12, maxHeight: 420, overflow: "auto" }}>
+              <div className="label">Adjust Top Features</div>
+              {Object.entries(resp.feature_stats).map(([k, stat]: any) => (
+                <div key={k} style={{ marginTop: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span className="label">{k}</span>
+                    <span className="label">{formatNum(inputs[k] ?? stat?.median ?? 0)}</span>
+                  </div>
+                  <input
+                    className="input"
+                    type="range"
+                    min={stat?.min ?? 0}
+                    max={stat?.max ?? 1}
+                    step={(stat?.max - stat?.min) / 100 || 0.01}
+                    value={inputs[k] ?? stat?.median ?? 0}
+                    onChange={(e) => setInputs({ ...inputs, [k]: Number(e.target.value) })}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-        <div style={{ display: "flex", alignItems: "flex-end" }}>
-          <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict"}</button>
-        </div>
-      </div>
-      {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
-      {resp?.prediction != null && (
-        <div className="kpi" style={{ marginTop: 12 }}>
-          <div className="kpiTitle">Predicted Backbreak</div>
-          <div className="kpiValue">{Number(resp.prediction).toFixed(2)}</div>
-        </div>
-      )}
-      {resp?.feature_stats && (
-        <div style={{ marginTop: 12 }}>
-          <div className="label">Inputs</div>
-          <div className="grid3" style={{ marginTop: 8 }}>
-            {Object.keys(resp.feature_stats).map((k) => (
-              <div key={k}>
-                <label className="label">{k}</label>
-                <input
-                  className="input"
-                  type="number"
-                  value={inputs[k] ?? resp.feature_stats[k]?.median ?? 0}
-                  onChange={(e) => setInputs({ ...inputs, [k]: Number(e.target.value) })}
-                />
-              </div>
-            ))}
+
+        <div>
+          <div className="card">
+            <div className="label">Random Forest — Feature Importance</div>
+            {resp?.feature_importance ? (
+              <HorizontalBarChart
+                labels={resp.feature_importance.map((it: any) => it.feature)}
+                values={resp.feature_importance.map((it: any) => it.importance)}
+              />
+            ) : (
+              <div className="subtitle">Load a CSV and run prediction to see importances.</div>
+            )}
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -2185,6 +2350,86 @@ function CorrelationHeatmap({ data, columns }: { data: Array<Record<string, any>
           return <rect key={`${i}-${j}`} x={j * cellW} y={i * cellH} width={cellW} height={cellH} fill={color} opacity={0.9} />;
         })
       )}
+    </svg>
+  );
+}
+
+function SliderField({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <span className="label">{label}</span>
+        <span className="label">{formatNum(value)}</span>
+      </div>
+      <input
+        className="input"
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+    </div>
+  );
+}
+
+function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number; prob?: number }) {
+  const w = 620;
+  const h = 360;
+  const betaRad = (beta * Math.PI) / 180;
+  const run = H / Math.max(Math.tan(betaRad), 1e-3);
+  const toeX = B + run;
+  const pad = 20;
+  const scale = Math.min((w - 2 * pad) / (toeX * 1.2), (h - 2 * pad) / (H * 1.2));
+  const sx = (x: number) => pad + x * scale;
+  const sy = (y: number) => h - pad - y * scale;
+  const x0 = 0;
+  const y0 = 0;
+  const x1 = 0;
+  const y1 = H;
+  const x2 = B;
+  const y2 = H;
+  const x3 = toeX;
+  const y3 = 0;
+  const label = prob == null ? "—" : prob >= 0.5 ? `Stable (P=${prob.toFixed(2)})` : `Failure (P=${prob.toFixed(2)})`;
+  const col = prob == null ? "#64748b" : prob >= 0.5 ? "#22c55e" : "#ef4444";
+
+  return (
+    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "rgba(2,6,23,0.35)", borderRadius: 12 }}>
+      <polygon
+        points={`${sx(x0)},${sy(y0)} ${sx(x1)},${sy(y1)} ${sx(x2)},${sy(y2)} ${sx(x3)},${sy(y3)}`}
+        fill="#d6d7db"
+        opacity="0.7"
+        stroke="#0f172a"
+        strokeWidth="2"
+      />
+      <line x1={sx(0)} y1={sy(0)} x2={sx(toeX * 1.06)} y2={sy(0)} stroke="#0f172a" strokeWidth="1.5" />
+      <line x1={sx(0)} y1={sy(0)} x2={sx(0)} y2={sy(H * 1.05)} stroke="#0f172a" strokeWidth="1.5" />
+      <text x={sx(0) + 10} y={sy(H / 2)} fill="#1f77b4" fontSize="10">
+        H = {H.toFixed(1)} m
+      </text>
+      <text x={sx(toeX - run / 2)} y={sy(H) - 6} fill="#555" fontSize="10">
+        B = {B.toFixed(1)} m
+      </text>
+      <rect x={sx(toeX * 0.55)} y={sy(H * 1.15)} width={160} height={24} fill={col} rx={6} />
+      <text x={sx(toeX * 0.55) + 8} y={sy(H * 1.15) + 16} fill="#fff" fontSize="12">
+        {label}
+      </text>
     </svg>
   );
 }
