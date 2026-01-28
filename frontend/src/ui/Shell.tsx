@@ -628,22 +628,45 @@ function PredictPanel({
     }
     setBusy(true);
     try {
-      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/predict`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...authHeaders(token),
-        },
-        body: JSON.stringify({
-          inputs,
-          hpd_override: hpdOverride,
-          empirical,
-          want_ml: wantMl,
-          rr_n: rrMode === "manual" ? rrN : undefined,
-          rr_mode: rrMode,
-          rr_x_ov: rrXov,
-        }),
-      });
+      let res: Response;
+      if (dataset?.file || dataset?.rows?.length) {
+        const fd = new FormData();
+        if (dataset.file) {
+          fd.append("file", dataset.file);
+        } else {
+          const blob = datasetToCsvBlob(dataset);
+          if (blob) fd.append("file", blob, "dataset.csv");
+        }
+        fd.append("inputs_json", JSON.stringify(inputs));
+        fd.append("hpd_override", String(hpdOverride));
+        fd.append("empirical_json", JSON.stringify(empirical));
+        fd.append("want_ml", String(wantMl));
+        if (rrMode === "manual") fd.append("rr_n", String(rrN));
+        if (rrMode) fd.append("rr_mode", rrMode);
+        fd.append("rr_x_ov", String(rrXov));
+        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/predict/upload`, {
+          method: "POST",
+          headers: { ...authHeaders(token) },
+          body: fd,
+        });
+      } else {
+        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/predict`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...authHeaders(token),
+          },
+          body: JSON.stringify({
+            inputs,
+            hpd_override: hpdOverride,
+            empirical,
+            want_ml: wantMl,
+            rr_n: rrMode === "manual" ? rrN : undefined,
+            rr_mode: rrMode,
+            rr_x_ov: rrXov,
+          }),
+        });
+      }
       const json = await res.json();
       setOut({ status: res.status, json });
     } catch (e: any) {

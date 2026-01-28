@@ -34,6 +34,7 @@ python backend/tools/upload_assets_to_gcs.py
 - `GET /health`
 - `GET /v1/assets/status`
 - `POST /v1/predict` (empirical + optional ML if model assets present)
+- `POST /v1/predict/upload` (train fallback ML from uploaded dataset)
 
 ### Core logic import
 

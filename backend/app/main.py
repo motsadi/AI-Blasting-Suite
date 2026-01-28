@@ -6,7 +6,7 @@ from fastapi import Body, Depends, FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth import require_auth
-from app.assets import assets_status, load_local_assets
+from app.assets import LoadedAssets, assets_status, load_local_assets
 from app.core_imports import add_core_bundle_to_path
 from app.gcs import REQUIRED_DATASET_FILES, sync_assets_from_gcs
 from app.schemas import AssetsStatus, PredictRequest, PredictResponse
@@ -249,6 +249,8 @@ def predict(req: PredictRequest, _token: str = Depends(require_auth)):
         rr = None
 
     ml = None
+    if req.want_ml and not (_assets.scaler and (_assets.mdl_frag or _assets.mdl_ppv or _assets.mdl_air)):
+        _maybe_train_models_from_default_dataset()
     if req.want_ml and _assets.scaler and (_assets.mdl_frag or _assets.mdl_ppv or _assets.mdl_air):
         import numpy as np
 
@@ -263,6 +265,52 @@ def predict(req: PredictRequest, _token: str = Depends(require_auth)):
             ml["Fragmentation"] = float(_assets.mdl_frag.predict(Xs)[0])
 
     return PredictResponse(empirical=emp, ml=ml, assets_loaded=assets_status(_assets), rr=rr)
+
+
+@app.post("/v1/predict/upload", response_model=PredictResponse)
+def predict_upload(
+    file: UploadFile = File(...),
+    inputs_json: str = Form(...),
+    hpd_override: float = Form(default=1.0),
+    empirical_json: str = Form(default="{}"),
+    want_ml: bool = Form(default=True),
+    rr_n: float | None = Form(default=None),
+    rr_mode: str | None = Form(default=None),
+    rr_x_ov: float | None = Form(default=None),
+    _token: str = Depends(require_auth),
+):
+    """
+    Predict using an uploaded dataset (fallback ML training when joblib assets are missing).
+    """
+    import json
+
+    try:
+        inputs = json.loads(inputs_json)
+    except Exception:
+        inputs = {}
+    try:
+        empirical = json.loads(empirical_json)
+    except Exception:
+        empirical = {}
+
+    req = PredictRequest(
+        inputs=inputs,
+        hpd_override=hpd_override,
+        empirical=empirical,
+        want_ml=want_ml,
+        rr_n=rr_n,
+        rr_mode=rr_mode,
+        rr_x_ov=rr_x_ov,
+    )
+
+    if want_ml:
+        try:
+            df = _read_upload_df(file)
+            _maybe_train_models_from_df(df)
+        except Exception:
+            pass
+
+    return predict(req, _token=_token)
 
 
 def _ensure_dataset(name: str) -> Path:
@@ -435,6 +483,80 @@ def _feature_map_synonyms():
             "airblast": ["airblast", "air blast", "air overpressure", "overpressure", "db", "air blast (db)"],
         },
     }
+
+
+_ml_cache_key: str | None = None
+
+
+def _maybe_train_models_from_default_dataset() -> None:
+    try:
+        df = _read_upload_df(None, DATASETS["combined"])
+        _maybe_train_models_from_df(df)
+    except Exception:
+        return
+
+
+def _maybe_train_models_from_df(df) -> None:
+    """
+    Train fallback ML models from a dataset if joblib assets are missing.
+    """
+    global _assets, _ml_cache_key
+    if _assets.scaler and (_assets.mdl_frag or _assets.mdl_ppv or _assets.mdl_air):
+        return
+
+    import numpy as np
+    import pandas as pd
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.preprocessing import StandardScaler
+
+    cols = list(df.columns)
+    key = f"{len(df)}|{','.join(map(str, cols))}"
+    if _ml_cache_key == key:
+        return
+
+    syn = _feature_map_synonyms()
+    in_res = _resolve_map(df.columns, INPUT_LABELS, syn["inputs"])
+    out_res = _resolve_map(df.columns, ["Fragmentation", "Ground Vibration", "Airblast"], syn["outputs"])
+    name_mode_ok = (not any(v is None for v in in_res)) and (not any(v is None for v in out_res))
+
+    if name_mode_ok:
+        Xraw = df[in_res].copy()
+        Yraw = df[out_res].copy()
+    else:
+        num = df.select_dtypes(include=[np.number]).copy()
+        if num.shape[1] < 4:
+            return
+        Xraw = num.iloc[:, : num.shape[1] - 3].copy()
+        Yraw = num.iloc[:, num.shape[1] - 3 :].copy()
+
+    Xnum = Xraw.apply(pd.to_numeric, errors="coerce")
+    Ynum = Yraw.apply(pd.to_numeric, errors="coerce")
+    work = Xnum.join(Ynum, how="inner").dropna()
+    if work.empty:
+        return
+
+    X = work.iloc[:, : Xraw.shape[1]].values
+    scaler = StandardScaler().fit(X)
+    Xs = scaler.transform(X)
+
+    mdl_frag = mdl_ppv = mdl_air = None
+    for out_name in ["Fragmentation", "Ground Vibration", "Airblast"]:
+        if out_name not in Yraw.columns:
+            continue
+        y = pd.to_numeric(work[out_name], errors="coerce").values
+        if len(y) < 30:
+            continue
+        mdl = RandomForestRegressor(n_estimators=400, random_state=42)
+        mdl.fit(Xs, y)
+        if out_name == "Fragmentation":
+            mdl_frag = mdl
+        elif out_name == "Ground Vibration":
+            mdl_ppv = mdl
+        elif out_name == "Airblast":
+            mdl_air = mdl
+
+    _assets = LoadedAssets(scaler=scaler, mdl_frag=mdl_frag, mdl_ppv=mdl_ppv, mdl_air=mdl_air)
+    _ml_cache_key = key
 
 
 def _feature_importance_df(df, top_k: int):
