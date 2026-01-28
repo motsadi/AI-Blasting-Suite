@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     gcs_bucket: Optional[str] = None
     gcs_prefix: str = "assets/"
 
+    # Optional: local overrides for assets/data (useful for desktop parity)
+    local_assets_dir: Optional[str] = None
+    local_data_dir: Optional[str] = None
+
     # InstantDB (placeholders; wire once token verification mechanism is confirmed)
     instantdb_api_uri: str = "https://api.instantdb.com"
     instantdb_app_id: Optional[str] = None  # required for verifying refresh_token

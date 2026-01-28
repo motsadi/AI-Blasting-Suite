@@ -18,6 +18,8 @@ def require_auth(authorization: Optional[str] = Header(default=None)) -> str:
     We verify it via InstantDB runtime endpoint:
       POST /runtime/auth/verify_refresh_token
     """
+    if not settings.require_auth:
+        return "local"
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing Authorization header")
     if not authorization.lower().startswith("bearer "):

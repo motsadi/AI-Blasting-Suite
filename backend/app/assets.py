@@ -23,14 +23,23 @@ def _safe_load_joblib(p: Path):
         return None
 
 
-def load_local_assets(core_bundle_path: Path) -> LoadedAssets:
+def load_local_assets(*search_paths: Path) -> LoadedAssets:
     """
-    Load joblib assets from the core bundle folder (local dev) or a copied folder (Cloud Run image).
+    Load joblib assets by searching multiple directories in order.
     """
-    scaler = _safe_load_joblib(core_bundle_path / "scaler1.joblib")
-    mdl_frag = _safe_load_joblib(core_bundle_path / "random_forest_model_Fragmentation.joblib")
-    mdl_ppv = _safe_load_joblib(core_bundle_path / "random_forest_model_Ground Vibration.joblib")
-    mdl_air = _safe_load_joblib(core_bundle_path / "random_forest_model_Airblast.joblib")
+    def _find(name: str) -> Optional[Any]:
+        for p in search_paths:
+            if not p:
+                continue
+            cand = Path(p) / name
+            if cand.exists():
+                return _safe_load_joblib(cand)
+        return None
+
+    scaler = _find("scaler1.joblib")
+    mdl_frag = _find("random_forest_model_Fragmentation.joblib")
+    mdl_ppv = _find("random_forest_model_Ground Vibration.joblib")
+    mdl_air = _find("random_forest_model_Airblast.joblib")
     return LoadedAssets(scaler=scaler, mdl_frag=mdl_frag, mdl_ppv=mdl_ppv, mdl_air=mdl_air)
 
 

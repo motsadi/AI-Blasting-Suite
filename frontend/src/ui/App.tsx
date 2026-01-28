@@ -9,14 +9,17 @@ type Session = {
 };
 
 export function App() {
-  const [session, setSession] = useState<Session | null>(null);
-  const [booting, setBooting] = useState(true);
+  const [session, setSession] = useState<Session | null>(
+    REQUIRE_AUTH ? null : { token: "local", email: "Local" }
+  );
+  const [booting, setBooting] = useState(REQUIRE_AUTH);
 
   const apiBaseUrl = useMemo(() => {
     return (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
   }, []);
 
   useEffect(() => {
+    if (!REQUIRE_AUTH) return;
     // Restore prior session (refresh_token) if present.
     const token = localStorage.getItem("instant_refresh_token");
     const email = localStorage.getItem("instant_email");

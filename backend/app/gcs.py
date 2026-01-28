@@ -15,6 +15,15 @@ REQUIRED_ASSET_FILES = [
     "random_forest_model_Airblast.joblib",
 ]
 
+REQUIRED_DATASET_FILES = [
+    "combinedv2Orapa.csv",
+    "Backbreak.csv",
+    "flyrock_synth.csv",
+    "slope data.csv",
+    "Hole_data_v1.csv",
+    "Hole_data_v2.csv",
+]
+
 
 @dataclass
 class GcsSyncResult:

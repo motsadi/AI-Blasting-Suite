@@ -8,12 +8,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.auth import require_auth
 from app.assets import assets_status, load_local_assets
 from app.core_imports import add_core_bundle_to_path
-from app.gcs import sync_assets_from_gcs
+from app.gcs import REQUIRED_DATASET_FILES, sync_assets_from_gcs
 from app.schemas import AssetsStatus, PredictRequest, PredictResponse
 from app.settings import settings
 
 
 core_bundle_path = add_core_bundle_to_path()
+local_assets_path = Path(settings.local_assets_dir).resolve() if settings.local_assets_dir else None
+local_data_path = Path(settings.local_data_dir).resolve() if settings.local_data_dir else None
 
 # Import read-only core functions (do not modify them)
 from utils_blaster import INPUT_LABELS, EmpiricalParams, empirical_predictions  # type: ignore
@@ -32,7 +34,7 @@ app.add_middleware(
     allow_origin_regex=settings.cors_origin_regex,
 )
 
-_assets = load_local_assets(core_bundle_path)
+_assets = load_local_assets(*(p for p in [local_assets_path, core_bundle_path] if p))
 
 DATASETS = {
     "combined": "combinedv2Orapa.csv",
@@ -47,7 +49,8 @@ DATASETS = {
 @app.on_event("startup")
 def _startup_sync_assets():
     """
-    If BLAST_GCS_BUCKET is set, download model/scaler assets from GCS into the core bundle folder
+    If BLAST_GCS_BUCKET is set, download model/scaler assets and datasets from GCS into the
+    core bundle folder (or fallback to a writable cache directory).
     (or fallback to a writable cache directory).
     """
     if not settings.gcs_bucket:
@@ -74,6 +77,12 @@ def _startup_sync_assets():
             prefix=prefix,
             dest_dir=dest,
         )
+        sync_assets_from_gcs(
+            bucket=bucket,
+            prefix=prefix,
+            dest_dir=dest,
+            required_files=REQUIRED_DATASET_FILES,
+        )
     except Exception:
         # Never prevent the API from starting due to asset sync issues.
         # (Assets can still be loaded from the baked image, or re-synced later.)
@@ -81,7 +90,7 @@ def _startup_sync_assets():
 
     # Reload assets after sync
     global _assets
-    _assets = load_local_assets(dest)
+    _assets = load_local_assets(*(p for p in [local_assets_path, dest] if p))
 
 
 @app.get("/health")
@@ -261,6 +270,7 @@ def _ensure_dataset(name: str) -> Path:
     Ensure a dataset exists locally; otherwise attempt download from GCS.
     """
     local_candidates = [
+        *( [local_data_path / name] if local_data_path else [] ),
         Path(core_bundle_path) / name,
         Path("/tmp/ai-blasting-assets") / name,
         Path("/tmp/ai-blasting-assets/datasets") / name,
