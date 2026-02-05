@@ -545,7 +545,8 @@ def _maybe_train_models_from_df(df) -> None:
         if out_name not in Yraw.columns:
             continue
         y = pd.to_numeric(work[out_name], errors="coerce").values
-        if len(y) < 30:
+        # Allow training on smaller datasets (preview/sample datasets can be small).
+        if len(y) < 10:
             continue
         mdl = RandomForestRegressor(n_estimators=400, random_state=42)
         mdl.fit(Xs, y)
@@ -556,8 +557,11 @@ def _maybe_train_models_from_df(df) -> None:
         elif out_name == "Airblast":
             mdl_air = mdl
 
-    _assets = LoadedAssets(scaler=scaler, mdl_frag=mdl_frag, mdl_ppv=mdl_ppv, mdl_air=mdl_air)
-    _ml_cache_key = key
+    # Only "lock in" the cache key if we successfully trained at least one model.
+    # (Otherwise we'd permanently skip retraining for this dataset shape.)
+    if mdl_frag or mdl_ppv or mdl_air:
+        _assets = LoadedAssets(scaler=scaler, mdl_frag=mdl_frag, mdl_ppv=mdl_ppv, mdl_air=mdl_air)
+        _ml_cache_key = key
 
 
 def _feature_importance_df(df, top_k: int):

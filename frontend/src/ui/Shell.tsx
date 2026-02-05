@@ -774,14 +774,11 @@ function PredictPanel({
     setBusy(true);
     try {
       let res: Response;
-      if (dataset?.file || dataset?.rows?.length) {
+      // Only use the upload endpoint when the user explicitly provided a dataset file.
+      // (The shared Data Manager "default sample" is a 20-row preview; uploading it prevents ML training.)
+      if (dataset?.file) {
         const fd = new FormData();
-        if (dataset.file) {
-          fd.append("file", dataset.file);
-        } else {
-          const blob = datasetToCsvBlob(dataset);
-          if (blob) fd.append("file", blob, "dataset.csv");
-        }
+        fd.append("file", dataset.file);
         fd.append("inputs_json", JSON.stringify(inputs));
         fd.append("hpd_override", String(hpdOverride));
         fd.append("empirical_json", JSON.stringify(empirical));
@@ -868,7 +865,9 @@ function PredictPanel({
       <div className="grid2">
         <div className="card">
           <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Inputs</div>
-          <div className="subtitle">Dataset: combinedv2Orapa.csv</div>
+          <div className="subtitle">
+            Dataset: {dataset?.file?.name ?? meta?.default_dataset ?? "(default)"}
+          </div>
 
           <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
             <button className="btn" onClick={useMedians}>Use Medians</button>
