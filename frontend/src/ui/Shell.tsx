@@ -281,6 +281,7 @@ function DataPanel({
   const [addRowValues, setAddRowValues] = useState<Record<string, string>>({});
   const loadInputRef = useRef<HTMLInputElement | null>(null);
   const appendInputRef = useRef<HTMLInputElement | null>(null);
+  const didAutoLoad = useRef(false);
 
   const numericCols = useMemo(() => getNumericColumns(data, columns), [data, columns]);
 
@@ -293,6 +294,14 @@ function DataPanel({
     if (!xVar) setXVar(columns[0]);
     if (!yVar) setYVar(columns[1] ?? columns[0]);
   }, [columns, xVar, yVar]);
+
+  useEffect(() => {
+    if (didAutoLoad.current) return;
+    if (!apiBaseUrl) return;
+    if (dataset?.file || dataset?.rows?.length) return;
+    didAutoLoad.current = true;
+    loadDefaultSample();
+  }, [apiBaseUrl, dataset?.file, dataset?.rows?.length]);
 
   async function loadDefaultSample() {
     if (!apiBaseUrl) return;

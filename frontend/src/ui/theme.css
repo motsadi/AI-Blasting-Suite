@@ -324,10 +324,11 @@ a{ color:inherit; }
 
 .label{ font-size: 12px; color: var(--muted); font-weight: 700; }
 .sectionTitle{
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 800;
   color: var(--text);
-  margin-bottom: 8px;
+  margin-bottom: 10px;
+  display: block;
 }
 .input{
   width: 100%;
