@@ -2490,8 +2490,7 @@ function DataPlot({
 }) {
   if (!data.length || !x || !y) return <div className="subtitle">Load data to plot.</div>;
   const w = 620;
-  const h = 320;
-  const pad = 24;
+  const h = 360;
 
   const num = (v: any) => toNum(v);
   const points = data
@@ -2510,14 +2509,28 @@ function DataPlot({
       counts[idx] += 1;
     });
     const ymax = Math.max(...counts, 1);
+    const title = `Histogram: ${y}`;
     return (
-      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
-        {counts.map((c, i) => {
-          const bw = (w - 2 * pad) / bins;
-          const bh = (c / ymax) * (h - 2 * pad);
-          return <rect key={i} x={pad + i * bw} y={h - pad - bh} width={bw - 2} height={bh} fill="#60a5fa" />;
-        })}
-      </svg>
+      <ChartSvg width={w} height={h} title={title} xLabel={y} yLabel="Count">
+        {({ innerW, innerH, m }) => (
+          <>
+            {counts.map((c, i) => {
+              const bw = innerW / bins;
+              const bh = (c / ymax) * innerH;
+              return (
+                <rect
+                  key={i}
+                  x={m.left + i * bw}
+                  y={m.top + (innerH - bh)}
+                  width={Math.max(1, bw - 2)}
+                  height={bh}
+                  fill="#60a5fa"
+                />
+              );
+            })}
+          </>
+        )}
+      </ChartSvg>
     );
   }
 
@@ -2529,13 +2542,27 @@ function DataPlot({
     const q3 = quantile(vals, 0.75);
     const min = Math.min(...vals);
     const max = Math.max(...vals);
-    const scaleY = (v: number) => h - pad - ((v - min) / (max - min || 1)) * (h - 2 * pad);
+    const title = `Box plot: ${y}`;
     return (
-      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
-        <line x1={w / 2} x2={w / 2} y1={scaleY(min)} y2={scaleY(max)} stroke="#94a3b8" />
-        <rect x={w / 2 - 40} y={scaleY(q3)} width={80} height={scaleY(q1) - scaleY(q3)} fill="rgba(96,165,250,0.6)" />
-        <line x1={w / 2 - 40} x2={w / 2 + 40} y1={scaleY(q2)} y2={scaleY(q2)} stroke="#e2e8f0" />
-      </svg>
+      <ChartSvg width={w} height={h} title={title} xLabel="" yLabel={y}>
+        {({ innerW, innerH, m }) => {
+          const scaleY = (v: number) => m.top + (innerH - ((v - min) / (max - min || 1)) * innerH);
+          const cx = m.left + innerW / 2;
+          return (
+            <>
+              <line x1={cx} x2={cx} y1={scaleY(min)} y2={scaleY(max)} stroke="#94a3b8" />
+              <rect
+                x={cx - 46}
+                y={scaleY(q3)}
+                width={92}
+                height={scaleY(q1) - scaleY(q3)}
+                fill="rgba(96,165,250,0.6)"
+              />
+              <line x1={cx - 46} x2={cx + 46} y1={scaleY(q2)} y2={scaleY(q2)} stroke="var(--text)" />
+            </>
+          );
+        }}
+      </ChartSvg>
     );
   }
 
@@ -2555,18 +2582,33 @@ function DataPlot({
       grid[xi][yi] += 1;
     });
     const maxC = Math.max(...grid.flat(), 1);
+    const title = `Hexbin: ${y} vs ${x}`;
     return (
-      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
-        {grid.map((col, i) =>
-          col.map((c, j) => {
-            const bw = (w - 2 * pad) / bins;
-            const bh = (h - 2 * pad) / bins;
-            const t = c / maxC;
-            const color = `hsl(${220 - 200 * t}, 80%, 55%)`;
-            return <rect key={`${i}-${j}`} x={pad + i * bw} y={pad + (bins - j - 1) * bh} width={bw} height={bh} fill={color} opacity={0.9} />;
-          })
+      <ChartSvg width={w} height={h} title={title} xLabel={x} yLabel={y}>
+        {({ innerW, innerH, m }) => (
+          <>
+            {grid.map((col, i) =>
+              col.map((c, j) => {
+                const bw = innerW / bins;
+                const bh = innerH / bins;
+                const t = c / maxC;
+                const color = `hsl(${220 - 200 * t}, 80%, 55%)`;
+                return (
+                  <rect
+                    key={`${i}-${j}`}
+                    x={m.left + i * bw}
+                    y={m.top + (bins - j - 1) * bh}
+                    width={bw}
+                    height={bh}
+                    fill={color}
+                    opacity={0.9}
+                  />
+                );
+              })
+            )}
+          </>
         )}
-      </svg>
+      </ChartSvg>
     );
   }
 
@@ -2601,7 +2643,52 @@ function DataPlot({
     const xs = pts.map((p) => p.x);
     const ys = pts.map((p) => p.y);
     const fit = linearRegression(xs, ys);
-    return <ScatterPlot points={pts} width={w} height={h} fit={fit ?? undefined} />;
+    if (!fit) return <ScatterPlot points={pts} width={w} height={h} title={type} xLabel="x" yLabel="y" />;
+
+    if (type === "Airblast Scaling") {
+      const K_air = fit.a;
+      const B_air = fit.b;
+      return (
+        <ScatterPlot
+          points={pts}
+          width={w}
+          height={h}
+          fit={fit}
+          title={`Airblast scaling: K_air≈${K_air.toFixed(1)}, B_air≈${B_air.toFixed(1)}`}
+          xLabel={"log10(Q^(1/3)/R)"}
+          yLabel={"Airblast (dB)"}
+        />
+      );
+    }
+    if (type === "PPV vs Scaled Distance") {
+      const beta = -fit.b;
+      const K = Math.pow(10, fit.a);
+      return (
+        <ScatterPlot
+          points={pts}
+          width={w}
+          height={h}
+          fit={fit}
+          title={`PPV scaling: K≈${K.toFixed(0)}, β≈${beta.toFixed(2)}`}
+          xLabel={"log10(R/√Q)"}
+          yLabel={"log10(PPV)"}
+        />
+      );
+    }
+    // Fragmentation vs PF
+    const A = Math.exp(fit.a);
+    const exponent = fit.b;
+    return (
+      <ScatterPlot
+        points={pts}
+        width={w}
+        height={h}
+        fit={fit}
+        title={`Fragmentation: A≈${A.toFixed(1)}, exponent≈${exponent.toFixed(2)}`}
+        xLabel={"log(1/PF)"}
+        yLabel={"log(X50)"}
+      />
+    );
   }
 
   if (!points.length) return <div className="subtitle">No numeric data.</div>;
@@ -2622,62 +2709,192 @@ function DataPlot({
     });
     const labels = Object.keys(groups);
     const values = labels.map((k) => groups[k].reduce((a, b) => a + b, 0) / groups[k].length);
+    const title = `Mean ${y} by ${x}`;
     return (
-      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
-        {values.map((v, i) => {
-          const bw = (w - 2 * pad) / Math.max(1, values.length);
-          const bh = (v / Math.max(...values, 1)) * (h - 2 * pad);
-          return <rect key={i} x={pad + i * bw} y={h - pad - bh} width={bw - 4} height={bh} fill="#60a5fa" />;
-        })}
-      </svg>
+      <ChartSvg width={w} height={h} title={title} xLabel={x} yLabel={`Mean ${y}`}>
+        {({ innerW, innerH, m }) => {
+          const vmax = Math.max(...values, 1);
+          return (
+            <>
+              {values.map((v, i) => {
+                const bw = innerW / Math.max(1, values.length);
+                const bh = (v / vmax) * innerH;
+                return (
+                  <rect
+                    key={labels[i] ?? i}
+                    x={m.left + i * bw}
+                    y={m.top + (innerH - bh)}
+                    width={Math.max(1, bw - 4)}
+                    height={bh}
+                    fill="#60a5fa"
+                  />
+                );
+              })}
+            </>
+          );
+        }}
+      </ChartSvg>
     );
   }
 
   if (type === "Line") {
     const sorted = pts.slice().sort((a, b) => a.x - b.x);
-    return <PolylinePlot points={sorted} width={w} height={h} />;
+    return (
+      <PolylinePlot
+        points={sorted}
+        width={w}
+        height={h}
+        title={`${y} vs ${x}`}
+        xLabel={logX ? `log10(${x})` : x}
+        yLabel={logY ? `log10(${y})` : y}
+      />
+    );
   }
 
-  return <ScatterPlot points={pts} width={w} height={h} />;
+  return (
+    <ScatterPlot
+      points={pts}
+      width={w}
+      height={h}
+      title={`${y} vs ${x}`}
+      xLabel={logX ? `log10(${x})` : x}
+      yLabel={logY ? `log10(${y})` : y}
+    />
+  );
 }
 
-function ScatterPlot({ points, width, height, fit }: { points: { x: number; y: number }[]; width: number; height: number; fit?: { a: number; b: number } }) {
-  const pad = 24;
+function ScatterPlot({
+  points,
+  width,
+  height,
+  fit,
+  title,
+  xLabel,
+  yLabel,
+}: {
+  points: { x: number; y: number }[];
+  width: number;
+  height: number;
+  fit?: { a: number; b: number };
+  title?: string;
+  xLabel?: string;
+  yLabel?: string;
+}) {
+  const m = { top: 34, left: 56, right: 16, bottom: 52 };
+  const innerW = Math.max(10, width - m.left - m.right);
+  const innerH = Math.max(10, height - m.top - m.bottom);
   const xs = points.map((p) => p.x);
   const ys = points.map((p) => p.y);
   const xmin = Math.min(...xs);
   const xmax = Math.max(...xs);
   const ymin = Math.min(...ys);
   const ymax = Math.max(...ys);
-  const sx = (v: number) => pad + ((v - xmin) / (xmax - xmin || 1)) * (width - 2 * pad);
-  const sy = (v: number) => height - pad - ((v - ymin) / (ymax - ymin || 1)) * (height - 2 * pad);
+  const sx = (v: number) => m.left + ((v - xmin) / (xmax - xmin || 1)) * innerW;
+  const sy = (v: number) => m.top + (innerH - ((v - ymin) / (ymax - ymin || 1)) * innerH);
   const line = fit
     ? `${sx(xmin)},${sy(fit.a + fit.b * xmin)} ${sx(xmax)},${sy(fit.a + fit.b * xmax)}`
     : null;
   return (
-    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
+    <svg
+      width="100%"
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      style={{ background: "var(--panel)", borderRadius: 12 }}
+    >
+      {title && (
+        <text x={width / 2} y={18} textAnchor="middle" fill="var(--text)" fontSize="13" fontWeight="800">
+          {title}
+        </text>
+      )}
+
+      {/* axes */}
+      <line x1={m.left} x2={m.left + innerW} y1={m.top + innerH} y2={m.top + innerH} stroke="rgba(148,163,184,0.6)" />
+      <line x1={m.left} x2={m.left} y1={m.top} y2={m.top + innerH} stroke="rgba(148,163,184,0.6)" />
+
+      {/* points */}
       {points.map((p, i) => (
-        <circle key={i} cx={sx(p.x)} cy={sy(p.y)} r={3} fill="#60a5fa" opacity={0.8} />
+        <circle key={i} cx={sx(p.x)} cy={sy(p.y)} r={3} fill="#60a5fa" opacity={0.85} />
       ))}
-      {line && <polyline points={line} fill="none" stroke="#fbbf24" strokeWidth="2" />}
+      {line && <polyline points={line} fill="none" stroke="#f59e0b" strokeWidth="2" />}
+
+      {/* labels */}
+      {xLabel && (
+        <text x={m.left + innerW / 2} y={height - 14} textAnchor="middle" fill="var(--muted)" fontSize="12" fontWeight="700">
+          {xLabel}
+        </text>
+      )}
+      {yLabel && (
+        <text
+          x={14}
+          y={m.top + innerH / 2}
+          textAnchor="middle"
+          fill="var(--muted)"
+          fontSize="12"
+          fontWeight="700"
+          transform={`rotate(-90 14 ${m.top + innerH / 2})`}
+        >
+          {yLabel}
+        </text>
+      )}
     </svg>
   );
 }
 
-function PolylinePlot({ points, width, height }: { points: { x: number; y: number }[]; width: number; height: number }) {
-  const pad = 24;
+function PolylinePlot({
+  points,
+  width,
+  height,
+  title,
+  xLabel,
+  yLabel,
+}: {
+  points: { x: number; y: number }[];
+  width: number;
+  height: number;
+  title?: string;
+  xLabel?: string;
+  yLabel?: string;
+}) {
+  const m = { top: 34, left: 56, right: 16, bottom: 52 };
+  const innerW = Math.max(10, width - m.left - m.right);
+  const innerH = Math.max(10, height - m.top - m.bottom);
   const xs = points.map((p) => p.x);
   const ys = points.map((p) => p.y);
   const xmin = Math.min(...xs);
   const xmax = Math.max(...xs);
   const ymin = Math.min(...ys);
   const ymax = Math.max(...ys);
-  const sx = (v: number) => pad + ((v - xmin) / (xmax - xmin || 1)) * (width - 2 * pad);
-  const sy = (v: number) => height - pad - ((v - ymin) / (ymax - ymin || 1)) * (height - 2 * pad);
+  const sx = (v: number) => m.left + ((v - xmin) / (xmax - xmin || 1)) * innerW;
+  const sy = (v: number) => m.top + (innerH - ((v - ymin) / (ymax - ymin || 1)) * innerH);
   const pts = points.map((p) => `${sx(p.x)},${sy(p.y)}`).join(" ");
   return (
     <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
+      {title && (
+        <text x={width / 2} y={18} textAnchor="middle" fill="var(--text)" fontSize="13" fontWeight="800">
+          {title}
+        </text>
+      )}
+      <line x1={m.left} x2={m.left + innerW} y1={m.top + innerH} y2={m.top + innerH} stroke="rgba(148,163,184,0.6)" />
+      <line x1={m.left} x2={m.left} y1={m.top} y2={m.top + innerH} stroke="rgba(148,163,184,0.6)" />
       <polyline points={pts} fill="none" stroke="#60a5fa" strokeWidth="2" />
+      {xLabel && (
+        <text x={m.left + innerW / 2} y={height - 14} textAnchor="middle" fill="var(--muted)" fontSize="12" fontWeight="700">
+          {xLabel}
+        </text>
+      )}
+      {yLabel && (
+        <text
+          x={14}
+          y={m.top + innerH / 2}
+          textAnchor="middle"
+          fill="var(--muted)"
+          fontSize="12"
+          fontWeight="700"
+          transform={`rotate(-90 14 ${m.top + innerH / 2})`}
+        >
+          {yLabel}
+        </text>
+      )}
     </svg>
   );
 }
@@ -2705,17 +2922,117 @@ function CorrelationHeatmap({ data, columns }: { data: Array<Record<string, any>
     })
   );
   const w = 620;
-  const h = 360;
-  const cellW = w / columns.length;
-  const cellH = h / columns.length;
+  const h = 420;
+  const m = { top: 34, left: 120, right: 16, bottom: 110 };
+  const innerW = Math.max(10, w - m.left - m.right);
+  const innerH = Math.max(10, h - m.top - m.bottom);
+  const cellW = innerW / columns.length;
+  const cellH = innerH / columns.length;
   return (
     <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
+      <text x={w / 2} y={18} textAnchor="middle" fill="var(--text)" fontSize="13" fontWeight="800">
+        Correlation heatmap
+      </text>
+
       {matrix.map((row, i) =>
         row.map((v, j) => {
           const t = (v + 1) / 2;
           const color = `hsl(${220 - 200 * t}, 80%, 55%)`;
-          return <rect key={`${i}-${j}`} x={j * cellW} y={i * cellH} width={cellW} height={cellH} fill={color} opacity={0.9} />;
+          return (
+            <rect
+              key={`${i}-${j}`}
+              x={m.left + j * cellW}
+              y={m.top + i * cellH}
+              width={cellW}
+              height={cellH}
+              fill={color}
+              opacity={0.9}
+            />
+          );
         })
+      )}
+
+      {/* y labels */}
+      {columns.map((c, i) => (
+        <text
+          key={`yl-${c}`}
+          x={m.left - 8}
+          y={m.top + (i + 0.5) * cellH}
+          textAnchor="end"
+          dominantBaseline="middle"
+          fill="var(--muted)"
+          fontSize="10"
+        >
+          {c}
+        </text>
+      ))}
+      {/* x labels */}
+      {columns.map((c, i) => {
+        const x = m.left + (i + 0.5) * cellW;
+        const y = m.top + innerH + 6;
+        return (
+          <text
+            key={`xl-${c}`}
+            x={x}
+            y={y}
+            textAnchor="end"
+            fill="var(--muted)"
+            fontSize="10"
+            transform={`rotate(-45 ${x} ${y})`}
+          >
+            {c}
+          </text>
+        );
+      })}
+    </svg>
+  );
+}
+
+function ChartSvg({
+  width,
+  height,
+  title,
+  xLabel,
+  yLabel,
+  children,
+}: {
+  width: number;
+  height: number;
+  title?: string;
+  xLabel?: string;
+  yLabel?: string;
+  children: (ctx: { innerW: number; innerH: number; m: { top: number; left: number; right: number; bottom: number } }) => any;
+}) {
+  const m = { top: 34, left: 56, right: 16, bottom: 52 };
+  const innerW = Math.max(10, width - m.left - m.right);
+  const innerH = Math.max(10, height - m.top - m.bottom);
+  return (
+    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
+      {title && (
+        <text x={width / 2} y={18} textAnchor="middle" fill="var(--text)" fontSize="13" fontWeight="800">
+          {title}
+        </text>
+      )}
+      <line x1={m.left} x2={m.left + innerW} y1={m.top + innerH} y2={m.top + innerH} stroke="rgba(148,163,184,0.6)" />
+      <line x1={m.left} x2={m.left} y1={m.top} y2={m.top + innerH} stroke="rgba(148,163,184,0.6)" />
+      {children({ innerW, innerH, m })}
+      {xLabel && (
+        <text x={m.left + innerW / 2} y={height - 14} textAnchor="middle" fill="var(--muted)" fontSize="12" fontWeight="700">
+          {xLabel}
+        </text>
+      )}
+      {yLabel && (
+        <text
+          x={14}
+          y={m.top + innerH / 2}
+          textAnchor="middle"
+          fill="var(--muted)"
+          fontSize="12"
+          fontWeight="700"
+          transform={`rotate(-90 14 ${m.top + innerH / 2})`}
+        >
+          {yLabel}
+        </text>
       )}
     </svg>
   );
