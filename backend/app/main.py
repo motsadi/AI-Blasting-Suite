@@ -135,6 +135,7 @@ def get_meta():
     return {
         "input_labels": list(INPUT_LABELS),
         "outputs": ["Ground Vibration", "Airblast", "Fragmentation"],
+        "default_dataset": DATASETS.get("combined"),
         "empirical_defaults": {
             "K_ppv": d.K_ppv,
             "beta": d.beta,

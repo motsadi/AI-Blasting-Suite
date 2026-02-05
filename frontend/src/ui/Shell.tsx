@@ -8,6 +8,7 @@ type Props = {
 };
 
 type TabKey =
+  | "home"
   | "data"
   | "predict"
   | "feature"
@@ -18,22 +19,30 @@ type TabKey =
   | "slope"
   | "delay";
 
-const TABS: Array<{ key: TabKey; title: string; desc: string }> = [
-  { key: "data", title: "Data", desc: "Upload / preview datasets (GCS-backed later)" },
-  { key: "predict", title: "Predict", desc: "Empirical + ML outputs + RR" },
-  { key: "feature", title: "Feature Importance", desc: "RF importance + PCA" },
-  { key: "param", title: "Parameter Optimisation", desc: "Surface + goal seek" },
-  { key: "cost", title: "Cost Optimisation", desc: "KPIs, optimise, Pareto" },
-  { key: "backbreak", title: "Backbreak", desc: "RF model from CSV" },
-  { key: "flyrock", title: "Flyrock", desc: "ML + empirical" },
-  { key: "slope", title: "Slope", desc: "Stable/Failure classifier" },
-  { key: "delay", title: "Delay", desc: "Delay prediction & plan view" },
+const TAB_META: Record<TabKey, { title: string; desc: string }> = {
+  home: { title: "Welcome", desc: "Overview and quick access cards" },
+  data: { title: "Data Manager", desc: "Upload / preview datasets (GCS-backed later)" },
+  predict: { title: "Prediction", desc: "Empirical + ML outputs + RR" },
+  feature: { title: "Feature Importance", desc: "RF importance + PCA" },
+  param: { title: "Parameter Optimisation", desc: "Surface + goal seek" },
+  cost: { title: "Cost Optimisation", desc: "KPIs, optimise, Pareto" },
+  backbreak: { title: "Back Break", desc: "RF model from CSV" },
+  flyrock: { title: "Flyrock (ML + Empirical)", desc: "ML + empirical lines" },
+  slope: { title: "Slope Stability", desc: "Stable/Failure classifier" },
+  delay: { title: "Delay Prediction", desc: "Delay prediction & plan view" },
+};
+
+const NAV_GROUPS: Array<{ title: string; items: TabKey[] }> = [
+  { title: "Analysis", items: ["predict", "feature", "param"] },
+  { title: "Operations", items: ["cost", "delay"] },
+  { title: "Safety / Geo", items: ["slope", "backbreak", "flyrock"] },
+  { title: "Admin", items: ["data"] },
 ];
 
 const authHeaders = (token: string) => ({ authorization: `Bearer ${token}` });
 
 export function Shell({ apiBaseUrl, session, onLogout }: Props) {
-  const [tab, setTab] = useState<TabKey>("predict");
+  const [tab, setTab] = useState<TabKey>("home");
   const [meta, setMeta] = useState<any>(null);
   const [metaErr, setMetaErr] = useState<string | null>(null);
   const [dataset, setDataset] = useState<{
@@ -41,6 +50,9 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
     rows: Array<Record<string, any>>;
     columns: string[];
   }>({ file: null, rows: [], columns: [] });
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [theme, setTheme] = useState<"System" | "Light" | "Dark">("System");
+  const [accent, setAccent] = useState<"blue" | "green" | "dark-blue">("blue");
 
   const headerRight = useMemo(() => {
     return (
@@ -52,6 +64,13 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
       </div>
     );
   }, [onLogout, session.email]);
+
+  const datasetLabel = useMemo(() => {
+    if (dataset.file?.name) return `Dataset: ${dataset.file.name}`;
+    if (dataset.rows?.length) return "Dataset: (custom)";
+    if (meta?.default_dataset) return `Dataset: ${meta.default_dataset}`;
+    return "Dataset: (none)";
+  }, [dataset.file, dataset.rows?.length, meta?.default_dataset]);
 
   useEffect(() => {
     if (!apiBaseUrl) return;
@@ -67,42 +86,91 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
     })();
   }, [apiBaseUrl]);
 
+  useEffect(() => {
+    const body = document.body;
+    if (theme === "System") {
+      delete body.dataset.theme;
+    } else {
+      body.dataset.theme = theme.toLowerCase();
+    }
+  }, [theme]);
+
+  useEffect(() => {
+    document.body.dataset.accent = accent;
+  }, [accent]);
+
   return (
     <div className="container">
-      <div className="topbar">
-        <div>
-          <div className="title">AI Blasting Suite</div>
-          <div className="subtitle">Local layout mirrored</div>
+      <div className="header">
+        <div className="headerLeft">
+          <button className="iconBtn" onClick={() => setSidebarOpen((v) => !v)} aria-label="Toggle sidebar">
+            ☰
+          </button>
+          <button className="headerTitle" onClick={() => setTab("home")} aria-label="Go to home">
+            Blasting Optimization Suite
+          </button>
         </div>
-        {headerRight}
+
+        <div className="headerControls">
+          <span className="chip">{datasetLabel}</span>
+          <label className="selectWrap">
+            <span className="label">Theme</span>
+            <select className="select" value={theme} onChange={(e) => setTheme(e.target.value as typeof theme)}>
+              <option value="System">System</option>
+              <option value="Light">Light</option>
+              <option value="Dark">Dark</option>
+            </select>
+          </label>
+          <label className="selectWrap">
+            <span className="label">Accent</span>
+            <select className="select" value={accent} onChange={(e) => setAccent(e.target.value as typeof accent)}>
+              <option value="blue">blue</option>
+              <option value="green">green</option>
+              <option value="dark-blue">dark-blue</option>
+            </select>
+          </label>
+          <button className="btn" onClick={() => window.location.reload()}>
+            Reload
+          </button>
+        </div>
+
+        <div className="headerRight">{headerRight}</div>
       </div>
 
-      <div className="layout">
-        <aside className="sidebar">
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              className={`navItem ${tab === t.key ? "navItemActive" : ""}`}
-            >
-              <div style={{ fontWeight: 650 }}>{t.title}</div>
-              <div style={{ fontSize: 12, color: tab === t.key ? "var(--text)" : "var(--muted)" }}>
-                {t.desc}
+      <div className={`layout ${sidebarOpen ? "" : "layoutCollapsed"}`}>
+        {sidebarOpen && (
+          <aside className="sidebar">
+            {NAV_GROUPS.map((group) => (
+              <div key={group.title} className="sidebarGroup">
+                <div className="sidebarTitle">{group.title}</div>
+                {group.items.map((key) => {
+                  const meta = TAB_META[key];
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => setTab(key)}
+                      className={`sidebarButton ${tab === key ? "sidebarButtonActive" : ""}`}
+                    >
+                      <div className="sidebarButtonLabel">{meta.title}</div>
+                      <div className="sidebarButtonDesc">{meta.desc}</div>
+                    </button>
+                  );
+                })}
               </div>
-            </button>
-          ))}
+            ))}
 
-          <div style={{ marginTop: 18, paddingTop: 16, borderTop: "1px solid #e2e8f0" }}>
-            <div className="label">Backend</div>
-            <div style={{ fontSize: 12, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
-              {apiBaseUrl || "(set VITE_API_BASE_URL)"}
+            <div className="sidebarFooter">
+              <div className="label">Backend</div>
+              <div className="mono">{apiBaseUrl || "(set VITE_API_BASE_URL)"}</div>
             </div>
-          </div>
-        </aside>
+          </aside>
+        )}
 
         <main style={{ minHeight: 600 }}>
           {metaErr && <div className="error">{metaErr}</div>}
-          {tab === "predict" ? (
+          {tab === "home" ? (
+            <HomePanel onOpen={setTab} />
+          ) : tab === "predict" ? (
             <PredictPanel apiBaseUrl={apiBaseUrl} token={session.token} meta={meta} dataset={dataset} />
           ) : tab === "data" ? (
             <DataPanel apiBaseUrl={apiBaseUrl} token={session.token} dataset={dataset} onDatasetChange={setDataset} />
@@ -121,9 +189,49 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
           ) : tab === "delay" ? (
             <DelayPanel apiBaseUrl={apiBaseUrl} token={session.token} />
           ) : (
-            <PlaceholderPanel title={TABS.find((t) => t.key === tab)!.title} />
+            <PlaceholderPanel title={TAB_META[tab]?.title ?? "Module"} />
           )}
         </main>
+      </div>
+    </div>
+  );
+}
+
+function HomePanel({ onOpen }: { onOpen: (t: TabKey) => void }) {
+  return (
+    <div className="card">
+      <div className="homeTitle">Welcome 👋</div>
+      <div className="homeSubtitle">
+        AI-driven blast design • Cost &amp; constraint-aware optimisation • USBM + Kuz–Ram empirical baselines
+      </div>
+      <div className="homeGrid">
+        <div className="homeCard">
+          <div className="homeCardTitle">📊 Prediction</div>
+          <div className="homeCardDesc">
+            Run ML &amp; empirical predictions (USBM PPV/Air, Kuz–Ram Xm + RR curve).
+          </div>
+          <button className="btn btnPrimary" onClick={() => onOpen("predict")}>
+            Open
+          </button>
+        </div>
+        <div className="homeCard">
+          <div className="homeCardTitle">💥 Cost Optimisation</div>
+          <div className="homeCardDesc">
+            Minimise cost with penalties for PPV, airblast, fragmentation (Xm→RR X50).
+          </div>
+          <button className="btn btnPrimary" onClick={() => onOpen("cost")}>
+            Open
+          </button>
+        </div>
+        <div className="homeCard">
+          <div className="homeCardTitle">🪨 Flyrock</div>
+          <div className="homeCardDesc">
+            Predict flyrock (ML + empirical lines); check limits and distances.
+          </div>
+          <button className="btn btnPrimary" onClick={() => onOpen("flyrock")}>
+            Open
+          </button>
+        </div>
       </div>
     </div>
   );
