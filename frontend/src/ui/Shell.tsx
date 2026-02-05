@@ -576,7 +576,7 @@ function DataPanel({
       {tab === "visuals" && (
         <div style={{ marginTop: 12 }} className="grid2">
           <div className="card">
-            <div className="label">Plot Controls</div>
+            <div className="sectionTitle">Plot Controls</div>
             <select className="input" value={plotType} onChange={(e) => setPlotType(e.target.value)}>
               {[
                 "Scatter",
@@ -606,7 +606,7 @@ function DataPanel({
             </div>
           </div>
           <div className="card">
-            <div className="label">Plot</div>
+            <div className="sectionTitle">Plot</div>
             <DataPlot
               type={plotType}
               data={filtered}
@@ -621,7 +621,7 @@ function DataPanel({
 
       {tab === "corr" && (
         <div style={{ marginTop: 12 }} className="card">
-          <div className="label">Correlation Heatmap</div>
+          <div className="sectionTitle">Correlation Heatmap</div>
           <CorrelationHeatmap data={filtered} columns={numericCols} />
         </div>
       )}
