@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Session = { token: string; email: string };
 type Props = {
@@ -278,8 +278,9 @@ function DataPanel({
   const [yVar, setYVar] = useState("");
   const [logX, setLogX] = useState(false);
   const [logY, setLogY] = useState(false);
-  const [loadFile, setLoadFile] = useState<File | null>(null);
-  const [appendFile, setAppendFile] = useState<File | null>(null);
+  const [addRowValues, setAddRowValues] = useState<Record<string, string>>({});
+  const loadInputRef = useRef<HTMLInputElement | null>(null);
+  const appendInputRef = useRef<HTMLInputElement | null>(null);
 
   const numericCols = useMemo(() => getNumericColumns(data, columns), [data, columns]);
 
@@ -400,12 +401,14 @@ function DataPanel({
     if (!columns.length) return;
     const row: Record<string, any> = {};
     columns.forEach((c) => {
-      row[c] = "";
+      const v = addRowValues[c];
+      row[c] = v == null || v === "" ? "" : v;
     });
     const withId = ensureRowId(row);
     const next = [...data, withId];
     setData(next);
     setFiltered([...filtered, withId]);
+    setAddRowValues({});
     onDatasetChange({ file: dataset.file ?? null, rows: next, columns });
   }
 
@@ -442,34 +445,41 @@ function DataPanel({
 
   return (
     <div className="card">
-      <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
-        <div>
+      <div className="dataHeader">
+        <div className="dataHeaderLeft">
           <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Data Management</div>
-          <div className="subtitle">Mirror of the local Data Management module.</div>
+        </div>
+        <div className="dataHeaderActions">
+          <input
+            ref={loadInputRef}
+            className="fileInput"
+            type="file"
+            accept=".csv"
+            onChange={(e) => handleLoad(e.target.files?.[0] ?? null, false)}
+          />
+          <button className="btn btnPrimary" onClick={() => loadInputRef.current?.click()} disabled={busy}>
+            {busy ? "Loading…" : "Load CSV"}
+          </button>
+          <input
+            ref={appendInputRef}
+            className="fileInput"
+            type="file"
+            accept=".csv"
+            onChange={(e) => handleLoad(e.target.files?.[0] ?? null, true)}
+          />
+          <button className="btn" onClick={() => appendInputRef.current?.click()} disabled={busy}>
+            {busy ? "Loading…" : "Append CSV"}
+          </button>
+          <button className="btn" onClick={resetFilters} disabled={busy}>
+            Reset Filters
+          </button>
         </div>
         <div className="pill">{status}</div>
       </div>
 
-      <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 8 }}>
-        <input className="input" type="file" accept=".csv" onChange={(e) => setLoadFile(e.target.files?.[0] ?? null)} />
-        <button className="btn btnPrimary" onClick={() => handleLoad(loadFile, false)} disabled={busy || !loadFile}>
-          {busy ? "Loading…" : "Load CSV"}
-        </button>
-        <input className="input" type="file" accept=".csv" onChange={(e) => setAppendFile(e.target.files?.[0] ?? null)} />
-        <button className="btn" onClick={() => handleLoad(appendFile, true)} disabled={busy || !appendFile}>
-          {busy ? "Loading…" : "Append CSV"}
-        </button>
-        <button className="btn" onClick={resetFilters} disabled={busy}>
-          Reset Filters
-        </button>
-        <button className="btn" onClick={loadDefaultSample} disabled={busy}>
-          Load Default Sample
-        </button>
-      </div>
-
       {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
 
-      <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+      <div className="tabPills">
         {[
           { key: "table", label: "Table" },
           { key: "summary", label: "Summary" },
@@ -481,7 +491,7 @@ function DataPanel({
         ].map((t) => (
           <button
             key={t.key}
-            className={`btn ${tab === t.key ? "btnPrimary" : ""}`}
+            className={`tabPill ${tab === t.key ? "tabPillActive" : ""}`}
             onClick={() => setTab(t.key as any)}
           >
             {t.label}
@@ -491,18 +501,23 @@ function DataPanel({
 
       {tab === "table" && (
         <div style={{ marginTop: 12 }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <input className="input" placeholder="Search (contains)" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <div className="tableToolbar">
+            <div className="label">Search (contains):</div>
+            <input
+              className="input tableInput"
+              placeholder="Search (contains)"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
             <button className="btn" onClick={applySearch}>Apply</button>
             <button className="btn" onClick={() => { setSearch(""); setFiltered(data); }}>Clear</button>
-            <button className="btn" onClick={addRow}>Add Row</button>
           </div>
-          <div style={{ marginTop: 12, overflow: "auto", maxHeight: 520 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <div style={{ marginTop: 12, overflow: "auto", maxHeight: 420 }} className="dataTableWrap">
+            <table className="dataTable">
               <thead>
                 <tr>
                   {columns.map((c) => (
-                    <th key={c} style={{ textAlign: "left", borderBottom: "1px solid var(--border)", padding: "6px 4px" }}>{c}</th>
+                    <th key={c} className="dataTableHeader">{c}</th>
                   ))}
                 </tr>
               </thead>
@@ -510,19 +525,32 @@ function DataPanel({
                 {filtered.map((row, idx) => (
                   <tr key={idx}>
                     {columns.map((c) => (
-                      <td key={c} style={{ padding: "6px 4px", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                        <input
-                          className="input"
-                          style={{ padding: "4px 6px" }}
-                          value={row[c] ?? ""}
-                          onChange={(e) => updateCell(idx, c, e.target.value)}
-                        />
+                      <td key={c} className="dataTableCell">
+                        {String(row[c] ?? "")}
                       </td>
                     ))}
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="addRowPanel">
+            <div className="label">Add Row</div>
+            <div className="addRowGrid">
+              {columns.map((c) => (
+                <label key={c} className="addRowField">
+                  <span className="label">{c}</span>
+                  <input
+                    className="input"
+                    value={addRowValues[c] ?? ""}
+                    onChange={(e) => setAddRowValues((prev) => ({ ...prev, [c]: e.target.value }))}
+                  />
+                </label>
+              ))}
+            </div>
+            <div className="addRowActions">
+              <button className="btn btnPrimary" onClick={addRow}>Add Row</button>
+            </div>
           </div>
         </div>
       )}
