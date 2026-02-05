@@ -17,6 +17,7 @@ REQUIRED_ASSET_FILES = [
 
 REQUIRED_DATASET_FILES = [
     "combinedv2Orapa.csv",
+    "combinedv2Jwaneng.xlsx",
     "Backbreak.csv",
     "flyrock_synth.csv",
     "slope data.csv",

@@ -65,26 +65,42 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
     );
   }, [onLogout, session.email]);
 
-  const datasetLabel = useMemo(() => {
-    if (dataset.file?.name) return `Dataset: ${dataset.file.name}`;
-    if (dataset.rows?.length) return "Dataset: (custom)";
-    if (meta?.default_dataset) return `Dataset: ${meta.default_dataset}`;
-    return "Dataset: (none)";
-  }, [dataset.file, dataset.rows?.length, meta?.default_dataset]);
+  async function refreshMeta() {
+    if (!apiBaseUrl) return;
+    const url = `${apiBaseUrl.replace(/\/$/, "")}/v1/meta`;
+    const res = await fetch(url);
+    const j = await res.json();
+    setMeta(j);
+  }
 
   useEffect(() => {
     if (!apiBaseUrl) return;
-    const url = `${apiBaseUrl.replace(/\/$/, "")}/v1/meta`;
     (async () => {
       try {
-        const res = await fetch(url);
-        const j = await res.json();
-        setMeta(j);
+        await refreshMeta();
       } catch (e: any) {
         setMetaErr(String(e?.message ?? e));
       }
     })();
   }, [apiBaseUrl]);
+
+  async function setCombinedDataset(name: string) {
+    if (!apiBaseUrl) return;
+    try {
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/datasets/combined`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...authHeaders(session.token) },
+        body: JSON.stringify({ name }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.detail ?? json?.error ?? "Failed to set dataset");
+      // Clear any shared in-memory dataset preview so modules use the active backend dataset.
+      setDataset({ file: null, rows: [], columns: [] });
+      await refreshMeta();
+    } catch (e: any) {
+      setMetaErr(String(e?.message ?? e));
+    }
+  }
 
   useEffect(() => {
     const body = document.body;
@@ -112,7 +128,29 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
         </div>
 
         <div className="headerControls">
-          <span className="chip">{datasetLabel}</span>
+          <label className="selectWrap">
+            <span className="label">Dataset</span>
+            <select
+              className="select"
+              value={(meta?.combined_dataset ?? meta?.default_dataset ?? "") as string}
+              onChange={(e) => setCombinedDataset(e.target.value)}
+              disabled={!apiBaseUrl}
+              aria-label="Select dataset"
+            >
+              {((meta?.combined_dataset_choices as string[] | undefined) ?? [])
+                .concat(
+                  meta?.combined_dataset && !(meta?.combined_dataset_choices ?? []).includes(meta.combined_dataset)
+                    ? [meta.combined_dataset]
+                    : []
+                )
+                .filter(Boolean)
+                .map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+            </select>
+          </label>
           <label className="selectWrap">
             <span className="label">Theme</span>
             <select className="select" value={theme} onChange={(e) => setTheme(e.target.value as typeof theme)}>
@@ -1462,14 +1500,9 @@ function FeaturePanel({
     setErr(null);
     try {
       let res: Response;
-      if (dataset?.file || dataset?.rows?.length) {
+      if (dataset?.file) {
         const fd = new FormData();
-        if (dataset.file) {
-          fd.append("file", dataset.file);
-        } else {
-          const blob = datasetToCsvBlob(dataset);
-          if (blob) fd.append("file", blob, "dataset.csv");
-        }
+        fd.append("file", dataset.file);
         fd.append("top_k", String(topK));
         res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/feature/importance`, {
           method: "POST",
@@ -1500,14 +1533,9 @@ function FeaturePanel({
     setErr(null);
     try {
       let p: Response;
-      if (dataset?.file || dataset?.rows?.length) {
+      if (dataset?.file) {
         const fd = new FormData();
-        if (dataset.file) {
-          fd.append("file", dataset.file);
-        } else {
-          const blob = datasetToCsvBlob(dataset);
-          if (blob) fd.append("file", blob, "dataset.csv");
-        }
+        fd.append("file", dataset.file);
         p = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/feature/pca`, {
           method: "POST",
           headers: { ...authHeaders(token) },
@@ -3148,14 +3176,9 @@ function ParamPanel({
     if (!apiBaseUrl) return;
     (async () => {
       let res: Response;
-      if (dataset?.file || dataset?.rows?.length) {
+      if (dataset?.file) {
         const fd = new FormData();
-        if (dataset.file) {
-          fd.append("file", dataset.file);
-        } else {
-          const blob = datasetToCsvBlob(dataset);
-          if (blob) fd.append("file", blob, "dataset.csv");
-        }
+        fd.append("file", dataset.file);
         res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/meta`, {
           method: "POST",
           headers: { ...authHeaders(token) },
@@ -3174,7 +3197,7 @@ function ParamPanel({
         setX2(json.inputs[1]);
       }
     })();
-  }, [apiBaseUrl, token]);
+  }, [apiBaseUrl, token, dataset?.file]);
 
   async function runSurface() {
     if (!apiBaseUrl || !output || !x1 || !x2) return;
@@ -3182,14 +3205,9 @@ function ParamPanel({
     setErr(null);
     try {
       let res: Response;
-      if (dataset?.file || dataset?.rows?.length) {
+      if (dataset?.file) {
         const fd = new FormData();
-        if (dataset.file) {
-          fd.append("file", dataset.file);
-        } else {
-          const blob = datasetToCsvBlob(dataset);
-          if (blob) fd.append("file", blob, "dataset.csv");
-        }
+        fd.append("file", dataset.file);
         fd.append("payload_json", JSON.stringify({ output, x1, x2, objective, grid, samples }));
         res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface/upload`, {
           method: "POST",
@@ -3222,14 +3240,9 @@ function ParamPanel({
     setErr(null);
     try {
       let res: Response;
-      if (dataset?.file || dataset?.rows?.length) {
+      if (dataset?.file) {
         const fd = new FormData();
-        if (dataset.file) {
-          fd.append("file", dataset.file);
-        } else {
-          const blob = datasetToCsvBlob(dataset);
-          if (blob) fd.append("file", blob, "dataset.csv");
-        }
+        fd.append("file", dataset.file);
         fd.append("payload_json", JSON.stringify({ output, target }));
         res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/goal-seek/upload`, {
           method: "POST",

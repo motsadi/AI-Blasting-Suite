@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import Body, Depends, FastAPI, File, Form, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth import require_auth
@@ -44,6 +44,11 @@ DATASETS = {
     "delay_v1": "Hole_data_v1.csv",
     "delay_v2": "Hole_data_v2.csv",
 }
+
+COMBINED_DATASET_CHOICES = [
+    "combinedv2Orapa.csv",
+    "combinedv2Jwaneng.xlsx",
+]
 
 
 @app.on_event("startup")
@@ -136,6 +141,8 @@ def get_meta():
         "input_labels": list(INPUT_LABELS),
         "outputs": ["Ground Vibration", "Airblast", "Fragmentation"],
         "default_dataset": DATASETS.get("combined"),
+        "combined_dataset": DATASETS.get("combined"),
+        "combined_dataset_choices": list(COMBINED_DATASET_CHOICES),
         "empirical_defaults": {
             "K_ppv": d.K_ppv,
             "beta": d.beta,
@@ -147,6 +154,31 @@ def get_meta():
         "defaults": {"hpd_override": 1.0},
         "input_stats": input_stats,
     }
+
+
+@app.get("/v1/datasets/combined")
+def get_combined_dataset(_token: str = Depends(require_auth)):
+    return {"active": DATASETS.get("combined"), "choices": list(COMBINED_DATASET_CHOICES)}
+
+
+@app.post("/v1/datasets/combined")
+def set_combined_dataset(payload: dict = Body(...), _token: str = Depends(require_auth)):
+    """
+    Set the active "combined" dataset used by Data Manager default preview, Prediction,
+    Feature Importance, and Parameter Optimisation.
+    """
+    name = str(payload.get("name") or "").strip()
+    if name not in COMBINED_DATASET_CHOICES:
+        raise HTTPException(status_code=400, detail=f"Unsupported dataset. Choose one of: {COMBINED_DATASET_CHOICES}")
+
+    DATASETS["combined"] = name
+
+    # Reset ML cache/models so the next ML request trains on the selected dataset.
+    global _ml_cache_key, _assets
+    _ml_cache_key = None
+    _assets = LoadedAssets(scaler=None, mdl_frag=None, mdl_ppv=None, mdl_air=None)
+
+    return {"ok": True, "active": name}
 
 
 @app.post("/v1/assets/sync", response_model=AssetsStatus)
