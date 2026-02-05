@@ -84,7 +84,8 @@ def _startup_sync_assets():
         )
         sync_assets_from_gcs(
             bucket=bucket,
-            prefix=prefix,
+            # Datasets are stored under the "datasets/" folder in the bucket.
+            prefix="datasets/",
             dest_dir=dest,
             required_files=REQUIRED_DATASET_FILES,
         )

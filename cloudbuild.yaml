@@ -6,10 +6,27 @@ steps:
         "-f",
         "backend/Dockerfile",
         "-t",
-        "gcr.io/$PROJECT_ID/ai-blasting-backend",
+        "gcr.io/$PROJECT_ID/ai-blasting-backend:$SHORT_SHA",
         ".",
       ]
 
 images:
-  - "gcr.io/$PROJECT_ID/ai-blasting-backend"
+  - "gcr.io/$PROJECT_ID/ai-blasting-backend:$SHORT_SHA"
+
+  # Deploy to Cloud Run (requires Cloud Build SA to have run.admin + iam.serviceAccountUser)
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: "gcloud"
+    args:
+      [
+        "run",
+        "deploy",
+        "ai-blasting-backend",
+        "--image",
+        "gcr.io/$PROJECT_ID/ai-blasting-backend:$SHORT_SHA",
+        "--region",
+        "us-central1",
+        "--platform",
+        "managed",
+        "--quiet",
+      ]
 

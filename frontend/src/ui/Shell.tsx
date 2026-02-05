@@ -65,6 +65,17 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
     );
   }, [onLogout, session.email]);
 
+  const datasetChoices: string[] = useMemo(() => {
+    const fromMeta = meta?.combined_dataset_choices as string[] | undefined;
+    if (Array.isArray(fromMeta) && fromMeta.length) return fromMeta;
+    // Fallback (backend not yet deployed with dataset registry)
+    return ["combinedv2Orapa.csv", "combinedv2Jwaneng.xlsx"];
+  }, [meta?.combined_dataset_choices]);
+
+  const activeCombinedDataset: string = useMemo(() => {
+    return (meta?.combined_dataset ?? meta?.default_dataset ?? datasetChoices[0] ?? "") as string;
+  }, [meta?.combined_dataset, meta?.default_dataset, datasetChoices]);
+
   async function refreshMeta() {
     if (!apiBaseUrl) return;
     const url = `${apiBaseUrl.replace(/\/$/, "")}/v1/meta`;
@@ -132,23 +143,16 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
             <span className="label">Dataset</span>
             <select
               className="select"
-              value={(meta?.combined_dataset ?? meta?.default_dataset ?? "") as string}
+              value={activeCombinedDataset}
               onChange={(e) => setCombinedDataset(e.target.value)}
               disabled={!apiBaseUrl}
               aria-label="Select dataset"
             >
-              {((meta?.combined_dataset_choices as string[] | undefined) ?? [])
-                .concat(
-                  meta?.combined_dataset && !(meta?.combined_dataset_choices ?? []).includes(meta.combined_dataset)
-                    ? [meta.combined_dataset]
-                    : []
-                )
-                .filter(Boolean)
-                .map((d) => (
-                  <option key={d} value={d}>
-                    {d}
-                  </option>
-                ))}
+              {datasetChoices.map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
             </select>
           </label>
           <label className="selectWrap">
@@ -748,6 +752,7 @@ function PredictPanel({
 }) {
   const [busy, setBusy] = useState(false);
   const [out, setOut] = useState<any>(null);
+  const [err, setErr] = useState<string | null>(null);
   const [inputs, setInputs] = useState<Record<string, number>>({});
   const [ranges, setRanges] = useState<Record<string, { min: number; max: number; median: number }>>({});
   const [empirical, setEmpirical] = useState({
@@ -810,6 +815,7 @@ function PredictPanel({
       return;
     }
     setBusy(true);
+    setErr(null);
     try {
       let res: Response;
       // Only use the upload endpoint when the user explicitly provided a dataset file.
@@ -848,9 +854,14 @@ function PredictPanel({
         });
       }
       const json = await res.json();
+      if (!res.ok || json?.error) {
+        throw new Error(json?.detail ?? json?.error ?? `HTTP ${res.status}`);
+      }
       setOut({ status: res.status, json });
     } catch (e: any) {
-      setOut({ error: String(e?.message ?? e) });
+      const msg = String(e?.message ?? e);
+      setErr(msg);
+      setOut({ error: msg });
     } finally {
       setBusy(false);
     }
@@ -900,6 +911,7 @@ function PredictPanel({
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
+      {err && <div className="error">{err}</div>}
       <div className="grid2">
         <div className="card">
           <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Inputs</div>
