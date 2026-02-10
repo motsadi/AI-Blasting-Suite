@@ -14,8 +14,20 @@ from app.settings import settings
 
 
 core_bundle_path = add_core_bundle_to_path()
-local_assets_path = Path(settings.local_assets_dir).resolve() if settings.local_assets_dir else None
-local_data_path = Path(settings.local_data_dir).resolve() if settings.local_data_dir else None
+if settings.local_assets_dir:
+    local_assets_path = Path(settings.local_assets_dir).resolve()
+else:
+    # Vercel / local default: allow committing model assets into repo_root/assets/
+    repo_root = Path(__file__).resolve().parents[2]
+    default_assets = (repo_root / "assets").resolve()
+    local_assets_path = default_assets if default_assets.exists() else None
+if settings.local_data_dir:
+    local_data_path = Path(settings.local_data_dir).resolve()
+else:
+    # Vercel / local default: allow committing datasets into repo_root/datasets/
+    repo_root = Path(__file__).resolve().parents[2]
+    default_datasets = (repo_root / "datasets").resolve()
+    local_data_path = default_datasets if default_datasets.exists() else None
 
 # Import read-only core functions (do not modify them)
 from utils_blaster import INPUT_LABELS, EmpiricalParams, empirical_predictions  # type: ignore

@@ -76,12 +76,42 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
     return (meta?.combined_dataset ?? meta?.default_dataset ?? datasetChoices[0] ?? "") as string;
   }, [meta?.combined_dataset, meta?.default_dataset, datasetChoices]);
 
+  async function readJsonOrText(res: Response): Promise<any> {
+    const ct = (res.headers.get("content-type") || "").toLowerCase();
+    if (ct.includes("application/json")) {
+      try {
+        return await res.json();
+      } catch {
+        return null;
+      }
+    }
+    try {
+      return await res.text();
+    } catch {
+      return null;
+    }
+  }
+
+  function errorFromBody(res: Response, body: any): string {
+    if (body && typeof body === "object") {
+      const msg = body?.detail ?? body?.error;
+      if (msg) return String(msg);
+    }
+    if (typeof body === "string") {
+      const s = body.trim();
+      if (s) return s.length > 400 ? s.slice(0, 400) + "…" : s;
+    }
+    return `HTTP ${res.status}`;
+  }
+
   async function refreshMeta() {
     if (!apiBaseUrl) return;
     const url = `${apiBaseUrl.replace(/\/$/, "")}/v1/meta`;
     const res = await fetch(url);
-    const j = await res.json();
-    setMeta(j);
+    const body = await readJsonOrText(res);
+    if (!res.ok) throw new Error(errorFromBody(res, body));
+    setMeta(body);
+    setMetaErr(null);
   }
 
   useEffect(() => {
@@ -103,8 +133,8 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
         headers: { "content-type": "application/json", ...authHeaders(session.token) },
         body: JSON.stringify({ name }),
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.detail ?? json?.error ?? "Failed to set dataset");
+      const body = await readJsonOrText(res);
+      if (!res.ok) throw new Error(errorFromBody(res, body));
       // Clear any shared in-memory dataset preview so modules use the active backend dataset.
       setDataset({ file: null, rows: [], columns: [] });
       await refreshMeta();

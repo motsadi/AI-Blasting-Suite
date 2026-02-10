@@ -15,7 +15,9 @@ export function App() {
   const [booting, setBooting] = useState(REQUIRE_AUTH);
 
   const apiBaseUrl = useMemo(() => {
-    return (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
+    const fromEnv = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
+    // If not configured, default to same-origin so Vercel rewrites can route `/v1/*` -> `/api/v1/*`.
+    return fromEnv || window.location.origin;
   }, []);
 
   useEffect(() => {

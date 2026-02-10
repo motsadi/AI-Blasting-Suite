@@ -10,9 +10,6 @@ steps:
         ".",
       ]
 
-images:
-  - "gcr.io/$PROJECT_ID/ai-blasting-backend:$SHORT_SHA"
-
   # Deploy to Cloud Run (requires Cloud Build SA to have run.admin + iam.serviceAccountUser)
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: "gcloud"
@@ -30,3 +27,5 @@ images:
         "--quiet",
       ]
 
+images:
+  - "gcr.io/$PROJECT_ID/ai-blasting-backend:$SHORT_SHA"
