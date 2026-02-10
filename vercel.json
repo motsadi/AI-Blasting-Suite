@@ -2,16 +2,7 @@
   "framework": "vite",
   "installCommand": "cd frontend && npm ci",
   "buildCommand": "cd frontend && npm run build",
-  "outputDirectory": "frontend/dist",
-  "functions": {
-    "api/**/*.py": {
-      "excludeFiles": "{frontend/**,**/node_modules/**,**/__pycache__/**,**/*.pyc,**/*.pyo,**/*.pyd,**/.pytest_cache/**,**/.mypy_cache/**,**/.ruff_cache/**,**/.venv/**,**/dist/**}"
-    }
-  },
-  "rewrites": [
-    { "source": "/health", "destination": "/api/health" },
-    { "source": "/v1/(.*)", "destination": "/api/v1/$1" }
-  ]
+  "outputDirectory": "frontend/dist"
 }
 
 
