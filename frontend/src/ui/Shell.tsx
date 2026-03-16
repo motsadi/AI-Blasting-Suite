@@ -919,6 +919,14 @@ function PredictPanel({
     }
   }
 
+  useEffect(() => {
+    if (!resp?.features?.length) return;
+    const t = window.setTimeout(() => {
+      run();
+    }, 350);
+    return () => window.clearTimeout(t);
+  }, [params]);
+
   const logText = useMemo(() => {
     if (!out?.json) return "";
     const emp = out.json.empirical ?? {};
@@ -1142,7 +1150,7 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Flyrock failed");
       setResp(json);
-      if (json?.feature_stats) {
+      if (json?.feature_stats && !Object.keys(inputs).length) {
         const next: Record<string, number> = {};
         Object.keys(json.feature_stats).forEach((k) => {
           next[k] = json.feature_stats[k].median;
@@ -1166,11 +1174,23 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
     const y = yName ?? yAxis;
     if (!x || !y || x === y) return;
     try {
-      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/flyrock/surface`, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...authHeaders(token) },
-        body: JSON.stringify({ x_name: x, y_name: y, inputs_json: inputs }),
-      });
+      let res: Response;
+      if (file) {
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("payload_json", JSON.stringify({ x_name: x, y_name: y, inputs_json: inputs }));
+        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/flyrock/surface/upload`, {
+          method: "POST",
+          headers: { ...authHeaders(token) },
+          body: fd,
+        });
+      } else {
+        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/flyrock/surface`, {
+          method: "POST",
+          headers: { "content-type": "application/json", ...authHeaders(token) },
+          body: JSON.stringify({ x_name: x, y_name: y, inputs_json: inputs }),
+        });
+      }
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Surface failed");
       setSurface(json);
@@ -1200,6 +1220,15 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
     if (xAxis && yAxis) runSurface(xAxis, yAxis);
   }, [xAxis, yAxis]);
 
+  useEffect(() => {
+    if (!resp?.feature_stats || !Object.keys(inputs).length) return;
+    const t = window.setTimeout(() => {
+      run();
+      if (xAxis && yAxis) runSurface(xAxis, yAxis);
+    }, 350);
+    return () => window.clearTimeout(t);
+  }, [inputs]);
+
   return (
     <div className="card">
       <div className="grid2">
@@ -1221,6 +1250,7 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
             <div className="kpiTitle">Predicted flyrock</div>
             <div className="kpiValue">{resp?.prediction != null ? formatNum(resp.prediction) : "—"}</div>
             {resp?.train_r2 != null && <div className="label">Train R²: {Number(resp.train_r2).toFixed(3)}</div>}
+            {resp?.test_r2 != null && <div className="label">Test R²: {Number(resp.test_r2).toFixed(3)}</div>}
           </div>
 
           <div className="kpi" style={{ marginTop: 10 }}>
@@ -1230,6 +1260,16 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
           </div>
 
           {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
+
+          {resp?.feature_importance?.length ? (
+            <div className="card" style={{ marginTop: 12 }}>
+              <div className="label">Model feature importance</div>
+              <HorizontalBarChart
+                labels={resp.feature_importance.map((it: any) => it.feature)}
+                values={resp.feature_importance.map((it: any) => Number(it.importance))}
+              />
+            </div>
+          ) : null}
 
           {resp?.feature_stats && (
             <div style={{ marginTop: 12, maxHeight: 420, overflow: "auto" }}>
@@ -1385,12 +1425,30 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
 
           {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
           {resp?.prob_stable != null && (
-            <div className="kpi" style={{ marginTop: 12 }}>
-              <div className="kpiTitle">Prediction</div>
-              <div className="kpiValue">
-                {resp.prob_stable >= 0.5 ? "🟢 Stable" : "🔴 Failure"} (P(stable)={(Number(resp.prob_stable) * 100).toFixed(1)}%)
+            <>
+              <div className="kpi" style={{ marginTop: 12 }}>
+                <div className="kpiTitle">Prediction</div>
+                <div className="kpiValue">
+                  {resp.prob_stable >= 0.5 ? "🟢 Stable" : "🔴 Failure"} (P(stable)={(Number(resp.prob_stable) * 100).toFixed(1)}%)
+                </div>
               </div>
-            </div>
+              <div className="grid3" style={{ marginTop: 10 }}>
+                <div className="kpi">
+                  <div className="kpiTitle">Train accuracy</div>
+                  <div className="kpiValue">{formatNum(resp.train_accuracy)}</div>
+                </div>
+                <div className="kpi">
+                  <div className="kpiTitle">Test accuracy</div>
+                  <div className="kpiValue">{formatNum(resp.test_accuracy)}</div>
+                </div>
+                <div className="kpi">
+                  <div className="kpiTitle">Class balance</div>
+                  <div className="kpiValue" style={{ fontSize: 14 }}>
+                    S {resp.class_balance?.stable ?? 0} / F {resp.class_balance?.failure ?? 0}
+                  </div>
+                </div>
+              </div>
+            </>
           )}
         </div>
 
@@ -1487,6 +1545,22 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
         </div>
       ) : null}
       {resp?.points?.length ? (
+        <div className="grid3" style={{ marginTop: 10 }}>
+          <div className="kpi">
+            <div className="kpiTitle">Training rows</div>
+            <div className="kpiValue">{resp.training_rows ?? "—"}</div>
+          </div>
+          <div className="kpi">
+            <div className="kpiTitle">Train R²</div>
+            <div className="kpiValue">{formatNum(resp.train_r2)}</div>
+          </div>
+          <div className="kpi">
+            <div className="kpiTitle">Test R²</div>
+            <div className="kpiValue">{formatNum(resp.test_r2)}</div>
+          </div>
+        </div>
+      ) : null}
+      {resp?.points?.length ? (
         <div style={{ marginTop: 12 }}>
           {(() => {
             const delays = resp.points.map((p: any) => Number(p.Delay)).filter((v: number) => Number.isFinite(v));
@@ -1556,6 +1630,7 @@ function FeaturePanel({
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [topK, setTopK] = useState(12);
+  const [selectedOutput, setSelectedOutput] = useState("");
   const [msg, setMsg] = useState("Tip: Load/confirm dataset in Data Manager. Inputs = first N−3 if names can't be mapped.");
 
   async function runImportance() {
@@ -1581,6 +1656,7 @@ function FeaturePanel({
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Failed");
       setResp(json);
+      if (json?.outputs?.length) setSelectedOutput((prev) => prev || json.outputs[0]);
       setMsg(
         `Dataset: ${json?.note ?? ""}\nRows used: ${json?.rows_used ?? "?"} | Inputs: ${json?.inputs?.length ?? "?"} | Outputs: ${json?.outputs?.length ?? "?"}\nPlotted top-${json?.top_k ?? topK} features for each output.`
       );
@@ -1649,9 +1725,66 @@ function FeaturePanel({
       </div>
       {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
       <pre style={{ ...pre, marginTop: 10 }}>{msg}</pre>
+      {resp?.diagnostics && (
+        <div className="grid3" style={{ marginTop: 12 }}>
+          <div className="kpi">
+            <div className="kpiTitle">Mapping mode</div>
+            <div className="kpiValue" style={{ fontSize: 16 }}>{resp.diagnostics.mapping_mode === "names" ? "Name mapped" : "Positional split"}</div>
+          </div>
+          <div className="kpi">
+            <div className="kpiTitle">Rows used</div>
+            <div className="kpiValue">{resp.diagnostics.rows_used}</div>
+          </div>
+          <div className="kpi">
+            <div className="kpiTitle">Rows dropped</div>
+            <div className="kpiValue">{resp.diagnostics.rows_dropped}</div>
+          </div>
+        </div>
+      )}
+      {resp?.outputs?.length ? (
+        <div style={{ marginTop: 12 }}>
+          <label className="label">Explainability output</label>
+          <select className="input" value={selectedOutput} onChange={(e) => setSelectedOutput(e.target.value)}>
+            {resp.outputs.map((o: string) => (
+              <option key={o} value={o}>{o}</option>
+            ))}
+          </select>
+        </div>
+      ) : null}
       {resp?.feature_importance && (
         <div style={{ marginTop: 12 }}>
           <FeatureImportanceCharts data={resp.feature_importance} />
+        </div>
+      )}
+      {selectedOutput && resp?.permutation_importance?.[selectedOutput] && (
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="sectionTitle">Explainable AI: {selectedOutput}</div>
+          <div className="subtitle">Permutation importance shows how strongly predictions deteriorate when each feature is disturbed.</div>
+          <HorizontalBarChart
+            labels={resp.permutation_importance[selectedOutput].map((it: any) => it.feature)}
+            values={resp.permutation_importance[selectedOutput].map((it: any) => Number(it.importance))}
+          />
+          {resp?.explainability?.[selectedOutput] && (
+            <div className="grid3" style={{ marginTop: 12 }}>
+              <div className="kpi">
+                <div className="kpiTitle">Train R²</div>
+                <div className="kpiValue">{formatNum(resp.explainability[selectedOutput].train_r2)}</div>
+              </div>
+              <div className="kpi">
+                <div className="kpiTitle">Test R²</div>
+                <div className="kpiValue">{formatNum(resp.explainability[selectedOutput].test_r2)}</div>
+              </div>
+              <div className="kpi">
+                <div className="kpiTitle">Top PDP features</div>
+                <div className="kpiValue" style={{ fontSize: 14 }}>
+                  {(resp.explainability[selectedOutput].partial_dependence ?? []).length}
+                </div>
+              </div>
+            </div>
+          )}
+          {resp?.explainability?.[selectedOutput]?.partial_dependence?.length ? (
+            <PartialDependenceCharts items={resp.explainability[selectedOutput].partial_dependence} />
+          ) : null}
         </div>
       )}
       {pca?.explained_variance_ratio && (
@@ -1686,7 +1819,7 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Backbreak failed");
       setResp(json);
-      if (json?.feature_stats) {
+      if (json?.feature_stats && !Object.keys(inputs).length) {
         const next: Record<string, number> = {};
         Object.keys(json.feature_stats).forEach((k) => {
           next[k] = json.feature_stats[k].median;
@@ -1709,6 +1842,12 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
     setInputs(next);
   }
 
+  useEffect(() => {
+    if (!resp?.feature_stats || !Object.keys(inputs).length) return;
+    const t = window.setTimeout(() => run(), 350);
+    return () => window.clearTimeout(t);
+  }, [inputs]);
+
   return (
     <div className="card">
       <div className="grid2">
@@ -1730,6 +1869,18 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
             <div className="kpiTitle">Predicted Back Break</div>
             <div className="kpiValue">{resp?.prediction != null ? Number(resp.prediction).toFixed(2) : "—"}</div>
           </div>
+          {resp?.train_r2 != null || resp?.test_r2 != null ? (
+            <div className="grid2" style={{ marginTop: 10 }}>
+              <div className="kpi">
+                <div className="kpiTitle">Train R²</div>
+                <div className="kpiValue">{formatNum(resp.train_r2)}</div>
+              </div>
+              <div className="kpi">
+                <div className="kpiTitle">Test R²</div>
+                <div className="kpiValue">{formatNum(resp.test_r2)}</div>
+              </div>
+            </div>
+          ) : null}
 
           {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
 
@@ -2099,6 +2250,39 @@ function HorizontalBarChart({ labels, values }: { labels: string[]; values: numb
         );
       })}
     </svg>
+  );
+}
+
+function PartialDependenceCharts({ items }: { items: Array<{ feature: string; xs: number[]; ys: number[] }> }) {
+  if (!items?.length) return null;
+  return (
+    <div style={{ display: "grid", gap: 12, marginTop: 12 }}>
+      {items.map((item) => {
+        const w = 620;
+        const h = 200;
+        const xs = item.xs ?? [];
+        const ys = item.ys ?? [];
+        if (!xs.length || !ys.length) return null;
+        const xmin = Math.min(...xs);
+        const xmax = Math.max(...xs);
+        const ymin = Math.min(...ys);
+        const ymax = Math.max(...ys);
+        const px = (x: number) => 20 + ((x - xmin) / (xmax - xmin || 1)) * (w - 40);
+        const py = (y: number) => h - 20 - ((y - ymin) / (ymax - ymin || 1)) * (h - 40);
+        const path = xs.map((x, i) => `${i === 0 ? "M" : "L"} ${px(x)} ${py(ys[i])}`).join(" ");
+        return (
+          <div key={item.feature} className="card">
+            <div className="label">Partial dependence: {item.feature}</div>
+            <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12, marginTop: 8 }}>
+              <path d={path} fill="none" stroke="#2563eb" strokeWidth="3" />
+            </svg>
+            <div className="subtitle" style={{ marginTop: 6 }}>
+              Low {formatNum(xmin)} → High {formatNum(xmax)}
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -3228,6 +3412,7 @@ function ParamPanel({
   const [x2, setX2] = useState("");
   const [objective, setObjective] = useState<"min" | "max">("max");
   const [target, setTarget] = useState(0);
+  const [tolerance, setTolerance] = useState(1e-3);
   const [grid, setGrid] = useState(25);
   const [samples, setSamples] = useState(40);
   const [msg, setMsg] = useState(
@@ -3307,7 +3492,7 @@ function ParamPanel({
       if (dataset?.file) {
         const fd = new FormData();
         fd.append("file", dataset.file);
-        fd.append("payload_json", JSON.stringify({ output, target }));
+        fd.append("payload_json", JSON.stringify({ output, target, tolerance }));
         res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/goal-seek/upload`, {
           method: "POST",
           headers: { ...authHeaders(token) },
@@ -3317,14 +3502,14 @@ function ParamPanel({
         res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/goal-seek`, {
           method: "POST",
           headers: { "content-type": "application/json", ...authHeaders(token) },
-          body: JSON.stringify({ output, target }),
+          body: JSON.stringify({ output, target, tolerance }),
         });
       }
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Goal seek failed");
       setGoal(json);
       setMsg(
-        `Goal seek target: ${formatNum(json?.target)}\nPredicted: ${formatNum(json?.best?.predicted)}`
+        `Goal seek target: ${formatNum(json?.target)}\nPredicted: ${formatNum(json?.best?.predicted)}\nAbsolute error: ${formatNum(json?.abs_error)}`
       );
     } catch (e: any) {
       setErr(String(e?.message ?? e));
@@ -3388,6 +3573,7 @@ function ParamPanel({
         <div className="label">Inverse Design (Goal Seek)</div>
         <div className="grid3" style={{ marginTop: 8 }}>
           <input className="input" type="number" value={target} onChange={(e) => setTarget(Number(e.target.value))} placeholder="Target output" />
+            <input className="input" type="number" value={tolerance} onChange={(e) => setTolerance(Number(e.target.value))} placeholder="Tolerance" />
           <button className="btn" onClick={runGoal} disabled={busy}>
             {busy ? "Running…" : "Run Goal Seek (All Inputs)"}
           </button>
@@ -3425,6 +3611,9 @@ function ParamPanel({
       {goal?.best?.inputs && (
         <div className="card" style={{ marginTop: 12 }}>
           <div className="label">Goal Seek Inputs</div>
+          <div className="subtitle" style={{ marginTop: 8 }}>
+            Predicted {formatNum(goal?.best?.predicted)} · target {formatNum(goal?.target)} · error {formatNum(goal?.abs_error)} · {goal?.within_tolerance ? "within tolerance" : "outside tolerance"}
+          </div>
           <div className="grid3" style={{ marginTop: 8 }}>
             {Object.entries(goal.best.inputs).map(([k, v]: any) => (
               <div key={k} className="kpi">
@@ -3450,6 +3639,7 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
   const [useAir, setUseAir] = useState(true);
   const [method, setMethod] = useState("SLSQP");
   const [pareto, setPareto] = useState<any[] | null>(null);
+  const [frontier, setFrontier] = useState<any[] | null>(null);
   const [paretoBusy, setParetoBusy] = useState(false);
   const [objectiveMode, setObjectiveMode] = useState("Min Cost + Frag + PPV/Air");
 
@@ -3514,6 +3704,7 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Pareto failed");
       setPareto(json?.rows ?? []);
+      setFrontier(json?.frontier ?? json?.rows ?? []);
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -3717,6 +3908,34 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
               />
             </div>
           )}
+          {resp.penalties && (
+            <div className="card">
+              <div className="label">Penalty Breakdown</div>
+              <BarChart
+                labels={["Fragmentation", "PPV", "Airblast"]}
+                values={[
+                  Number(resp.penalties.frag ?? 0),
+                  Number(resp.penalties.ppv ?? 0),
+                  Number(resp.penalties.air ?? 0),
+                ]}
+              />
+            </div>
+          )}
+          {resp.constraint_checks && (
+            <div className="card">
+              <div className="label">Constraint Checks</div>
+              <div className="grid3" style={{ marginTop: 8 }}>
+                {Object.entries(resp.constraint_checks)
+                  .filter(([k, v]) => typeof v === "boolean")
+                  .map(([k, v]) => (
+                    <div key={k} className="kpi">
+                      <div className="kpiTitle">{k.replace(/_/g, " ")}</div>
+                      <div className="kpiValue" style={{ fontSize: 16 }}>{v ? "Pass" : "Check"}</div>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
           <div className="card">
             <div className="label">Derived</div>
             <pre style={pre}>{JSON.stringify(resp.derived, null, 2)}</pre>
@@ -3725,9 +3944,19 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
       )}
       {pareto && (
         <div className="card" style={{ marginTop: 12 }}>
-          <div className="label">Pareto (Cost vs Oversize%)</div>
-          <ParetoScatter rows={pareto} />
-          <pre style={{ ...pre, marginTop: 10 }}>{JSON.stringify(pareto.slice(0, 12), null, 2)}</pre>
+          <div className="label">Pareto Frontier (Cost vs Oversize%)</div>
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <button
+              className="btn"
+              onClick={() =>
+                downloadCsv(frontier ?? [], frontier?.length ? Object.keys(frontier[0]) : [], "cost_pareto_frontier.csv")
+              }
+            >
+              Export Frontier CSV
+            </button>
+          </div>
+          <ParetoScatter rows={frontier ?? pareto} />
+          <pre style={{ ...pre, marginTop: 10 }}>{JSON.stringify((frontier ?? pareto).slice(0, 12), null, 2)}</pre>
         </div>
       )}
     </div>

@@ -427,6 +427,165 @@ def _normalize_col(s: str) -> str:
     return " ".join(keep.split())
 
 
+def _score_r2(y_true, y_pred) -> float | None:
+    try:
+        from sklearn.metrics import r2_score
+
+        return float(r2_score(y_true, y_pred))
+    except Exception:
+        return None
+
+
+def _flyrock_norm(s: str) -> str:
+    s = "".join(ch.lower() if (ch.isalnum() or ch.isspace()) else " " for ch in str(s))
+    s = " ".join(s.split())
+    s = (
+        s.replace(" kg/m3", "")
+        .replace(" kg m3", "")
+        .replace(" kg m^3", "")
+        .replace(" kn/m3", "")
+        .replace(" kn m3", "")
+        .replace("(m)", "")
+        .replace(" m", "")
+        .replace(" mm", "")
+        .replace(" kpa", "")
+    )
+    return " ".join(s.split())
+
+
+def _flyrock_resolve_one(df_cols, candidates):
+    cols = list(df_cols)
+    norm_map = {_flyrock_norm(c): c for c in cols}
+    for cand in candidates:
+        nc = _flyrock_norm(cand)
+        if nc in norm_map:
+            return norm_map[nc]
+    for c in cols:
+        cn = _flyrock_norm(c)
+        if any(_flyrock_norm(cand) in cn for cand in candidates):
+            return c
+    return None
+
+
+def _flyrock_infer_target(df):
+    import numpy as np
+    import pandas as pd
+
+    name = _flyrock_resolve_one(df.columns.tolist(), ["flyrock", "fly rock", "flyrock distance", "throw", "max throw"])
+    if name is not None:
+        return name
+    num = df.apply(pd.to_numeric, errors="coerce").select_dtypes(include=[np.number])
+    if num.shape[1] >= 1:
+        last = num.columns[-1]
+        if np.isfinite(num[last]).sum() >= 10 and float(num[last].std()) > 1e-9:
+            return last
+    return None
+
+
+def _prepare_flyrock_data(df):
+    import numpy as np
+    import pandas as pd
+
+    target = _flyrock_infer_target(df)
+    if target is None:
+        raise ValueError(
+            "Could not infer flyrock target column. Expected a column like Flyrock, Flyrock (m), Throw, or Max Throw."
+        )
+
+    num = df.apply(pd.to_numeric, errors="coerce")
+    y = num[target]
+    X = num.drop(columns=[target]).copy()
+
+    drop_ml = []
+    for c in X.columns:
+        cn = _flyrock_norm(c)
+        if any(k in cn for k in ["lundborg", "sdob", "spacing burden ratio", "spacing to burden", "s/b"]):
+            drop_ml.append(c)
+    if drop_ml:
+        X = X.drop(columns=drop_ml, errors="ignore")
+
+    valid_cols = [c for c in X.columns if np.isfinite(X[c]).sum() >= max(20, int(0.3 * len(X)))]
+    X = X[valid_cols]
+
+    mask = np.isfinite(X).all(axis=1) & np.isfinite(y)
+    X = X[mask].copy()
+    y = y[mask].copy()
+    if X.shape[0] < 30 or X.shape[1] < 2:
+        raise ValueError("Need >=30 clean rows and >=2 usable numeric features after cleaning.")
+    return X, y, target
+
+
+def _slope_norm(name: str) -> str:
+    import re
+
+    s = str(name).strip().lower()
+    greek = {"γ": "gamma", "𝛾": "gamma", "𝜸": "gamma", "𝝲": "gamma", "φ": "phi", "ϕ": "phi", "𝜑": "phi", "𝝋": "phi", "β": "beta", "𝛽": "beta", "𝜷": "beta"}
+    for g, rep in greek.items():
+        s = s.replace(g, rep)
+    s = (
+        s.replace("kn/m3", "")
+        .replace("kpa", "")
+        .replace("(m)", "")
+        .replace("°", "")
+        .replace("/", " ")
+        .replace("(", " ")
+        .replace(")", " ")
+        .replace("_", " ")
+    )
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _prepare_slope_df(df):
+    import pandas as pd
+
+    canon = {
+        "gamma_kN_m3": ["gamma", "unit weight", "gamma kn m3", "gamma knm3"],
+        "c_kPa": ["c", "cohesion"],
+        "phi_deg": ["phi", "friction angle", "phi deg"],
+        "beta_deg": ["beta", "slope angle", "beta deg"],
+        "H_m": ["h", "height", "h m"],
+        "ru": ["ru", "r u", "pore pressure ratio", "pore pressure ratio ru"],
+        "status": ["status", "class", "label"],
+    }
+    rename = {}
+    nmap = {c: _slope_norm(c) for c in df.columns}
+    for target, options in canon.items():
+        for col, normed in nmap.items():
+            if normed in options:
+                rename[col] = target
+                break
+    out = df.rename(columns=rename).copy()
+    for c in list(out.columns):
+        if _slope_norm(c) in {"no", "#", "index", "id", "sr"}:
+            out = out.drop(columns=[c])
+
+    needed = ["gamma_kN_m3", "c_kPa", "phi_deg", "beta_deg", "H_m", "ru", "status"]
+    if not all(c in out.columns for c in needed):
+        maybe = df.copy()
+        if _slope_norm(maybe.columns[0]) in {"no", "#", "index", "id", "sr"} and maybe.shape[1] >= 8:
+            maybe = maybe.drop(columns=[maybe.columns[0]])
+        if maybe.shape[1] == 7:
+            maybe.columns = needed
+            out = maybe
+    if not all(c in out.columns for c in needed):
+        raise ValueError("Missing required slope columns: gamma, c, phi, beta, H, ru, status.")
+
+    for c in ["gamma_kN_m3", "c_kPa", "phi_deg", "beta_deg", "H_m", "ru"]:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    out["status"] = (
+        out["status"]
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .map({"stable": "stable", "failure": "failure", "failed": "failure", "unstable": "failure"})
+    )
+    out = out.dropna(subset=["gamma_kN_m3", "c_kPa", "phi_deg", "beta_deg", "H_m", "ru", "status"]).copy()
+    out["y"] = (out["status"] == "stable").astype(int)
+    if out["y"].nunique() < 2:
+        raise ValueError("Dataset contains only one class (all Stable or all Failure).")
+    return out
+
+
 def _infer_backbreak_target(df):
     import pandas as pd
 
@@ -613,6 +772,8 @@ def _feature_importance_df(df, top_k: int):
     import numpy as np
     import pandas as pd
     from sklearn.ensemble import RandomForestRegressor
+    from sklearn.inspection import permutation_importance
+    from sklearn.model_selection import train_test_split
 
     syn = _feature_map_synonyms()
     in_res = _resolve_map(df.columns, INPUT_LABELS, syn["inputs"])
@@ -623,12 +784,14 @@ def _feature_importance_df(df, top_k: int):
         Xraw = df[in_res].copy()
         Yraw = df[out_res].copy()
         note = "Mapped by column names/synonyms."
+        mapping_mode = "names"
     else:
         if df.shape[1] < 4:
             return {"error": "Dataset needs at least 4 columns."}
         Xraw = df.iloc[:, : df.shape[1] - 3].copy()
         Yraw = df.iloc[:, df.shape[1] - 3 :].copy()
         note = "Name mapping failed — used positional split (inputs = first N−3, outputs = last 3)."
+        mapping_mode = "position"
 
     Xnum = Xraw.copy()
     for c in Xnum.columns:
@@ -644,13 +807,21 @@ def _feature_importance_df(df, top_k: int):
     X = work.iloc[:, : Xraw.shape[1]].values
     ydf = work.iloc[:, Xraw.shape[1] :]
     out = {}
+    perm_out = {}
+    explainability = {}
     for out_name in ydf.columns:
         y = ydf[out_name].values
         mask = np.isfinite(X).all(axis=1) & np.isfinite(y)
         if mask.sum() < 20:
             continue
+        Xc = X[mask]
+        yc = y[mask]
+        if len(yc) >= 30:
+            Xtr, Xte, ytr, yte = train_test_split(Xc, yc, test_size=0.2, random_state=42)
+        else:
+            Xtr, Xte, ytr, yte = Xc, Xc, yc, yc
         mdl = RandomForestRegressor(n_estimators=400, random_state=42)
-        mdl.fit(X[mask], y[mask])
+        mdl.fit(Xtr, ytr)
         imp = list(mdl.feature_importances_)
         items = [
             {"feature": f, "importance": float(v)}
@@ -658,9 +829,59 @@ def _feature_importance_df(df, top_k: int):
         ]
         items.sort(key=lambda r: r["importance"], reverse=True)
         out[out_name] = items[: max(3, int(top_k))]
+        try:
+            perm = permutation_importance(mdl, Xte, yte, n_repeats=8, random_state=42)
+            pitems = [
+                {
+                    "feature": f,
+                    "importance": float(v),
+                    "std": float(s),
+                }
+                for f, v, s in zip(list(Xraw.columns), perm.importances_mean, perm.importances_std)
+            ]
+            pitems.sort(key=lambda r: r["importance"], reverse=True)
+            perm_out[out_name] = pitems[: max(3, int(top_k))]
+        except Exception:
+            perm_out[out_name] = []
+
+        pdp_source = perm_out[out_name] if perm_out[out_name] else out[out_name]
+        top_features = [it["feature"] for it in pdp_source[: min(3, len(pdp_source))]]
+        baseline = pd.DataFrame(Xte if len(Xte) else Xtr, columns=Xraw.columns)
+        if len(baseline) > 200:
+            baseline = baseline.sample(200, random_state=42)
+        pdp = []
+        for feat in top_features:
+            s = pd.to_numeric(Xraw[feat], errors="coerce").dropna()
+            if s.empty:
+                continue
+            lo = float(s.quantile(0.05))
+            hi = float(s.quantile(0.95))
+            if not np.isfinite(lo) or not np.isfinite(hi) or lo == hi:
+                continue
+            xs = np.linspace(lo, hi, 24)
+            ys = []
+            for xv in xs:
+                probe = baseline.copy()
+                probe[feat] = float(xv)
+                ys.append(float(np.mean(mdl.predict(probe.values))))
+            pdp.append({"feature": feat, "xs": xs.tolist(), "ys": ys})
+
+        explainability[out_name] = {
+            "train_r2": _score_r2(ytr, mdl.predict(Xtr)),
+            "test_r2": _score_r2(yte, mdl.predict(Xte)),
+            "partial_dependence": pdp,
+        }
     return {
         "feature_importance": out,
+        "permutation_importance": perm_out,
+        "explainability": explainability,
         "note": note,
+        "diagnostics": {
+            "mapping_mode": mapping_mode,
+            "rows_total": int(len(df)),
+            "rows_used": int(work.shape[0]),
+            "rows_dropped": int(len(df) - work.shape[0]),
+        },
         "rows_used": int(work.shape[0]),
         "inputs": list(Xraw.columns),
         "outputs": list(ydf.columns),
@@ -787,23 +1008,19 @@ def flyrock_predict(
 ):
     import json
     import numpy as np
-    import pandas as pd
     from sklearn.ensemble import RandomForestRegressor
     from sklearn.model_selection import train_test_split
 
     df = _read_upload_df(file, DATASETS["flyrock"])
-    num = df.apply(pd.to_numeric, errors="coerce")
-    y = num.iloc[:, -1]
-    X = num.iloc[:, :-1]
-    mask = X.notna().all(axis=1) & y.notna()
-    X = X[mask]
-    y = y[mask]
-    if X.shape[0] < 30 or X.shape[1] < 2:
-        return {"error": "Need >=30 rows and >=2 numeric features after cleaning."}
+    try:
+        X, y, target_name = _prepare_flyrock_data(df)
+    except Exception as e:
+        return {"error": str(e)}
 
     Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=42)
     rf = RandomForestRegressor(n_estimators=500, random_state=42).fit(Xtr, ytr)
     score = float(rf.score(Xtr, ytr))
+    test_score = float(rf.score(Xte, yte))
 
     stats = {}
     for c in X.columns:
@@ -827,30 +1044,14 @@ def flyrock_predict(
     yhat = float(rf.predict(xstar)[0])
 
     # Empirical estimates (from local flyrock module)
-    def _norm(s: str) -> str:
-        s = "".join(ch.lower() if (ch.isalnum() or ch.isspace()) else " " for ch in str(s))
-        s = " ".join(s.split())
-        s = (
-            s.replace(" kg/m3", "")
-            .replace(" kg m3", "")
-            .replace(" kg m^3", "")
-            .replace(" kn/m3", "")
-            .replace(" kn m3", "")
-            .replace("(m)", "")
-            .replace(" m", "")
-            .replace(" mm", "")
-            .replace(" kpa", "")
-        )
-        return " ".join(s.split())
-
     def _lookup(vals, syns, default=float("nan")):
         keys = list(vals.keys())
         for s in syns:
-            ns = _norm(s)
+            ns = _flyrock_norm(s)
             if ns in vals:
                 return float(vals[ns])
         for k in keys:
-            if any(_norm(s) in k for s in syns):
+            if any(_flyrock_norm(s) in k for s in syns):
                 return float(vals[k])
         return float(default)
 
@@ -897,7 +1098,7 @@ def flyrock_predict(
             return float("nan")
         return float(30.745 * (max(dmm, 0.0) ** 0.66))
 
-    vals_norm = {_norm(k): v for k, v in inputs.items()}
+    vals_norm = {_flyrock_norm(k): v for k, v in inputs.items()}
     empirical = {
         "Lundborg_1981": emp_lundborg_1981(vals_norm),
         "McKenzie_SDoB": emp_mckenzie_sdob(vals_norm),
@@ -916,11 +1117,20 @@ def flyrock_predict(
             empirical_method = method
             break
 
+    imp = list(rf.feature_importances_)
+    feature_importance = [
+        {"feature": f, "importance": float(v)}
+        for f, v in sorted(zip(list(X.columns), imp), key=lambda p: p[1], reverse=True)
+    ]
+
     return {
         "prediction": yhat,
         "train_r2": score,
+        "test_r2": test_score,
         "features": list(X.columns),
         "feature_stats": stats,
+        "feature_importance": feature_importance,
+        "target_name": target_name,
         "empirical": empirical,
         "empirical_auto": empirical_auto,
         "empirical_method": empirical_method,
@@ -931,7 +1141,6 @@ def flyrock_predict(
 def flyrock_surface(payload: dict = Body(default={}), _token: str = Depends(require_auth)):
     import json
     import numpy as np
-    import pandas as pd
     from sklearn.ensemble import RandomForestRegressor
     from sklearn.model_selection import train_test_split
 
@@ -941,14 +1150,10 @@ def flyrock_surface(payload: dict = Body(default={}), _token: str = Depends(requ
     inputs_json = payload.get("inputs_json")
 
     df = _read_upload_df(None, DATASETS["flyrock"])
-    num = df.apply(pd.to_numeric, errors="coerce")
-    y = num.iloc[:, -1]
-    X = num.iloc[:, :-1]
-    mask = X.notna().all(axis=1) & y.notna()
-    X = X[mask]
-    y = y[mask]
-    if X.shape[0] < 30 or X.shape[1] < 2:
-        return {"error": "Need >=30 rows and >=2 numeric features after cleaning."}
+    try:
+        X, y, _ = _prepare_flyrock_data(df)
+    except Exception as e:
+        return {"error": str(e)}
 
     if x_name not in X.columns or y_name not in X.columns or x_name == y_name:
         return {"error": "Invalid x_name/y_name."}
@@ -988,8 +1193,7 @@ def flyrock_surface(payload: dict = Body(default={}), _token: str = Depends(requ
     iy = list(X.columns).index(y_name)
     DM[:, ix] = XX.ravel()
     DM[:, iy] = YY.ravel()
-    DM_df = pd.DataFrame(DM, columns=X.columns)
-    Z = rf.predict(DM_df).reshape(XX.shape)
+    Z = rf.predict(DM).reshape(XX.shape)
 
     return {
         "x_name": x_name,
@@ -998,6 +1202,76 @@ def flyrock_surface(payload: dict = Body(default={}), _token: str = Depends(requ
         "grid_y": ys.tolist(),
         "Z": Z.tolist(),
     }
+
+
+@app.post("/v1/flyrock/surface/upload")
+def flyrock_surface_upload(
+    file: UploadFile | None = File(default=None),
+    payload_json: str | None = Form(default=None),
+    _token: str = Depends(require_auth),
+):
+    import json
+    import numpy as np
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.model_selection import train_test_split
+
+    payload = {}
+    if payload_json:
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            payload = {}
+    x_name = payload.get("x_name")
+    y_name = payload.get("y_name")
+    grid = int(payload.get("grid", 40))
+    inputs_json = payload.get("inputs_json")
+
+    df = _read_upload_df(file, DATASETS["flyrock"])
+    try:
+        X, y, _ = _prepare_flyrock_data(df)
+    except Exception as e:
+        return {"error": str(e)}
+
+    if x_name not in X.columns or y_name not in X.columns or x_name == y_name:
+        return {"error": "Invalid x_name/y_name."}
+
+    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=42)
+    rf = RandomForestRegressor(n_estimators=500, random_state=42).fit(Xtr, ytr)
+
+    stats = {}
+    for c in X.columns:
+        s = X[c].dropna()
+        stats[c] = {
+            "min": float(s.quantile(0.02)),
+            "max": float(s.quantile(0.98)),
+            "median": float(s.median()),
+        }
+
+    inputs = None
+    if isinstance(inputs_json, str):
+        try:
+            inputs = json.loads(inputs_json)
+        except Exception:
+            inputs = None
+    elif isinstance(inputs_json, dict):
+        inputs = inputs_json
+    if not isinstance(inputs, dict):
+        inputs = {c: stats[c]["median"] for c in X.columns}
+
+    x_min, x_max = stats[x_name]["min"], stats[x_name]["max"]
+    y_min, y_max = stats[y_name]["min"], stats[y_name]["max"]
+    xs = np.linspace(x_min, x_max, grid)
+    ys = np.linspace(y_min, y_max, grid)
+    XX, YY = np.meshgrid(xs, ys)
+    base = np.array([[float(inputs.get(c, stats[c]["median"])) for c in X.columns]], dtype=float)
+    G = XX.size
+    DM = np.repeat(base, G, axis=0)
+    ix = list(X.columns).index(x_name)
+    iy = list(X.columns).index(y_name)
+    DM[:, ix] = XX.ravel()
+    DM[:, iy] = YY.ravel()
+    Z = rf.predict(DM).reshape(XX.shape)
+    return {"x_name": x_name, "y_name": y_name, "grid_x": xs.tolist(), "grid_y": ys.tolist(), "Z": Z.tolist()}
 
 
 @app.post("/v1/backbreak/predict")
@@ -1043,6 +1317,8 @@ def backbreak_predict(
     Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=42)
     model = RandomForestRegressor(n_estimators=500, random_state=42)
     model.fit(Xtr, ytr)
+    train_r2 = _score_r2(ytr, model.predict(Xtr))
+    test_r2 = _score_r2(yte, model.predict(Xte))
 
     imp = model.feature_importances_
     order = np.argsort(imp)[::-1]
@@ -1081,6 +1357,8 @@ def backbreak_predict(
         "features": keep,
         "feature_stats": stats,
         "feature_importance": feat_importance,
+        "train_r2": train_r2,
+        "test_r2": test_r2,
     }
 
 
@@ -1092,46 +1370,19 @@ def slope_predict(
 ):
     import json
     import numpy as np
-    import pandas as pd
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import StandardScaler
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.model_selection import train_test_split
 
     df = _read_upload_df(file, DATASETS["slope"])
-    cols = {c.lower().strip(): c for c in df.columns}
+    try:
+        prepared = _prepare_slope_df(df)
+    except Exception as e:
+        return {"error": str(e)}
 
-    def pick(*names):
-        for n in names:
-            if n in cols:
-                return cols[n]
-        return None
-
-    req = dict(
-        gamma=pick("gamma", "unit weight"),
-        c=pick("c", "cohesion"),
-        phi=pick("phi", "friction angle"),
-        beta=pick("beta", "slope angle"),
-        H=pick("h", "height"),
-        ru=pick("ru", "pore pressure ratio"),
-        status=pick("status", "label", "class"),
-    )
-    if None in req.values():
-        return {"error": "Missing required columns: gamma, c, phi, beta, H, ru, status"}
-
-    num = df[[req["H"], req["beta"], req["c"], req["phi"], req["gamma"], req["ru"]]].apply(
-        pd.to_numeric, errors="coerce"
-    )
-    ylab = (
-        df[req["status"]]
-        .astype(str)
-        .str.strip()
-        .str.lower()
-        .map({"stable": 1, "failure": 0, "failed": 0, "unstable": 0})
-    )
-    m = num.notna().all(axis=1) & ylab.notna()
-    X = num[m]
-    y = ylab[m]
+    X = prepared[["H_m", "beta_deg", "c_kPa", "phi_deg", "gamma_kN_m3", "ru"]]
+    y = prepared["y"]
     if y.nunique() != 2 or len(y) < 30:
         return {"error": "Dataset must contain both classes and >=30 valid rows."}
 
@@ -1159,8 +1410,21 @@ def slope_predict(
 
     xstar = np.array([[float(inputs.get(c, stats[c]["median"])) for c in X.columns]])
     prob = float(pipe.predict_proba(xstar)[0, 1])
+    train_acc = float(pipe.score(Xtr, ytr))
+    test_acc = float(pipe.score(Xte, yte))
+    class_balance = {
+        "stable": int((prepared["status"] == "stable").sum()),
+        "failure": int((prepared["status"] == "failure").sum()),
+    }
 
-    return {"prob_stable": prob, "feature_stats": stats, "features": list(X.columns)}
+    return {
+        "prob_stable": prob,
+        "feature_stats": stats,
+        "features": list(X.columns),
+        "train_accuracy": train_acc,
+        "test_accuracy": test_acc,
+        "class_balance": class_balance,
+    }
 
 
 @app.post("/v1/delay/predict")
@@ -1174,59 +1438,72 @@ def delay_predict(
     from sklearn.preprocessing import StandardScaler
     from sklearn.model_selection import train_test_split
 
+    def _standardize_delay_df(df_in):
+        cols = {c.lower().strip(): c for c in df_in.columns}
+
+        def _find(name, aliases):
+            if name.lower() in cols:
+                return cols[name.lower()]
+            for alias in aliases:
+                if alias.lower() in cols:
+                    return cols[alias.lower()]
+            return None
+
+        rename = {}
+        if "x" not in cols or "y" not in cols:
+            raise ValueError("CSV must include X and Y columns.")
+        rename[cols["x"]] = "X"
+        rename[cols["y"]] = "Y"
+        opt = {
+            "HoleID": ["holeid", "hole id", "id", "hole"],
+            "Depth": ["depth", "hole_depth", "hole depth (m)", "hole_depth_m"],
+            "Charge": ["charge", "explosive mass", "explosive_mass", "charge_kg"],
+            "Z": ["z", "rl", "elev", "elevation"],
+            "Delay": ["delay", "delay_ms", "predicted delay (ms)", "predicted_delay_ms", "time_ms"],
+        }
+        for std, aliases in opt.items():
+            col = _find(std, aliases)
+            if col is not None:
+                rename[col] = std
+        return df_in.rename(columns=rename)
+
     try:
-        df = _read_upload_df(file, DATASETS["delay_v1"])
+        train_df = _standardize_delay_df(_read_upload_df(None, DATASETS["delay_v1"]))
     except Exception:
-        df = _read_upload_df(file, DATASETS["delay_v2"])
-    cols = {c.lower().strip(): c for c in df.columns}
+        train_df = _standardize_delay_df(_read_upload_df(None, DATASETS["delay_v2"]))
+    infer_df = _standardize_delay_df(_read_upload_df(file, DATASETS["delay_v1"])) if file is not None else train_df.copy()
 
-    def getc(*names):
-        for n in names:
-            if n in cols:
-                return cols[n]
-        return None
-
-    Xc = getc("x")
-    Yc = getc("y")
-    Dc = getc("depth", "hole depth (m)", "hole_depth")
-    Cc = getc("charge", "explosive mass", "charge_kg")
-    Zc = getc("z", "elev", "elevation", "rl")
-    Hc = getc("holeid", "hole id", "id", "hole")
-    Tc = getc("delay", "predicted delay (ms)")
-
-    if None in (Xc, Yc, Dc, Cc):
-        return {"error": "CSV must include at least X, Y, Depth, Charge columns."}
-
-    keep = [c for c in [Dc, Cc, Xc, Yc, Zc] if c]
-    num = df[keep].apply(pd.to_numeric, errors="coerce").dropna()
-    X = num.values
-    if Tc and Tc in df.columns:
-        y = pd.to_numeric(df[Tc], errors="coerce").dropna()
-        X = X[: len(y)]
+    train_keep = ["Depth", "Charge", "X", "Y"] + (["Z"] if "Z" in train_df.columns else [])
+    train_clean = train_df.dropna(subset=train_keep).copy()
+    X_train = train_clean[[c for c in ["Depth", "Charge", "X", "Y", "Z"] if c in train_clean.columns]].apply(pd.to_numeric, errors="coerce").values
+    if "Delay" in train_clean.columns:
+        y_train_full = pd.to_numeric(train_clean["Delay"], errors="coerce").values
     else:
-        y = np.clip(10 + 0.02 * X[:, 0] + 0.0005 * X[:, 2], 5, 250)
+        y_train_full = np.clip(10 + 0.02 * X_train[:, 0] + 0.0005 * X_train[:, 2], 5, 250)
 
-    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=42)
+    Xtr, Xte, ytr, yte = train_test_split(X_train, y_train_full, test_size=0.2, random_state=42)
     sc = StandardScaler().fit(Xtr)
     mdl = RandomForestRegressor(n_estimators=200, random_state=42).fit(sc.transform(Xtr), ytr)
 
-    Xs = sc.transform(X)
-    yhat = mdl.predict(Xs)
+    infer_keep = ["Depth", "Charge", "X", "Y"] + (["Z"] if "Z" in infer_df.columns and "Z" in train_clean.columns else [])
+    infer_clean = infer_df.dropna(subset=infer_keep).copy()
+    X_infer = infer_clean[[c for c in ["Depth", "Charge", "X", "Y", "Z"] if c in infer_clean.columns and c in train_clean.columns]].apply(pd.to_numeric, errors="coerce").values
+    yhat = mdl.predict(sc.transform(X_infer))
     dfv = pd.DataFrame(
         {
-            "X": pd.to_numeric(df[Xc], errors="coerce"),
-            "Y": pd.to_numeric(df[Yc], errors="coerce"),
+            "X": pd.to_numeric(infer_clean["X"], errors="coerce"),
+            "Y": pd.to_numeric(infer_clean["Y"], errors="coerce"),
             "Delay": yhat,
         }
     )
-    if Dc:
-        dfv["Depth"] = pd.to_numeric(df[Dc], errors="coerce")
-    if Cc:
-        dfv["Charge"] = pd.to_numeric(df[Cc], errors="coerce")
-    if Zc:
-        dfv["Z"] = pd.to_numeric(df[Zc], errors="coerce")
-    if Hc:
-        dfv["HoleID"] = df[Hc].astype(str)
+    if "Depth" in infer_clean.columns:
+        dfv["Depth"] = pd.to_numeric(infer_clean["Depth"], errors="coerce")
+    if "Charge" in infer_clean.columns:
+        dfv["Charge"] = pd.to_numeric(infer_clean["Charge"], errors="coerce")
+    if "Z" in infer_clean.columns:
+        dfv["Z"] = pd.to_numeric(infer_clean["Z"], errors="coerce")
+    if "HoleID" in infer_clean.columns:
+        dfv["HoleID"] = infer_clean["HoleID"].astype(str)
 
     dfv = dfv.dropna(subset=["X", "Y", "Delay"])
 
@@ -1234,7 +1511,13 @@ def delay_predict(
     if len(dfv) > 2000:
         dfv = dfv.sample(2000, random_state=42)
 
-    return {"points": dfv.to_dict(orient="records")}
+    return {
+        "points": dfv.to_dict(orient="records"),
+        "train_r2": _score_r2(ytr, mdl.predict(sc.transform(Xtr))),
+        "test_r2": _score_r2(yte, mdl.predict(sc.transform(Xte))),
+        "training_rows": int(len(train_clean)),
+        "predicted_rows": int(len(dfv)),
+    }
 
 
 def _combined_df():
@@ -1336,6 +1619,7 @@ def _param_goal_seek_df(df, payload):
     num, inputs, outputs = _split_inputs_outputs(df)
     output = payload.get("output", outputs[0])
     target = float(payload.get("target", 0.0))
+    tolerance = float(payload.get("tolerance", 1e-3))
     samples = int(payload.get("samples", 1500))
     if output not in outputs:
         return {"error": "Invalid output selection."}
@@ -1367,7 +1651,13 @@ def _param_goal_seek_df(df, payload):
             best = err
             best_in = {"predicted": pred, "inputs": vec}
 
-    return {"target": target, "best": best_in}
+    return {
+        "target": target,
+        "tolerance": tolerance,
+        "best": best_in,
+        "abs_error": float(best) if best is not None else None,
+        "within_tolerance": bool(best is not None and best <= tolerance),
+    }
 
 
 @app.get("/v1/param/meta")
@@ -1585,6 +1875,27 @@ def _cost_penalties(p, res, weights, use_ppv, use_air, use_frag):
     return {"frag": pen_frag, "ppv": pen_ppv, "air": pen_air}
 
 
+def _cost_constraint_summary(p, res):
+    spacing_ratio = p["S"] / max(1e-9, p["B"])
+    stem_ratio = p["stem"] / max(1e-9, p["B"])
+    sub_ratio = p["sub"] / max(1e-9, p["B"])
+    stiffness = p["bench"] / max(1e-9, p["B"])
+    return {
+        "ppv_within_limit": bool(res["PPV"] <= p["ppv_lim"]),
+        "air_within_limit": bool(res["L"] <= p["air_lim"]),
+        "oversize_within_limit": bool(res["oversize"] <= p["ov_max"]),
+        "burden_within_limit": bool(p["Bmin"] <= p["B"] <= p["Bmax"]),
+        "spacing_ratio_within_limit": bool(p["kS_min"] <= spacing_ratio <= p["kS_max"]),
+        "stemming_ratio_within_limit": bool(p["kStem_min"] <= stem_ratio <= p["kStem_max"]),
+        "subdrill_ratio_within_limit": bool(p["kSub_min"] <= sub_ratio <= p["kSub_max"]),
+        "stiffness_within_limit": bool(p["stiff_min"] <= stiffness <= p["stiff_max"]),
+        "spacing_ratio": spacing_ratio,
+        "stemming_ratio": stem_ratio,
+        "subdrill_ratio": sub_ratio,
+        "stiffness_ratio": stiffness,
+    }
+
+
 def _cost_constraints(p):
     cons = []
     def c_spacing_min(x): B, S, sub = x; return S - p["kS_min"] * B
@@ -1617,6 +1928,12 @@ def cost_compute(payload: dict = Body(default={}), _token: str = Depends(require
     p = _cost_defaults()
     p.update(payload or {})
     res = _cost_metrics(p)
+    weights = payload.get("weights", {"frag": 1.0, "ppv": 1.0, "air": 0.7})
+    use_frag = bool(payload.get("use_frag", True))
+    use_ppv = bool(payload.get("use_ppv", True))
+    use_air = bool(payload.get("use_air", True))
+    res["penalties"] = _cost_penalties(p, res, weights, use_ppv, use_air, use_frag)
+    res["constraint_checks"] = _cost_constraint_summary(p, res)
     return res
 
 
@@ -1651,7 +1968,10 @@ def cost_optimize(payload: dict = Body(default={}), _token: str = Depends(requir
     )
     best = p.copy()
     best["B"], best["S"], best["sub"] = float(res.x[0]), float(res.x[1]), float(res.x[2])
-    return {"success": bool(res.success), "message": str(res.message), "result": _cost_metrics(best)}
+    result = _cost_metrics(best)
+    result["penalties"] = _cost_penalties(best, result, weights, use_ppv, use_air, use_frag)
+    result["constraint_checks"] = _cost_constraint_summary(best, result)
+    return {"success": bool(res.success), "message": str(res.message), "result": result}
 
 
 @app.post("/v1/cost/pareto")
@@ -1711,5 +2031,28 @@ def cost_pareto(payload: dict = Body(default={}), _token: str = Depends(require_
                     }
                 )
                 x0 = x
-    return {"rows": rows}
+    frontier = []
+    for i, row in enumerate(rows):
+        dominated = False
+        for j, other in enumerate(rows):
+            if i == j:
+                continue
+            no_worse = (
+                other["cost"] <= row["cost"]
+                and other["Oversize%"] <= row["Oversize%"]
+                and other["PPV"] <= row["PPV"]
+                and other["Air"] <= row["Air"]
+            )
+            strictly_better = (
+                other["cost"] < row["cost"]
+                or other["Oversize%"] < row["Oversize%"]
+                or other["PPV"] < row["PPV"]
+                or other["Air"] < row["Air"]
+            )
+            if no_worse and strictly_better:
+                dominated = True
+                break
+        if not dominated:
+            frontier.append(row)
+    return {"rows": rows, "frontier": frontier}
 
