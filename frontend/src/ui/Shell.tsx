@@ -19,17 +19,17 @@ type TabKey =
   | "slope"
   | "delay";
 
-const TAB_META: Record<TabKey, { title: string; desc: string }> = {
-  home: { title: "Welcome", desc: "Overview and quick access cards" },
-  data: { title: "Data Manager", desc: "Upload / preview datasets (GCS-backed later)" },
-  predict: { title: "Prediction", desc: "Empirical + ML outputs + RR" },
-  feature: { title: "Feature Importance", desc: "RF importance + PCA" },
-  param: { title: "Parameter Optimisation", desc: "Surface + goal seek" },
-  cost: { title: "Cost Optimisation", desc: "KPIs, optimise, Pareto" },
-  backbreak: { title: "Back Break", desc: "RF model from CSV" },
-  flyrock: { title: "Flyrock (ML + Empirical)", desc: "ML + empirical lines" },
-  slope: { title: "Slope Stability", desc: "Stable/Failure classifier" },
-  delay: { title: "Delay Prediction", desc: "Delay prediction & plan view" },
+const TAB_META: Record<TabKey, { title: string; desc: string; icon: string }> = {
+  home: { title: "Welcome", desc: "Overview and quick access cards", icon: "🏠" },
+  data: { title: "Data Manager", desc: "Load, preview, filter and export datasets", icon: "🗂️" },
+  predict: { title: "Prediction", desc: "Empirical + ML outputs + RR", icon: "📊" },
+  feature: { title: "Feature Importance", desc: "RF importance + PCA", icon: "🧭" },
+  param: { title: "Parameter Optimisation", desc: "Surface + goal seek", icon: "🧪" },
+  cost: { title: "Cost Optimisation", desc: "KPIs, optimise, Pareto", icon: "💥" },
+  backbreak: { title: "Back Break", desc: "RF model from CSV", icon: "🔧" },
+  flyrock: { title: "Flyrock (ML + Empirical)", desc: "ML + empirical lines", icon: "🪨" },
+  slope: { title: "Slope Stability", desc: "Stable/Failure classifier", icon: "🧱" },
+  delay: { title: "Delay Prediction", desc: "Delay prediction & plan view", icon: "⏱️" },
 };
 
 const NAV_GROUPS: Array<{ title: string; items: TabKey[] }> = [
@@ -163,9 +163,14 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
           <button className="iconBtn" onClick={() => setSidebarOpen((v) => !v)} aria-label="Toggle sidebar">
             ☰
           </button>
-          <button className="headerTitle" onClick={() => setTab("home")} aria-label="Go to home">
-            Blasting Optimization Suite
-          </button>
+          <div className="headerBrand">
+            <button className="headerTitle" onClick={() => setTab("home")} aria-label="Go to home">
+              Blasting Optimization Suite
+            </button>
+            <div className="headerSubtext">
+              AI-driven blast design, cost-aware optimisation and safety analytics in one workspace.
+            </div>
+          </div>
         </div>
 
         <div className="headerControls">
@@ -223,7 +228,10 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
                       onClick={() => setTab(key)}
                       className={`sidebarButton ${tab === key ? "sidebarButtonActive" : ""}`}
                     >
-                      <div className="sidebarButtonLabel">{meta.title}</div>
+                      <div className="sidebarButtonLabel">
+                        <span>{meta.icon}</span>
+                        <span>{meta.title}</span>
+                      </div>
                       <div className="sidebarButtonDesc">{meta.desc}</div>
                     </button>
                   );
@@ -238,7 +246,7 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
           </aside>
         )}
 
-        <main style={{ minHeight: 600 }}>
+        <main className="mainContent">
           {metaErr && <div className="error">{metaErr}</div>}
           {tab === "home" ? (
             <HomePanel onOpen={setTab} />
@@ -276,33 +284,47 @@ function HomePanel({ onOpen }: { onOpen: (t: TabKey) => void }) {
       <div className="homeSubtitle">
         AI-driven blast design • Cost &amp; constraint-aware optimisation • USBM + Kuz–Ram empirical baselines
       </div>
+      <div className="homeHighlights">
+        <div className="highlightPill">Prediction: empirical + ML outputs + RR</div>
+        <div className="highlightPill">Cost Optimisation: KPI, Pareto and penalties</div>
+        <div className="highlightPill">Flyrock: ML estimator + empirical checks</div>
+      </div>
       <div className="homeGrid">
         <div className="homeCard">
-          <div className="homeCardTitle">📊 Prediction</div>
+          <div className="homeCardIcon">{TAB_META.predict.icon}</div>
+          <div className="homeCardTitle">{TAB_META.predict.title}</div>
           <div className="homeCardDesc">
             Run ML &amp; empirical predictions (USBM PPV/Air, Kuz–Ram Xm + RR curve).
           </div>
-          <button className="btn btnPrimary" onClick={() => onOpen("predict")}>
-            Open
-          </button>
+          <div className="homeCardActions">
+            <button className="btn btnPrimary" onClick={() => onOpen("predict")}>
+              Open
+            </button>
+          </div>
         </div>
         <div className="homeCard">
-          <div className="homeCardTitle">💥 Cost Optimisation</div>
+          <div className="homeCardIcon">{TAB_META.cost.icon}</div>
+          <div className="homeCardTitle">{TAB_META.cost.title}</div>
           <div className="homeCardDesc">
             Minimise cost with penalties for PPV, airblast, fragmentation (Xm→RR X50).
           </div>
-          <button className="btn btnPrimary" onClick={() => onOpen("cost")}>
-            Open
-          </button>
+          <div className="homeCardActions">
+            <button className="btn btnPrimary" onClick={() => onOpen("cost")}>
+              Open
+            </button>
+          </div>
         </div>
         <div className="homeCard">
-          <div className="homeCardTitle">🪨 Flyrock</div>
+          <div className="homeCardIcon">{TAB_META.flyrock.icon}</div>
+          <div className="homeCardTitle">{TAB_META.flyrock.title}</div>
           <div className="homeCardDesc">
             Predict flyrock (ML + empirical lines); check limits and distances.
           </div>
-          <button className="btn btnPrimary" onClick={() => onOpen("flyrock")}>
-            Open
-          </button>
+          <div className="homeCardActions">
+            <button className="btn btnPrimary" onClick={() => onOpen("flyrock")}>
+              Open
+            </button>
+          </div>
         </div>
       </div>
     </div>

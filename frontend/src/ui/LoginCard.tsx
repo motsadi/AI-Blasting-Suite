@@ -52,8 +52,9 @@ export function LoginCard({ onLogin }: Props) {
   return (
     <div className="container" style={{ display: "grid", placeItems: "center" }}>
       <div className="card" style={{ width: "min(560px, 100%)" }}>
-        <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Sign in</div>
-        <div className="subtitle">Secure email login via magic code (InstantDB).</div>
+        <div className="pill" style={{ display: "inline-flex", marginBottom: 10 }}>Blasting Optimization Suite</div>
+        <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: "-0.02em" }}>Sign in</div>
+        <div className="subtitle">Secure email login via magic code for the web-based blasting workspace.</div>
 
         <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
           {!INSTANT_APP_ID && (
