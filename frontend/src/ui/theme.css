@@ -325,6 +325,235 @@ a{ color:inherit; }
   box-shadow: var(--shadow);
 }
 
+.loginPage{
+  display:grid;
+  place-items:center;
+}
+
+.loginLayout{
+  width: min(1200px, 100%);
+  display:grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(380px, 460px);
+  gap: 20px;
+  align-items: stretch;
+}
+
+.loginHero{
+  position: relative;
+  overflow: hidden;
+  border-radius: 28px;
+  padding: 28px;
+  min-height: 720px;
+  color: #e2e8f0;
+  background:
+    radial-gradient(circle at top left, rgba(56,189,248,0.22), transparent 26%),
+    radial-gradient(circle at bottom right, rgba(37,99,235,0.28), transparent 34%),
+    linear-gradient(145deg, #08111f 0%, #0f172a 46%, #102a56 100%);
+  box-shadow: 0 24px 60px rgba(15,23,42,0.24);
+  border: 1px solid rgba(148,163,184,0.14);
+}
+
+.loginHeroGlow{
+  position:absolute;
+  border-radius:999px;
+  filter: blur(36px);
+  pointer-events:none;
+}
+
+.loginHeroGlowPrimary{
+  width: 220px;
+  height: 220px;
+  top: -70px;
+  right: -30px;
+  background: rgba(56,189,248,0.22);
+}
+
+.loginHeroGlowSecondary{
+  width: 240px;
+  height: 240px;
+  left: -40px;
+  bottom: 80px;
+  background: rgba(249,115,22,0.18);
+}
+
+.loginPill{
+  color: rgba(226,232,240,0.88);
+  background: rgba(255,255,255,0.08);
+  border-color: rgba(255,255,255,0.14);
+}
+
+.loginHeroTitle{
+  position:relative;
+  z-index:1;
+  margin: 18px 0 0;
+  max-width: 640px;
+  font-size: clamp(34px, 4.4vw, 56px);
+  line-height: 1.02;
+  letter-spacing: -0.04em;
+  font-weight: 900;
+}
+
+.loginHeroCopy{
+  position:relative;
+  z-index:1;
+  max-width: 620px;
+  margin: 16px 0 0;
+  font-size: 16px;
+  line-height: 1.65;
+  color: rgba(226,232,240,0.76);
+}
+
+.loginHeroVisual{
+  position:relative;
+  z-index:1;
+  margin-top: 26px;
+  padding: 14px;
+  border-radius: 26px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: linear-gradient(180deg, rgba(15,23,42,0.46), rgba(15,23,42,0.18));
+  backdrop-filter: blur(12px);
+}
+
+.loginBlastBadge{
+  position:absolute;
+  top: 28px;
+  right: 26px;
+  z-index:2;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(15,23,42,0.62);
+  border: 1px solid rgba(255,255,255,0.14);
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(226,232,240,0.88);
+}
+
+.loginHeroSvg{
+  width:100%;
+  height:auto;
+  display:block;
+  border-radius: 24px;
+}
+
+.loginFeatureGrid{
+  position:relative;
+  z-index:1;
+  display:grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.loginFeatureCard{
+  min-height: 130px;
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.04));
+}
+
+.loginFeatureLabel{
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(125,211,252,0.86);
+  font-weight: 800;
+}
+
+.loginFeatureText{
+  margin-top: 10px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: rgba(226,232,240,0.82);
+}
+
+.loginCardPanel{
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  padding: 28px;
+}
+
+.loginCardTitle{
+  font-size: 32px;
+  line-height: 1.1;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+}
+
+.loginProgress{
+  display:grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.loginProgressStep{
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(148,163,184,0.22);
+  background: linear-gradient(180deg, rgba(248,250,252,0.95), rgba(241,245,249,0.88));
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  text-align:center;
+}
+
+.loginProgressStepActive{
+  border-color: rgba(37,99,235,0.34);
+  color: var(--brand);
+  background: linear-gradient(180deg, rgba(219,234,254,0.88), rgba(239,246,255,0.98));
+}
+
+.loginCodeHeader{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap: 8px;
+}
+
+.loginLinkButton{
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--brand);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.loginPrimaryAction{
+  min-height: 46px;
+  margin-top: 4px;
+}
+
+.loginTrustRow{
+  display:grid;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(148,163,184,0.18);
+}
+
+.loginTrustItem{
+  padding-left: 18px;
+  position:relative;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.loginTrustItem::before{
+  content:"";
+  width: 8px;
+  height: 8px;
+  border-radius:999px;
+  position:absolute;
+  left: 0;
+  top: 5px;
+  background: linear-gradient(135deg, var(--brand), var(--brand2));
+  box-shadow: 0 0 0 4px rgba(56,189,248,0.12);
+}
+
 .btn{
   border: 1px solid var(--border);
   background: linear-gradient(180deg, #ffffff, #f8fafc);
@@ -497,6 +726,18 @@ body[data-theme="dark"]{
   --shadow: 0 10px 30px rgba(2,6,23,0.45);
   --shadow-soft: 0 8px 18px rgba(2,6,23,0.35);
 }
+
+body[data-theme="dark"] .loginProgressStep{
+  background: linear-gradient(180deg, rgba(15,23,42,0.96), rgba(15,23,42,0.86));
+}
+
+body[data-theme="dark"] .loginProgressStepActive{
+  background: linear-gradient(180deg, rgba(30,41,59,0.95), rgba(15,23,42,0.92));
+}
+
+body[data-theme="dark"] .loginLinkButton{
+  color: #7dd3fc;
+}
 body[data-accent="green"]{
   --brand: #16a34a;
   --brand2: #22c55e;
@@ -508,6 +749,15 @@ body[data-accent="dark-blue"]{
 
 @media (max-width: 1100px) {
   .layout{
+    grid-template-columns: 1fr;
+  }
+  .loginLayout{
+    grid-template-columns: 1fr;
+  }
+  .loginHero{
+    min-height: auto;
+  }
+  .loginFeatureGrid{
     grid-template-columns: 1fr;
   }
   .homeGrid{
@@ -525,6 +775,28 @@ body[data-accent="dark-blue"]{
   }
   .addRowGrid{
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .container.loginPage{
+    padding: 12px;
+  }
+  .loginHero,
+  .loginCardPanel{
+    padding: 20px;
+    border-radius: 24px;
+  }
+  .loginProgress{
+    grid-template-columns: 1fr;
+  }
+  .loginCardTitle{
+    font-size: 28px;
+  }
+  .loginBlastBadge{
+    position:static;
+    display:inline-flex;
+    margin-bottom: 10px;
   }
 }
 
