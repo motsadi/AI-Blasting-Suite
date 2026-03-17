@@ -69,7 +69,7 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
     const fromMeta = meta?.combined_dataset_choices as string[] | undefined;
     if (Array.isArray(fromMeta) && fromMeta.length) return fromMeta;
     // Fallback (backend not yet deployed with dataset registry)
-    return ["combinedv2Orapa.csv", "combinedv2Jwaneng.xlsx"];
+    return ["combinedv2Orapa.csv", "combinedv2Jwaneng.csv"];
   }, [meta?.combined_dataset_choices]);
 
   const activeCombinedDataset: string = useMemo(() => {
@@ -823,6 +823,8 @@ function PredictPanel({
   const [wantMl, setWantMl] = useState(true);
   const [thresholds, setThresholds] = useState<Record<string, number>>({});
   const outputs: string[] = meta?.outputs ?? ["Ground Vibration", "Airblast", "Fragmentation"];
+  const activeDatasetName = dataset?.file?.name ?? meta?.combined_dataset ?? meta?.default_dataset ?? "(default)";
+  const datasetSource = dataset?.file ? "Uploaded dataset" : "Shared combined dataset";
 
   useEffect(() => {
     if (!meta?.input_labels) return;
@@ -919,14 +921,6 @@ function PredictPanel({
     }
   }
 
-  useEffect(() => {
-    if (!resp?.features?.length) return;
-    const t = window.setTimeout(() => {
-      run();
-    }, 350);
-    return () => window.clearTimeout(t);
-  }, [params]);
-
   const logText = useMemo(() => {
     if (!out?.json) return "";
     const emp = out.json.empirical ?? {};
@@ -969,14 +963,40 @@ function PredictPanel({
     downloadCsv([row], Object.keys(row), "prediction_result.csv");
   }
 
+  if (!meta?.input_labels?.length) {
+    return (
+      <div className="card">
+        <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Simultaneous Prediction</div>
+        <div className="subtitle" style={{ marginTop: 8 }}>
+          Loading prediction inputs and dataset statistics...
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: "grid", gap: 14 }}>
       {err && <div className="error">{err}</div>}
+      <div className="card">
+        <div className="dataHeader">
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: "-0.02em" }}>Prediction Module</div>
+            <div className="subtitle">
+              Desktop-style simultaneous prediction with ML outputs, empirical baselines and Rosin-Rammler fragmentation.
+            </div>
+          </div>
+          <div className="dataHeaderActions">
+            <div className="chip">{datasetSource}</div>
+            <div className="chip">{activeDatasetName}</div>
+            <div className="chip">{outputs.length} outputs</div>
+          </div>
+        </div>
+      </div>
       <div className="grid2">
         <div className="card">
           <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Inputs</div>
           <div className="subtitle">
-            Dataset: {dataset?.file?.name ?? meta?.default_dataset ?? "(default)"}
+            Dataset: {activeDatasetName}
           </div>
 
           <div style={{ marginTop: 10, display: "flex", gap: 8 }}>

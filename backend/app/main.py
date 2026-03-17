@@ -13,20 +13,21 @@ from app.schemas import AssetsStatus, PredictRequest, PredictResponse
 from app.settings import settings
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+WORKSPACE_ROOT = REPO_ROOT.parent
+
 core_bundle_path = add_core_bundle_to_path()
 if settings.local_assets_dir:
     local_assets_path = Path(settings.local_assets_dir).resolve()
 else:
     # Vercel / local default: allow committing model assets into repo_root/assets/
-    repo_root = Path(__file__).resolve().parents[2]
-    default_assets = (repo_root / "assets").resolve()
+    default_assets = (REPO_ROOT / "assets").resolve()
     local_assets_path = default_assets if default_assets.exists() else None
 if settings.local_data_dir:
     local_data_path = Path(settings.local_data_dir).resolve()
 else:
     # Vercel / local default: allow committing datasets into repo_root/datasets/
-    repo_root = Path(__file__).resolve().parents[2]
-    default_datasets = (repo_root / "datasets").resolve()
+    default_datasets = (REPO_ROOT / "datasets").resolve()
     local_data_path = default_datasets if default_datasets.exists() else None
 
 # Import read-only core functions (do not modify them)
@@ -59,8 +60,26 @@ DATASETS = {
 
 COMBINED_DATASET_CHOICES = [
     "combinedv2Orapa.csv",
+    "combinedv2Jwaneng.csv",
     "combinedv2Jwaneng.xlsx",
 ]
+
+
+def _dataset_search_candidates(name: str) -> list[Path]:
+    return [
+        *([local_data_path / name] if local_data_path else []),
+        REPO_ROOT / "datasets" / name,
+        WORKSPACE_ROOT / name,
+        WORKSPACE_ROOT / "datasets" / name,
+        Path(core_bundle_path) / name,
+        Path("/tmp/ai-blasting-assets") / name,
+        Path("/tmp/ai-blasting-assets/datasets") / name,
+    ]
+
+
+def _combined_dataset_choices() -> list[str]:
+    existing = [name for name in COMBINED_DATASET_CHOICES if any(path.exists() for path in _dataset_search_candidates(name))]
+    return existing or list(COMBINED_DATASET_CHOICES)
 
 
 @app.on_event("startup")
@@ -126,12 +145,17 @@ def get_meta():
     """
     Frontend bootstrap metadata so the UI can render forms without hardcoding.
     """
+    combined_choices = _combined_dataset_choices()
+    active_combined = DATASETS.get("combined")
+    if active_combined not in combined_choices:
+        active_combined = combined_choices[0] if combined_choices else DATASETS.get("combined")
+
     d = EmpiricalParams()
     input_stats = {}
     try:
         import pandas as pd
 
-        df = _read_upload_df(None, DATASETS["combined"])
+        df = _read_upload_df(None, active_combined)
         cols = {str(c).lower().strip(): c for c in df.columns}
         norm = {_normalize_col(c): c for c in df.columns}
         for label in INPUT_LABELS:
@@ -153,9 +177,9 @@ def get_meta():
     return {
         "input_labels": list(INPUT_LABELS),
         "outputs": ["Ground Vibration", "Airblast", "Fragmentation"],
-        "default_dataset": DATASETS.get("combined"),
-        "combined_dataset": DATASETS.get("combined"),
-        "combined_dataset_choices": list(COMBINED_DATASET_CHOICES),
+        "default_dataset": active_combined,
+        "combined_dataset": active_combined,
+        "combined_dataset_choices": combined_choices,
         "empirical_defaults": {
             "K_ppv": d.K_ppv,
             "beta": d.beta,
@@ -171,7 +195,11 @@ def get_meta():
 
 @app.get("/v1/datasets/combined")
 def get_combined_dataset(_token: str = Depends(require_auth)):
-    return {"active": DATASETS.get("combined"), "choices": list(COMBINED_DATASET_CHOICES)}
+    choices = _combined_dataset_choices()
+    active = DATASETS.get("combined")
+    if active not in choices:
+        active = choices[0] if choices else active
+    return {"active": active, "choices": choices}
 
 
 @app.post("/v1/datasets/combined")
@@ -181,8 +209,9 @@ def set_combined_dataset(payload: dict = Body(...), _token: str = Depends(requir
     Feature Importance, and Parameter Optimisation.
     """
     name = str(payload.get("name") or "").strip()
-    if name not in COMBINED_DATASET_CHOICES:
-        raise HTTPException(status_code=400, detail=f"Unsupported dataset. Choose one of: {COMBINED_DATASET_CHOICES}")
+    choices = _combined_dataset_choices()
+    if name not in choices:
+        raise HTTPException(status_code=400, detail=f"Unsupported dataset. Choose one of: {choices}")
 
     DATASETS["combined"] = name
 
@@ -363,12 +392,7 @@ def _ensure_dataset(name: str) -> Path:
     """
     Ensure a dataset exists locally; otherwise attempt download from GCS.
     """
-    local_candidates = [
-        *( [local_data_path / name] if local_data_path else [] ),
-        Path(core_bundle_path) / name,
-        Path("/tmp/ai-blasting-assets") / name,
-        Path("/tmp/ai-blasting-assets/datasets") / name,
-    ]
+    local_candidates = _dataset_search_candidates(name)
     for p in local_candidates:
         if p.exists():
             return p
