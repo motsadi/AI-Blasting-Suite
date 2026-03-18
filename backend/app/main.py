@@ -1717,127 +1717,271 @@ def _split_inputs_outputs(df):
     return num, inputs, outputs
 
 
-def _param_surface_df(df, payload):
+def _fit_param_surrogate(df):
     import numpy as np
     import pandas as pd
-    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.model_selection import train_test_split
+    from sklearn.neural_network import MLPRegressor
+    from sklearn.preprocessing import MinMaxScaler
 
     num, inputs, outputs = _split_inputs_outputs(df)
+    Xdf = num[inputs].apply(pd.to_numeric, errors="coerce")
+    Ydf = num[outputs].apply(pd.to_numeric, errors="coerce")
+    work = Xdf.join(Ydf, how="inner").dropna()
+    if len(work) < 50:
+        return {"error": "Not enough clean rows in dataset."}
+
+    Xdf = work[inputs].copy()
+    Ydf = work[outputs].copy()
+    X = Xdf.values.astype(float)
+    Y = Ydf.values.astype(float)
+
+    bounds = {}
+    medians = {}
+    for c in inputs:
+        s = Xdf[c]
+        lo = float(s.quantile(0.02))
+        hi = float(s.quantile(0.98))
+        md = float(s.median())
+        if not np.isfinite(lo) or not np.isfinite(hi) or lo == hi:
+            lo = float(s.min())
+            hi = float(s.max())
+        if not np.isfinite(lo) or not np.isfinite(hi) or lo == hi:
+            lo = md - 0.5
+            hi = md + 0.5
+        bounds[c] = (float(lo), float(hi))
+        medians[c] = md
+
+    sx = MinMaxScaler().fit(X)
+    sy = MinMaxScaler().fit(Y)
+    Xs = sx.transform(X)
+    Ys = sy.transform(Y)
+
+    if len(Xs) >= 80:
+        Xtr, Xte, ytr, yte = train_test_split(Xs, Ys, test_size=0.2, random_state=42)
+    else:
+        Xtr, Xte, ytr, yte = Xs, Xs, Ys, Ys
+
+    mdl = MLPRegressor(
+        hidden_layer_sizes=(128, 64, 32),
+        activation="relu",
+        solver="adam",
+        learning_rate_init=0.01,
+        max_iter=600,
+        random_state=42,
+        early_stopping=len(Xtr) >= 120,
+        validation_fraction=0.15,
+    )
+    mdl.fit(Xtr, ytr)
+
+    ytr_hat = mdl.predict(Xtr)
+    yte_hat = mdl.predict(Xte)
+    train_r2 = {}
+    test_r2 = {}
+    for i, out_name in enumerate(outputs):
+        train_r2[out_name] = _score_r2(ytr[:, i], ytr_hat[:, i])
+        test_r2[out_name] = _score_r2(yte[:, i], yte_hat[:, i])
+
+    return {
+        "num": work,
+        "inputs": inputs,
+        "outputs": outputs,
+        "sx": sx,
+        "sy": sy,
+        "model": mdl,
+        "bounds": bounds,
+        "medians": medians,
+        "train_r2": train_r2,
+        "test_r2": test_r2,
+        "rows_used": int(len(work)),
+    }
+
+
+def _param_predict_output(model_bundle, vec: dict[str, float], output_name: str) -> float:
+    import numpy as np
+
+    inputs = model_bundle["inputs"]
+    outputs = model_bundle["outputs"]
+    sx = model_bundle["sx"]
+    sy = model_bundle["sy"]
+    mdl = model_bundle["model"]
+
+    X = np.array([[float(vec[c]) for c in inputs]], dtype=float)
+    Ys = mdl.predict(sx.transform(X))
+    Y = sy.inverse_transform(Ys)
+    return float(Y[0, outputs.index(output_name)])
+
+
+def _param_surface_df(df, payload):
+    import numpy as np
+    from scipy.optimize import minimize
+
+    bundle = _fit_param_surrogate(df)
+    if bundle.get("error"):
+        return {"error": bundle["error"]}
+
+    inputs = bundle["inputs"]
+    outputs = bundle["outputs"]
+    bounds = bundle["bounds"]
+    medians = bundle["medians"]
     output = payload.get("output", outputs[0])
     x1 = payload.get("x1", inputs[0])
     x2 = payload.get("x2", inputs[1] if len(inputs) > 1 else inputs[0])
     objective = payload.get("objective", "max")
-    grid = int(payload.get("grid", 25))
-    samples = int(payload.get("samples", 40))
+    grid = max(12, min(36, int(payload.get("grid", 24))))
+    samples = max(1, min(10, int(payload.get("samples", 4))))
+    max_iter = max(20, min(90, int(payload.get("max_iter", 45))))
 
     if output not in outputs or x1 not in inputs or x2 not in inputs or x1 == x2:
         return {"error": "Invalid output/x1/x2 selection."}
-
-    X = num[inputs].apply(pd.to_numeric, errors="coerce")
-    y = pd.to_numeric(num[output], errors="coerce")
-    m = X.notna().all(axis=1) & y.notna()
-    X = X[m]
-    y = y[m]
-    if len(y) < 30:
-        return {"error": "Not enough clean rows in dataset."}
-
-    rf = RandomForestRegressor(n_estimators=300, random_state=42)
-    rf.fit(X, y)
-
-    bounds = {}
-    for c in inputs:
-        s = X[c]
-        bounds[c] = (float(s.quantile(0.02)), float(s.quantile(0.98)))
 
     x1_min, x1_max = bounds[x1]
     x2_min, x2_max = bounds[x2]
     gx = np.linspace(x1_min, x1_max, grid)
     gy = np.linspace(x2_min, x2_max, grid)
 
+    other_inputs = [c for c in inputs if c not in (x1, x2)]
+    other_bounds = [bounds[c] for c in other_inputs]
+    other_medians = np.array([medians[c] for c in other_inputs], dtype=float)
+
+    def _optimise_fixed_axes(xv: float, yv: float, start: np.ndarray):
+        fixed = {x1: float(xv), x2: float(yv)}
+
+        def _objective(other_vec):
+            probe = {**fixed}
+            for idx, name in enumerate(other_inputs):
+                probe[name] = float(other_vec[idx])
+            pred = _param_predict_output(bundle, probe, output)
+            return pred if objective == "min" else -pred
+
+        starts = [np.array(start, dtype=float)]
+        for _ in range(max(0, samples - 1)):
+            starts.append(np.array([np.random.uniform(lo, hi) for lo, hi in other_bounds], dtype=float))
+
+        best_vec = np.array(start, dtype=float)
+        best_score = None
+        for guess in starts:
+            res = minimize(
+                _objective,
+                guess,
+                method="L-BFGS-B",
+                bounds=other_bounds,
+                options={"maxiter": max_iter},
+            )
+            cand = np.clip(res.x if getattr(res, "x", None) is not None else guess, [b[0] for b in other_bounds], [b[1] for b in other_bounds])
+            score = float(_objective(cand))
+            if best_score is None or score < best_score:
+                best_score = score
+                best_vec = cand
+
+        best_inputs = {**fixed}
+        for idx, name in enumerate(other_inputs):
+            best_inputs[name] = float(best_vec[idx])
+        pred = _param_predict_output(bundle, best_inputs, output)
+        return pred, best_inputs, best_vec
+
     Z = []
+    other_grid = []
     best_overall = None
     best_inputs = None
+    best_point = None
 
     for xv in gx:
         row = []
+        row_inputs = []
+        warm = other_medians.copy()
         for yv in gy:
-            best = None
-            best_in = None
-            for _ in range(samples):
-                vec = {}
-                for c in inputs:
-                    lo, hi = bounds[c]
-                    vec[c] = float(np.random.uniform(lo, hi))
-                vec[x1] = float(xv)
-                vec[x2] = float(yv)
-                x_arr = np.array([[vec[c] for c in inputs]], dtype=float)
-                pred = float(rf.predict(x_arr)[0])
-                if best is None or (objective == "min" and pred < best) or (objective != "min" and pred > best):
-                    best = pred
-                    best_in = vec
-            row.append(best)
-            if best_overall is None or (objective == "min" and best < best_overall) or (objective != "min" and best > best_overall):
-                best_overall = best
-                best_inputs = best_in
+            pred, solved_inputs, warm = _optimise_fixed_axes(float(xv), float(yv), warm)
+            row.append(float(pred))
+            row_inputs.append(solved_inputs)
+            if best_overall is None or (objective == "min" and pred < best_overall) or (objective != "min" and pred > best_overall):
+                best_overall = float(pred)
+                best_inputs = solved_inputs
+                best_point = {"x1": float(xv), "x2": float(yv)}
         Z.append(row)
+        other_grid.append(row_inputs)
 
     return {
+        "dataset": payload.get("dataset") or DATASETS["combined"],
         "x1": x1,
         "x2": x2,
         "output": output,
+        "objective": objective,
         "grid_x": gx.tolist(),
         "grid_y": gy.tolist(),
         "Z": Z,
-        "best": {"value": best_overall, "inputs": best_inputs},
+        "other_inputs_grid": other_grid,
+        "best": {"value": best_overall, "point": best_point, "inputs": best_inputs},
+        "train_r2": bundle["train_r2"].get(output),
+        "test_r2": bundle["test_r2"].get(output),
+        "rows_used": bundle["rows_used"],
+        "bounds": {k: {"min": float(v[0]), "max": float(v[1]), "median": float(medians[k])} for k, v in bounds.items()},
+        "note": "MLP surrogate trained on the active combined dataset; non-axis inputs optimised under observed bounds.",
     }
 
 
 def _param_goal_seek_df(df, payload):
     import numpy as np
-    import pandas as pd
-    from sklearn.ensemble import RandomForestRegressor
+    from scipy.optimize import minimize
 
-    num, inputs, outputs = _split_inputs_outputs(df)
+    bundle = _fit_param_surrogate(df)
+    if bundle.get("error"):
+        return {"error": bundle["error"]}
+
+    inputs = bundle["inputs"]
+    outputs = bundle["outputs"]
+    bounds = bundle["bounds"]
+    medians = bundle["medians"]
     output = payload.get("output", outputs[0])
     target = float(payload.get("target", 0.0))
     tolerance = float(payload.get("tolerance", 1e-3))
-    samples = int(payload.get("samples", 1500))
+    samples = max(4, min(24, int(payload.get("samples", 8))))
     if output not in outputs:
         return {"error": "Invalid output selection."}
 
-    X = num[inputs].apply(pd.to_numeric, errors="coerce")
-    y = pd.to_numeric(num[output], errors="coerce")
-    m = X.notna().all(axis=1) & y.notna()
-    X = X[m]
-    y = y[m]
-    rf = RandomForestRegressor(n_estimators=300, random_state=42)
-    rf.fit(X, y)
+    var_bounds = [bounds[c] for c in inputs]
+    median_start = np.array([medians[c] for c in inputs], dtype=float)
 
-    bounds = {}
-    for c in inputs:
-        s = X[c]
-        bounds[c] = (float(s.quantile(0.02)), float(s.quantile(0.98)))
+    def _goal_objective(xvec):
+        probe = {c: float(v) for c, v in zip(inputs, xvec)}
+        pred = _param_predict_output(bundle, probe, output)
+        return float((pred - target) ** 2)
+
+    starts = [median_start]
+    for _ in range(max(0, samples - 1)):
+        starts.append(np.array([np.random.uniform(lo, hi) for lo, hi in var_bounds], dtype=float))
 
     best = None
     best_in = None
-    for _ in range(samples):
-        vec = {}
-        for c in inputs:
-            lo, hi = bounds[c]
-            vec[c] = float(np.random.uniform(lo, hi))
-        x_arr = np.array([[vec[c] for c in inputs]], dtype=float)
-        pred = float(rf.predict(x_arr)[0])
+    for guess in starts:
+        res = minimize(
+            _goal_objective,
+            guess,
+            method="L-BFGS-B",
+            bounds=var_bounds,
+            options={"maxiter": 120},
+        )
+        cand = np.clip(res.x if getattr(res, "x", None) is not None else guess, [b[0] for b in var_bounds], [b[1] for b in var_bounds])
+        probe = {c: float(v) for c, v in zip(inputs, cand)}
+        pred = _param_predict_output(bundle, probe, output)
         err = abs(pred - target)
         if best is None or err < best:
             best = err
-            best_in = {"predicted": pred, "inputs": vec}
+            best_in = {"predicted": pred, "inputs": probe}
 
     return {
+        "dataset": payload.get("dataset") or DATASETS["combined"],
+        "output": output,
         "target": target,
         "tolerance": tolerance,
         "best": best_in,
         "abs_error": float(best) if best is not None else None,
         "within_tolerance": bool(best is not None and best <= tolerance),
+        "train_r2": bundle["train_r2"].get(output),
+        "test_r2": bundle["test_r2"].get(output),
+        "rows_used": bundle["rows_used"],
+        "bounds": {k: {"min": float(v[0]), "max": float(v[1]), "median": float(medians[k])} for k, v in bounds.items()},
+        "note": "Goal seek uses the same MLP surrogate as the optimisation surface and searches all inputs within observed dataset bounds.",
     }
 
 
@@ -1845,7 +1989,14 @@ def _param_goal_seek_df(df, payload):
 def param_meta(_token: str = Depends(require_auth)):
     df = _combined_df()
     _, inputs, outputs = _split_inputs_outputs(df)
-    return {"inputs": inputs, "outputs": outputs}
+    return {
+        "inputs": inputs,
+        "outputs": outputs,
+        "dataset": DATASETS["combined"],
+        "default_output": outputs[0] if outputs else None,
+        "default_x1": inputs[0] if inputs else None,
+        "default_x2": inputs[1] if len(inputs) > 1 else (inputs[0] if inputs else None),
+    }
 
 
 @app.post("/v1/param/meta")
@@ -1855,7 +2006,14 @@ def param_meta_upload(
 ):
     df = _read_upload_df(file, DATASETS["combined"])
     _, inputs, outputs = _split_inputs_outputs(df)
-    return {"inputs": inputs, "outputs": outputs}
+    return {
+        "inputs": inputs,
+        "outputs": outputs,
+        "dataset": file.filename if file is not None else DATASETS["combined"],
+        "default_output": outputs[0] if outputs else None,
+        "default_x1": inputs[0] if inputs else None,
+        "default_x2": inputs[1] if len(inputs) > 1 else (inputs[0] if inputs else None),
+    }
 
 
 @app.post("/v1/param/surface")

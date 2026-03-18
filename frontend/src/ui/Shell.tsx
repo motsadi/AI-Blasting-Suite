@@ -262,7 +262,12 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
               activeDatasetName={activeCombinedDataset}
             />
           ) : tab === "param" ? (
-            <ParamPanel apiBaseUrl={apiBaseUrl} token={session.token} dataset={dataset} />
+            <ParamPanel
+              apiBaseUrl={apiBaseUrl}
+              token={session.token}
+              dataset={dataset}
+              activeDatasetName={activeCombinedDataset}
+            />
           ) : tab === "cost" ? (
             <CostPanel apiBaseUrl={apiBaseUrl} token={session.token} />
           ) : tab === "backbreak" ? (
@@ -2176,6 +2181,98 @@ function SurfaceHeatmap({
   );
 }
 
+function nearestIndex(values: number[], target: number) {
+  if (!values?.length) return 0;
+  let bestIdx = 0;
+  let bestDist = Math.abs(Number(values[0]) - target);
+  for (let i = 1; i < values.length; i += 1) {
+    const dist = Math.abs(Number(values[i]) - target);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
+function ParamSurfaceExplorer({
+  surface,
+  selectedCell,
+  onSelect,
+}: {
+  surface: any;
+  selectedCell: { i: number; j: number } | null;
+  onSelect: (cell: { i: number; j: number }) => void;
+}) {
+  const gx = surface?.grid_x ?? [];
+  const gy = surface?.grid_y ?? [];
+  const Z = surface?.Z ?? [];
+  if (!gx.length || !gy.length || !Z.length) return null;
+  const w = 640;
+  const h = 340;
+  const left = 52;
+  const top = 24;
+  const innerW = w - left - 20;
+  const innerH = h - top - 38;
+  const cellW = innerW / Math.max(1, gx.length);
+  const cellH = innerH / Math.max(1, gy.length);
+  const flat = Z.flat().filter((v: any) => Number.isFinite(Number(v)));
+  const zmin = Math.min(...flat);
+  const zmax = Math.max(...flat);
+  const colorFor = (v: number) => {
+    const t = (Number(v) - zmin) / (zmax - zmin || 1);
+    return `hsl(${220 - 180 * t}, 78%, ${90 - t * 40}%)`;
+  };
+  const bestPoint = surface?.best?.point;
+  const bestI = bestPoint ? nearestIndex(gx, Number(bestPoint.x1)) : -1;
+  const bestJ = bestPoint ? nearestIndex(gy, Number(bestPoint.x2)) : -1;
+
+  return (
+    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 14, marginTop: 10 }}>
+      {gx.map((xv: number, i: number) =>
+        gy.map((yv: number, j: number) => {
+          const selected = selectedCell?.i === i && selectedCell?.j === j;
+          const isBest = i === bestI && j === bestJ;
+          return (
+            <g key={`${i}-${j}`}>
+              <rect
+                x={left + i * cellW}
+                y={top + (gy.length - 1 - j) * cellH}
+                width={cellW + 0.5}
+                height={cellH + 0.5}
+                fill={colorFor(Number(Z?.[i]?.[j] ?? 0))}
+                stroke={selected ? "#0f172a" : isBest ? "#f59e0b" : "rgba(255,255,255,0.18)"}
+                strokeWidth={selected ? 2.2 : isBest ? 1.5 : 0.5}
+                onMouseEnter={() => onSelect({ i, j })}
+                onClick={() => onSelect({ i, j })}
+              />
+            </g>
+          );
+        })
+      )}
+      <text x={w / 2} y={16} textAnchor="middle" fill="var(--text)" fontSize="13" fontWeight="800">
+        {surface?.output} surface over {surface?.x1} and {surface?.x2}
+      </text>
+      <text x={w / 2} y={h - 10} textAnchor="middle" fill="var(--muted)" fontSize="11" fontWeight="700">
+        {surface?.x1}
+      </text>
+      <text x={14} y={h / 2} textAnchor="middle" fill="var(--muted)" fontSize="11" fontWeight="700" transform={`rotate(-90 14 ${h / 2})`}>
+        {surface?.x2}
+      </text>
+      {selectedCell ? (
+        <text x={w - 14} y={18} textAnchor="end" fill="var(--text)" fontSize="10">
+          Selected {formatNum(gx[selectedCell.i])}, {formatNum(gy[selectedCell.j])} {"->"} {formatNum(Z[selectedCell.i]?.[selectedCell.j])}
+        </text>
+      ) : null}
+      {bestPoint ? (
+        <text x={left + 6} y={18} fill="#f59e0b" fontSize="10">
+          Best point highlighted
+        </text>
+      ) : null}
+    </svg>
+  );
+}
+
 function SurfaceIsoPlot({ gridX, gridY, Z }: { gridX: number[]; gridY: number[]; Z: number[][] }) {
   if (!gridX?.length || !gridY?.length || !Z?.length) return null;
   const w = 620;
@@ -3738,10 +3835,12 @@ function ParamPanel({
   apiBaseUrl,
   token,
   dataset,
+  activeDatasetName,
 }: {
   apiBaseUrl: string;
   token: string;
   dataset: { file?: File | null; rows: Array<Record<string, any>>; columns: string[] };
+  activeDatasetName: string;
 }) {
   const [meta, setMeta] = useState<any>(null);
   const [resp, setResp] = useState<any>(null);
@@ -3754,40 +3853,68 @@ function ParamPanel({
   const [objective, setObjective] = useState<"min" | "max">("max");
   const [target, setTarget] = useState(0);
   const [tolerance, setTolerance] = useState(1e-3);
-  const [grid, setGrid] = useState(25);
-  const [samples, setSamples] = useState(40);
+  const [grid, setGrid] = useState(24);
+  const [samples, setSamples] = useState(4);
+  const [selectedCell, setSelectedCell] = useState<{ i: number; j: number } | null>(null);
+  const resolvedDatasetName = dataset?.file?.name ?? activeDatasetName ?? "(default)";
   const [msg, setMsg] = useState(
     "Creates an optimisation surface by minimising/maximising the chosen output.\n" +
-      "Other inputs are optimised via random sampling within observed bounds.\n\n" +
-      "Use 'Goal Seek' to set a target output and search for an input recipe."
+      "Other inputs are optimised by a surrogate model within observed bounds.\n\n" +
+      "Use Goal Seek to search for a full input recipe that achieves the chosen target output."
   );
 
   useEffect(() => {
     if (!apiBaseUrl) return;
     (async () => {
-      let res: Response;
-      if (dataset?.file) {
-        const fd = new FormData();
-        fd.append("file", dataset.file);
-        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/meta`, {
-          method: "POST",
-          headers: { ...authHeaders(token) },
-          body: fd,
-        });
-      } else {
-        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/meta`, {
-          headers: { ...authHeaders(token) },
-        });
-      }
-      const json = await res.json();
-      setMeta(json);
-      if (json?.outputs?.length) setOutput(json.outputs[0]);
-      if (json?.inputs?.length > 1) {
-        setX1(json.inputs[0]);
-        setX2(json.inputs[1]);
+      try {
+        let res: Response;
+        if (dataset?.file) {
+          const fd = new FormData();
+          fd.append("file", dataset.file);
+          res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/meta`, {
+            method: "POST",
+            headers: { ...authHeaders(token) },
+            body: fd,
+          });
+        } else {
+          res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/meta`, {
+            headers: { ...authHeaders(token) },
+          });
+        }
+        const json = await res.json();
+        if (!res.ok || json?.error) throw new Error(json?.error ?? "Failed to load parameter optimisation metadata");
+        setMeta(json);
+        if (json?.outputs?.length) setOutput((prev) => (json.outputs.includes(prev) ? prev : json.default_output ?? json.outputs[0]));
+        if (json?.inputs?.length > 1) {
+          setX1((prev) => (json.inputs.includes(prev) ? prev : json.default_x1 ?? json.inputs[0]));
+          setX2((prev) => (json.inputs.includes(prev) && prev !== (json.default_x1 ?? json.inputs[0]) ? prev : json.default_x2 ?? json.inputs[1]));
+        }
+        setResp(null);
+        setGoal(null);
+        setSelectedCell(null);
+        setErr(null);
+        setMsg(
+          `Active dataset: ${json?.dataset ?? resolvedDatasetName}\n` +
+            "Surrogate optimisation mirrors the desktop workflow by optimising non-axis inputs inside observed dataset bounds."
+        );
+      } catch (e: any) {
+        setErr(String(e?.message ?? e));
       }
     })();
-  }, [apiBaseUrl, token, dataset?.file]);
+  }, [apiBaseUrl, token, dataset?.file, resolvedDatasetName]);
+
+  useEffect(() => {
+    if (!resp?.grid_x?.length || !resp?.grid_y?.length) return;
+    const best = resp?.best?.point;
+    if (best) {
+      setSelectedCell({
+        i: nearestIndex(resp.grid_x, Number(best.x1)),
+        j: nearestIndex(resp.grid_y, Number(best.x2)),
+      });
+      return;
+    }
+    setSelectedCell({ i: 0, j: 0 });
+  }, [resp]);
 
   async function runSurface() {
     if (!apiBaseUrl || !output || !x1 || !x2) return;
@@ -3808,7 +3935,7 @@ function ParamPanel({
         res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface`, {
           method: "POST",
           headers: { "content-type": "application/json", ...authHeaders(token) },
-          body: JSON.stringify({ output, x1, x2, objective, grid, samples }),
+          body: JSON.stringify({ output, x1, x2, objective, grid, samples, dataset: resolvedDatasetName }),
         });
       }
       const json = await res.json();
@@ -3843,7 +3970,7 @@ function ParamPanel({
         res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/goal-seek`, {
           method: "POST",
           headers: { "content-type": "application/json", ...authHeaders(token) },
-          body: JSON.stringify({ output, target, tolerance }),
+          body: JSON.stringify({ output, target, tolerance, dataset: resolvedDatasetName }),
         });
       }
       const json = await res.json();
@@ -3859,12 +3986,64 @@ function ParamPanel({
     }
   }
 
-  return (
-    <div className="card">
-      <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Parameter Optimisation</div>
-      <div className="subtitle">Mirror of the local optimisation surface + goal seek.</div>
+  const selectedPoint = useMemo(() => {
+    if (!resp?.grid_x?.length || !resp?.grid_y?.length || !selectedCell) return null;
+    const { i, j } = selectedCell;
+    return {
+      x: resp.grid_x?.[i],
+      y: resp.grid_y?.[j],
+      z: resp.Z?.[i]?.[j],
+      inputs: resp.other_inputs_grid?.[i]?.[j] ?? null,
+    };
+  }, [resp, selectedCell]);
 
-      <div style={{ marginTop: 10 }} className="grid3">
+  const xProfile = useMemo(() => {
+    if (!resp?.grid_x?.length || !resp?.Z?.length || selectedCell == null) return [];
+    return resp.grid_x.map((x: number, i: number) => ({ x, y: Number(resp.Z?.[i]?.[selectedCell.j]) }));
+  }, [resp, selectedCell]);
+
+  const yProfile = useMemo(() => {
+    if (!resp?.grid_y?.length || !resp?.Z?.length || selectedCell == null) return [];
+    return resp.grid_y.map((y: number, j: number) => ({ x: y, y: Number(resp.Z?.[selectedCell.i]?.[j]) }));
+  }, [resp, selectedCell]);
+
+  function exportSurface() {
+    if (!resp?.Z?.length) return;
+    const rows: Array<Record<string, any>> = [];
+    resp.grid_x.forEach((xv: number, i: number) => {
+      resp.grid_y.forEach((yv: number, j: number) => {
+        rows.push({
+          [resp.x1]: xv,
+          [resp.x2]: yv,
+          [resp.output]: resp.Z?.[i]?.[j],
+          ...(resp.other_inputs_grid?.[i]?.[j] ?? {}),
+        });
+      });
+    });
+    const cols = Object.keys(rows[0] ?? {});
+    downloadCsv(rows, cols, "param_surface.csv");
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <div className="card">
+        <div className="dataHeader">
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: "-0.02em" }}>Parameter Optimisation</div>
+            <div className="subtitle">
+              Desktop-style surrogate optimisation surface plus inverse design, using the active combined dataset selected in the main workspace.
+            </div>
+          </div>
+          <div className="dataHeaderActions">
+            <div className="chip">{dataset?.file ? "Uploaded dataset" : "Shared combined dataset"}</div>
+            <div className="chip">{resolvedDatasetName}</div>
+            <div className="chip">{objective === "min" ? "Minimisation" : "Maximisation"}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div style={{ marginTop: 0 }} className="grid3">
         <div>
           <label className="label">Output</label>
           <select className="input" value={output} onChange={(e) => setOutput(e.target.value)}>
@@ -3889,57 +4068,82 @@ function ParamPanel({
             ))}
           </select>
         </div>
-      </div>
+        </div>
 
-      <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-        <button className="btn btnPrimary" onClick={runSurface} disabled={busy}>
-          {busy ? "Running…" : "Optimise & Plot Surface"}
-        </button>
-        <button className="btn" onClick={() => downloadCsv(resp?.Z?.flatMap((row: any, i: number) => row.map((z: number, j: number) => ({
-          [resp?.x1]: resp?.grid_x?.[i],
-          [resp?.x2]: resp?.grid_y?.[j],
-          [resp?.output]: z,
-        }))) ?? [], resp?.x1 ? [resp.x1, resp.x2, resp.output] : [], "param_surface.csv")} disabled={!resp?.Z}>
-          Export surface CSV
-        </button>
-        <select className="input" value={objective} onChange={(e) => setObjective(e.target.value as any)} style={{ width: 120 }}>
-          <option value="max">Maximise</option>
-          <option value="min">Minimise</option>
-        </select>
-        <input className="input" type="number" value={grid} onChange={(e) => setGrid(Number(e.target.value))} style={{ width: 120 }} />
-        <input className="input" type="number" value={samples} onChange={(e) => setSamples(Number(e.target.value))} style={{ width: 140 }} />
+        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+          <button className="btn btnPrimary" onClick={runSurface} disabled={busy}>
+            {busy ? "Running..." : "Optimise & Plot Surface"}
+          </button>
+          <button className="btn" onClick={exportSurface} disabled={!resp?.Z}>
+            Export surface CSV
+          </button>
+          <select className="input" value={objective} onChange={(e) => setObjective(e.target.value as any)} style={{ width: 140 }}>
+            <option value="max">Maximise</option>
+            <option value="min">Minimise</option>
+          </select>
+          <input className="input" type="number" value={grid} onChange={(e) => setGrid(Math.max(12, Math.min(36, Number(e.target.value) || 24)))} style={{ width: 120 }} />
+          <input className="input" type="number" value={samples} onChange={(e) => setSamples(Math.max(1, Math.min(10, Number(e.target.value) || 4)))} style={{ width: 140 }} />
+        </div>
       </div>
 
       <div className="card" style={{ marginTop: 12 }}>
         <div className="label">Inverse Design (Goal Seek)</div>
         <div className="grid3" style={{ marginTop: 8 }}>
           <input className="input" type="number" value={target} onChange={(e) => setTarget(Number(e.target.value))} placeholder="Target output" />
-            <input className="input" type="number" value={tolerance} onChange={(e) => setTolerance(Number(e.target.value))} placeholder="Tolerance" />
+          <input className="input" type="number" value={tolerance} onChange={(e) => setTolerance(Number(e.target.value))} placeholder="Tolerance" />
           <button className="btn" onClick={runGoal} disabled={busy}>
-            {busy ? "Running…" : "Run Goal Seek (All Inputs)"}
+            {busy ? "Running..." : "Run Goal Seek (All Inputs)"}
           </button>
         </div>
       </div>
 
-      {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
+      {err && <div className="error">{err}</div>}
 
-      <div className="card" style={{ marginTop: 12 }}>
+      <div className="card">
         <div className="label">Message</div>
         <pre style={pre}>{msg}</pre>
       </div>
 
-      {resp?.Z && (
-        <div className="card" style={{ marginTop: 12 }}>
-          <div className="label">Optimisation Surface</div>
-          <SurfaceIsoPlot gridX={resp.grid_x} gridY={resp.grid_y} Z={resp.Z} />
+      {resp && (
+        <div className="grid3">
+          <div className="kpi">
+            <div className="kpiTitle">Rows used</div>
+            <div className="kpiValue">{resp.rows_used ?? "—"}</div>
+          </div>
+          <div className="kpi">
+            <div className="kpiTitle">Train R²</div>
+            <div className="kpiValue">{formatNum(resp.train_r2)}</div>
+          </div>
+          <div className="kpi">
+            <div className="kpiTitle">Test R²</div>
+            <div className="kpiValue">{formatNum(resp.test_r2)}</div>
+          </div>
         </div>
       )}
 
-      {resp?.best?.inputs && (
-        <div className="card" style={{ marginTop: 12 }}>
-          <div className="label">Optimised Other Inputs</div>
-          <div className="grid3" style={{ marginTop: 8 }}>
-            {Object.entries(resp.best.inputs).map(([k, v]: any) => (
+      {resp?.Z && (
+        <div className="grid2">
+          <div className="card">
+            <div className="sectionTitle">Surface explorer</div>
+            <div className="subtitle">Hover or click cells to inspect the optimised non-axis inputs at that surface point.</div>
+            <ParamSurfaceExplorer surface={resp} selectedCell={selectedCell} onSelect={setSelectedCell} />
+          </div>
+          <div className="card">
+            <div className="sectionTitle">3D surface view</div>
+            <div className="subtitle">{resp.note ?? "Optimised surface of the chosen output across the selected axes."}</div>
+            <SurfaceIsoPlot gridX={resp.grid_x} gridY={resp.grid_y} Z={resp.Z} />
+          </div>
+        </div>
+      )}
+
+      {selectedPoint?.inputs && (
+        <div className="card">
+          <div className="sectionTitle">Selected point recipe</div>
+          <div className="subtitle">
+            {resp?.x1}={formatNum(selectedPoint.x)} · {resp?.x2}={formatNum(selectedPoint.y)} · {resp?.output}={formatNum(selectedPoint.z)}
+          </div>
+          <div className="grid3" style={{ marginTop: 10 }}>
+            {Object.entries(selectedPoint.inputs).map(([k, v]: any) => (
               <div key={k} className="kpi">
                 <div className="kpiTitle">{k}</div>
                 <div className="kpiValue">{formatNum(v)}</div>
@@ -3949,11 +4153,52 @@ function ParamPanel({
         </div>
       )}
 
+      {resp?.Z && selectedCell && (
+        <div className="grid2">
+          <div className="card">
+            <div className="sectionTitle">{resp.x1} profile</div>
+            <PolylinePlot
+              points={xProfile}
+              width={620}
+              height={240}
+              title={`${resp.output} along ${resp.x1}`}
+              xLabel={resp.x1}
+              yLabel={resp.output}
+            />
+          </div>
+          <div className="card">
+            <div className="sectionTitle">{resp.x2} profile</div>
+            <PolylinePlot
+              points={yProfile}
+              width={620}
+              height={240}
+              title={`${resp.output} along ${resp.x2}`}
+              xLabel={resp.x2}
+              yLabel={resp.output}
+            />
+          </div>
+        </div>
+      )}
+
       {goal?.best?.inputs && (
-        <div className="card" style={{ marginTop: 12 }}>
-          <div className="label">Goal Seek Inputs</div>
+        <div className="card">
+          <div className="sectionTitle">Goal seek recipe</div>
           <div className="subtitle" style={{ marginTop: 8 }}>
             Predicted {formatNum(goal?.best?.predicted)} · target {formatNum(goal?.target)} · error {formatNum(goal?.abs_error)} · {goal?.within_tolerance ? "within tolerance" : "outside tolerance"}
+          </div>
+          <div className="grid3" style={{ marginTop: 10 }}>
+            <div className="kpi">
+              <div className="kpiTitle">Rows used</div>
+              <div className="kpiValue">{goal?.rows_used ?? "—"}</div>
+            </div>
+            <div className="kpi">
+              <div className="kpiTitle">Train R²</div>
+              <div className="kpiValue">{formatNum(goal?.train_r2)}</div>
+            </div>
+            <div className="kpi">
+              <div className="kpiTitle">Test R²</div>
+              <div className="kpiValue">{formatNum(goal?.test_r2)}</div>
+            </div>
           </div>
           <div className="grid3" style={{ marginTop: 8 }}>
             {Object.entries(goal.best.inputs).map(([k, v]: any) => (
