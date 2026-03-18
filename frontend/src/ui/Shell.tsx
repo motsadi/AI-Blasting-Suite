@@ -1712,18 +1712,19 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
             </div>
           </div>
 
+          <PlanView
+            points={points}
+            colorBy={colorBy}
+            sizeBy={sizeBy}
+            currentTime={currentTime}
+            previousTime={previousTime}
+            showLabels={showLabels}
+            showShock={showShock}
+            selectedPoint={selectedPoint}
+            onSelect={setSelectedPoint}
+          />
+
           <div className="grid2" style={{ marginTop: 12 }}>
-            <PlanView
-              points={points}
-              colorBy={colorBy}
-              sizeBy={sizeBy}
-              currentTime={currentTime}
-              previousTime={previousTime}
-              showLabels={showLabels}
-              showShock={showShock}
-              selectedPoint={selectedPoint}
-              onSelect={setSelectedPoint}
-            />
             <div style={{ display: "grid", gap: 12 }}>
               <DelaySequenceChart points={points} currentTime={currentTime} />
               <div className="card">
@@ -1774,6 +1775,30 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
                 ) : (
                   <div className="subtitle" style={{ marginTop: 8 }}>Click a hole in the plan view to inspect its timing and geometry.</div>
                 )}
+              </div>
+            </div>
+            <div className="card">
+              <div className="sectionTitle">Simulation Notes</div>
+              <div className="subtitle" style={{ marginTop: 8 }}>
+                The plan view now uses the full available width, keeps the colour legend outside the hole field, and caps marker size against the actual screen spacing so holes remain individually readable.
+              </div>
+              <div className="grid2" style={{ marginTop: 12 }}>
+                <div className="kpi">
+                  <div className="kpiTitle">Colour field</div>
+                  <div className="kpiValue">{colorBy}</div>
+                </div>
+                <div className="kpi">
+                  <div className="kpiTitle">Size field</div>
+                  <div className="kpiValue">{sizeBy}</div>
+                </div>
+                <div className="kpi">
+                  <div className="kpiTitle">Current step</div>
+                  <div className="kpiValue">{currentTime == null ? "—" : `${Math.round(currentTime)} ms`}</div>
+                </div>
+                <div className="kpi">
+                  <div className="kpiTitle">Playback speed</div>
+                  <div className="kpiValue">{formatNum(speed)}x</div>
+                </div>
               </div>
             </div>
           </div>
@@ -2290,9 +2315,9 @@ function PlanView({
   selectedPoint: Record<string, any> | null;
   onSelect: (point: Record<string, any>) => void;
 }) {
-  const w = 760;
-  const h = 520;
-  const pad = { left: 52, right: 94, top: 28, bottom: 46 };
+  const w = 1120;
+  const h = 700;
+  const pad = { left: 72, right: 42, top: 26, bottom: 64 };
   const pts = points
     .map((p, idx) => ({ ...p, __idx: idx }))
     .filter((p) => Number.isFinite(Number(p.X)) && Number.isFinite(Number(p.Y)) && Number.isFinite(Number(p.Delay)));
@@ -2326,118 +2351,151 @@ function PlanView({
   const mapX = (x: number) => offsetX + norm(x, xmin, xmax) * usedW;
   const mapY = (y: number) => h - offsetY - norm(y, ymin, ymax) * usedH;
   const eps = 1e-6;
+  const screenPts = pts.map((point) => ({
+    ...point,
+    sx: mapX(Number(point.X)),
+    sy: mapY(Number(point.Y)),
+  }));
+  const spacingSorted = [...screenPts].sort((a, b) => a.sx - b.sx);
+  let minSpacing = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < spacingSorted.length; i++) {
+    for (let j = i + 1; j < Math.min(spacingSorted.length, i + 18); j++) {
+      const dx = spacingSorted[j].sx - spacingSorted[i].sx;
+      if (Number.isFinite(minSpacing) && dx > minSpacing) break;
+      const dist = Math.hypot(dx, spacingSorted[j].sy - spacingSorted[i].sy);
+      if (dist > 0) minSpacing = Math.min(minSpacing, dist);
+    }
+  }
+  const safeSpacing = Number.isFinite(minSpacing) ? minSpacing : 18;
+  const maxRadius = Math.max(4.5, Math.min(11.5, safeSpacing * 0.34));
+  const minRadius = Math.max(3.2, Math.min(7.2, maxRadius * 0.62));
   const colorFor = (point: Record<string, any>) => {
     const t = Math.max(0, Math.min(1, norm(Number(point[colorBy]) || 0, cmin, cmax)));
     return `hsl(${220 - 200 * t}, 80%, 56%)`;
   };
-  const sizeFor = (point: Record<string, any>) => 5 + Math.max(0, Math.min(1, norm(Number(point[sizeBy]) || 0, smin, smax))) * 7;
+  const sizeFor = (point: Record<string, any>) =>
+    minRadius + Math.max(0, Math.min(1, norm(Number(point[sizeBy]) || 0, smin, smax))) * Math.max(1.5, maxRadius - minRadius);
   const currentPoints = currentTime == null ? [] : pts.filter((p) => Math.abs(Number(p.Delay) - currentTime) < eps);
   const prevPoints = previousTime == null ? [] : pts.filter((p) => Math.abs(Number(p.Delay) - previousTime) < eps);
-  const currentIds = new Set(currentPoints.map((p) => p.__idx));
-  const prevIds = new Set(prevPoints.map((p) => p.__idx));
   const waitingCount = currentTime == null ? 0 : pts.filter((p) => Number(p.Delay) > currentTime + eps).length;
   const firedCount = currentTime == null ? pts.length : pts.filter((p) => Number(p.Delay) < currentTime - eps).length;
-  const labelable = showLabels ? (pts.length <= 450 ? pts : currentPoints.concat(selectedPoint ? [selectedPoint] : [])) : [];
+  const labelable = showLabels ? (pts.length <= 220 ? pts : currentPoints.concat(selectedPoint ? [selectedPoint] : [])) : [];
+  const xLabel = "X coordinate (m)";
+  const yLabel = "Y coordinate (m)";
 
   return (
     <div className="card">
       <div className="sectionTitle">Blast Simulation Plan View</div>
       <div className="subtitle">
-        Equal-aspect plan view with predicted firing sequence, delay labels, and current blast-front highlighting.
+        Full-width equal-aspect plan view with cleaner spacing, external legend, and current-step highlighting.
       </div>
-      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ marginTop: 10, background: "var(--panel)", borderRadius: 14 }}>
-        <defs>
-          <linearGradient id="delayLegend" x1="0%" y1="100%" x2="0%" y2="0%">
-            <stop offset="0%" stopColor="hsl(220, 80%, 56%)" />
-            <stop offset="50%" stopColor="hsl(120, 80%, 56%)" />
-            <stop offset="100%" stopColor="hsl(20, 85%, 58%)" />
-          </linearGradient>
-        </defs>
-        <rect x={offsetX} y={offsetY} width={usedW} height={usedH} fill="rgba(255,255,255,0.03)" stroke="rgba(148,163,184,0.18)" />
-        <line x1={offsetX} y1={h - offsetY} x2={offsetX + usedW} y2={h - offsetY} stroke="rgba(148,163,184,0.35)" />
-        <line x1={offsetX} y1={offsetY} x2={offsetX} y2={h - offsetY} stroke="rgba(148,163,184,0.35)" />
-        <text x={offsetX} y={h - 12} fill="var(--muted)" fontSize="10">{formatNum(xmin)}</text>
-        <text x={offsetX + usedW} y={h - 12} fill="var(--muted)" fontSize="10" textAnchor="end">{formatNum(xmax)}</text>
-        <text x={18} y={h - offsetY + 4} fill="var(--muted)" fontSize="10">{formatNum(ymin)}</text>
-        <text x={18} y={offsetY + 4} fill="var(--muted)" fontSize="10">{formatNum(ymax)}</text>
-        <text x={offsetX + usedW / 2} y={h - 12} fill="var(--muted)" fontSize="10" textAnchor="middle">X coordinate</text>
-        <text x={16} y={offsetY + usedH / 2} fill="var(--muted)" fontSize="10" textAnchor="middle" transform={`rotate(-90 16 ${offsetY + usedH / 2})`}>Y coordinate</text>
+      <div className="grid3" style={{ marginTop: 10 }}>
+        <div className="kpi">
+          <div className="kpiTitle">Current firing time</div>
+          <div className="kpiValue">{currentTime == null ? "—" : `${Math.round(currentTime)} ms`}</div>
+        </div>
+        <div className="kpi">
+          <div className="kpiTitle">Visible holes</div>
+          <div className="kpiValue">{pts.length}</div>
+        </div>
+        <div className="kpi">
+          <div className="kpiTitle">Hole spacing fit</div>
+          <div className="kpiValue">{formatNum(safeSpacing)}</div>
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 88px", gap: 18, alignItems: "start", marginTop: 12 }}>
+        <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 14 }}>
+          {Array.from({ length: 4 }).map((_, i) => {
+            const tx = offsetX + (usedW / 3) * i;
+            const ty = offsetY + (usedH / 3) * i;
+            return (
+              <g key={`grid-${i}`}>
+                <line x1={tx} y1={offsetY} x2={tx} y2={h - offsetY} stroke="rgba(148,163,184,0.12)" />
+                <line x1={offsetX} y1={ty} x2={offsetX + usedW} y2={ty} stroke="rgba(148,163,184,0.12)" />
+              </g>
+            );
+          })}
+          <rect x={offsetX} y={offsetY} width={usedW} height={usedH} fill="rgba(255,255,255,0.02)" stroke="rgba(148,163,184,0.18)" />
+          <line x1={offsetX} y1={h - offsetY} x2={offsetX + usedW} y2={h - offsetY} stroke="rgba(148,163,184,0.4)" />
+          <line x1={offsetX} y1={offsetY} x2={offsetX} y2={h - offsetY} stroke="rgba(148,163,184,0.4)" />
+          <text x={offsetX} y={h - 18} fill="var(--muted)" fontSize="12">{formatNum(xmin)}</text>
+          <text x={offsetX + usedW} y={h - 18} fill="var(--muted)" fontSize="12" textAnchor="end">{formatNum(xmax)}</text>
+          <text x={34} y={h - offsetY + 4} fill="var(--muted)" fontSize="12">{formatNum(ymin)}</text>
+          <text x={34} y={offsetY + 4} fill="var(--muted)" fontSize="12">{formatNum(ymax)}</text>
+          <text x={offsetX + usedW / 2} y={h - 18} fill="var(--muted)" fontSize="12" textAnchor="middle">{xLabel}</text>
+          <text x={26} y={offsetY + usedH / 2} fill="var(--muted)" fontSize="12" textAnchor="middle" transform={`rotate(-90 26 ${offsetY + usedH / 2})`}>{yLabel}</text>
 
-        {showShock &&
-          currentPoints.map((point) => {
+          {showShock &&
+            currentPoints.map((point) => {
+              const x = mapX(Number(point.X));
+              const y = mapY(Number(point.Y));
+              return <circle key={`ring-${point.__idx}`} cx={x} cy={y} r={Math.max(18, maxRadius + 8)} fill="none" stroke="rgba(255,255,255,0.45)" strokeWidth={1.4} />;
+            })}
+          {showShock &&
+            prevPoints.map((point) => {
+              const x = mapX(Number(point.X));
+              const y = mapY(Number(point.Y));
+              return <circle key={`prev-ring-${point.__idx}`} cx={x} cy={y} r={Math.max(26, maxRadius + 16)} fill="none" stroke="rgba(255,255,255,0.16)" strokeWidth={1} />;
+            })}
+
+          {pts.map((point) => {
             const x = mapX(Number(point.X));
             const y = mapY(Number(point.Y));
-            return <circle key={`ring-${point.__idx}`} cx={x} cy={y} r={16} fill="none" stroke="rgba(255,255,255,0.42)" strokeWidth={1.3} />;
+            const delay = Number(point.Delay);
+            const isCurrent = currentTime != null && Math.abs(delay - currentTime) < eps;
+            const isFired = currentTime != null && delay < currentTime - eps;
+            const isWaiting = currentTime != null && delay > currentTime + eps;
+            const isSelected = selectedPoint != null && selectedPoint.__idx === point.__idx;
+            const fill = isWaiting ? "rgba(203,213,225,0.52)" : colorFor(point);
+            const opacity = isCurrent ? 1 : isFired ? 0.96 : currentTime == null ? 0.95 : 0.58;
+            const radius = sizeFor(point) + (isCurrent ? 1 : 0) + (isSelected ? 1 : 0);
+            return (
+              <g key={point.__idx} onClick={() => onSelect(point)} style={{ cursor: "pointer" }}>
+                <circle
+                  cx={x}
+                  cy={y}
+                  r={radius}
+                  fill={fill}
+                  opacity={opacity}
+                  stroke={isCurrent || isSelected ? "#ffffff" : "rgba(15,23,42,0.22)"}
+                  strokeWidth={isCurrent || isSelected ? 1.4 : 0.6}
+                />
+                {isCurrent ? <circle cx={x} cy={y} r={radius + 4} fill="none" stroke="rgba(255,255,255,0.88)" strokeWidth={1.2} /> : null}
+              </g>
+            );
           })}
-        {showShock &&
-          prevPoints.map((point) => {
+
+          {labelable.map((point, i) => {
+            if (!point) return null;
             const x = mapX(Number(point.X));
             const y = mapY(Number(point.Y));
-            return <circle key={`prev-ring-${point.__idx}`} cx={x} cy={y} r={26} fill="none" stroke="rgba(255,255,255,0.18)" strokeWidth={1} />;
+            const isCurrent = currentTime != null && Math.abs(Number(point.Delay) - currentTime) < eps;
+            const isSelected = selectedPoint != null && selectedPoint.__idx === point.__idx;
+            if (!isCurrent && !isSelected && pts.length > 220) return null;
+            return (
+              <g key={`lbl-${point.__idx}-${i}`}>
+                <rect x={x + 8} y={y - 14} width={40} height={16} rx={5} fill={isCurrent ? "rgba(15,23,42,0.9)" : "rgba(255,255,255,0.9)"} />
+                <text x={x + 28} y={y - 3} fontSize="9" textAnchor="middle" fill={isCurrent ? "#ffffff" : "#0f172a"} fontWeight="700">
+                  {Math.round(Number(point.Delay))}
+                </text>
+              </g>
+            );
           })}
-
-        {pts.map((point) => {
-          const x = mapX(Number(point.X));
-          const y = mapY(Number(point.Y));
-          const delay = Number(point.Delay);
-          const isCurrent = currentTime != null && Math.abs(delay - currentTime) < eps;
-          const isFired = currentTime != null && delay < currentTime - eps;
-          const isWaiting = currentTime != null && delay > currentTime + eps;
-          const isSelected = selectedPoint != null && selectedPoint.__idx === point.__idx;
-          const fill = isWaiting ? "rgba(148,163,184,0.3)" : colorFor(point);
-          const opacity = isCurrent ? 1 : isFired ? 0.9 : currentTime == null ? 0.92 : 0.52;
-          const radius = sizeFor(point) + (isCurrent ? 2 : 0) + (isSelected ? 1.5 : 0);
-          return (
-            <g key={point.__idx} onClick={() => onSelect(point)} style={{ cursor: "pointer" }}>
-              <circle
-                cx={x}
-                cy={y}
-                r={radius}
-                fill={fill}
-                opacity={opacity}
-                stroke={isCurrent || isSelected ? "#ffffff" : "rgba(15,23,42,0.35)"}
-                strokeWidth={isCurrent || isSelected ? 1.5 : 0.7}
-              />
-              {isCurrent ? <circle cx={x} cy={y} r={radius + 5} fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth={1.4} /> : null}
-            </g>
-          );
-        })}
-
-        {labelable.map((point, i) => {
-          if (!point) return null;
-          const x = mapX(Number(point.X));
-          const y = mapY(Number(point.Y));
-          const isCurrent = currentTime != null && Math.abs(Number(point.Delay) - currentTime) < eps;
-          const isSelected = selectedPoint != null && selectedPoint.__idx === point.__idx;
-          if (!isCurrent && !isSelected && pts.length > 450) return null;
-          return (
-            <g key={`lbl-${point.__idx}-${i}`}>
-              <rect x={x + 6} y={y - 12} width={34} height={14} rx={4} fill={isCurrent ? "rgba(15,23,42,0.82)" : "rgba(255,255,255,0.82)"} />
-              <text x={x + 23} y={y - 2} fontSize="8.5" textAnchor="middle" fill={isCurrent ? "#ffffff" : "#0f172a"} fontWeight="700">
-                {Math.round(Number(point.Delay))}
-              </text>
-            </g>
-          );
-        })}
-
-        <rect x={w - 52} y={offsetY} width={14} height={usedH} fill="url(#delayLegend)" rx={7} />
-        <text x={w - 58} y={offsetY + 4} fill="var(--muted)" fontSize="10" textAnchor="end">{formatNum(cmax)}</text>
-        <text x={w - 58} y={offsetY + usedH / 2} fill="var(--muted)" fontSize="10" textAnchor="end">{formatNum((cmin + cmax) / 2)}</text>
-        <text x={w - 58} y={offsetY + usedH - 2} fill="var(--muted)" fontSize="10" textAnchor="end">{formatNum(cmin)}</text>
-        <text x={w - 45} y={offsetY - 8} fill="var(--muted)" fontSize="10" textAnchor="middle">{colorBy}</text>
-
-        <text x={offsetX + 10} y={offsetY + 18} fill="var(--text)" fontSize="11" fontWeight="700">
-          {currentTime == null ? "Static review" : `Current firing time: ${formatNum(currentTime)} ms`}
-        </text>
-        <text x={offsetX + 10} y={offsetY + 34} fill="var(--muted)" fontSize="10">
-          Fired {firedCount} · Current {currentPoints.length} · Waiting {waitingCount}
-        </text>
-      </svg>
-      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 10 }}>
-        <div className="label">Grey = waiting</div>
-        <div className="label">Colour = predicted sequence</div>
+        </svg>
+        <div className="card" style={{ padding: 10, display: "grid", gap: 8, alignSelf: "stretch" }}>
+          <div className="label" style={{ textAlign: "center" }}>{colorBy}</div>
+          <div style={{ height: 520, borderRadius: 999, background: "linear-gradient(180deg, hsl(20, 85%, 58%) 0%, hsl(120, 80%, 56%) 50%, hsl(220, 80%, 56%) 100%)" }} />
+          <div className="label" style={{ textAlign: "center" }}>{formatNum(cmax)}</div>
+          <div className="label" style={{ textAlign: "center" }}>{formatNum((cmin + cmax) / 2)}</div>
+          <div className="label" style={{ textAlign: "center" }}>{formatNum(cmin)}</div>
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 12 }}>
+        <div className="label">Grey = waiting holes</div>
+        <div className="label">Colour = predicted delay sequence</div>
         <div className="label">White halo = current firing hole(s)</div>
-        <div className="label">Size encodes {sizeBy}</div>
+        <div className="label">Marker size = {sizeBy}</div>
+        <div className="label">Fired {firedCount} · Current {currentPoints.length} · Waiting {waitingCount}</div>
       </div>
     </div>
   );
