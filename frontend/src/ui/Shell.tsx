@@ -4454,6 +4454,7 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
   const [objectiveMode, setObjectiveMode] = useState("Min Cost + Frag + PPV/Air");
   const [solverMessage, setSolverMessage] = useState<string | null>(null);
   const autoComputedRef = useRef(false);
+  const requestTimeoutMs = 45000;
 
   useEffect(() => {
     if (!apiBaseUrl) return;
@@ -4483,21 +4484,33 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     [defaults, method, useAir, useFrag, usePpv, weights]
   );
 
+  async function postCost(path: string, body: Record<string, any>) {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), requestTimeoutMs);
+    try {
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...authHeaders(token) },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const json = await res.json();
+      if (!res.ok || json?.error) throw new Error(json?.error ?? `Request failed for ${path}`);
+      return json;
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  }
+
   async function runCompute() {
     setComputeBusy(true);
     setErr(null);
     setSolverMessage(null);
     try {
-      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/cost/compute`, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...authHeaders(token) },
-        body: JSON.stringify(requestBody),
-      });
-      const json = await res.json();
-      if (!res.ok || json?.error) throw new Error(json?.error ?? "Compute failed");
+      const json = await postCost("/v1/cost/compute", requestBody);
       setResp(json);
     } catch (e: any) {
-      setErr(String(e?.message ?? e));
+      setErr(e?.name === "AbortError" ? "KPI computation timed out. Please try again." : String(e?.message ?? e));
     } finally {
       setComputeBusy(false);
     }
@@ -4508,13 +4521,17 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     setErr(null);
     setSolverMessage(null);
     try {
-      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/cost/optimize`, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...authHeaders(token) },
-        body: JSON.stringify(requestBody),
-      });
-      const json = await res.json();
-      if (!res.ok || json?.error) throw new Error(json?.error ?? "Optimise failed");
+      let json: any;
+      let retryNote = "";
+      try {
+        json = await postCost("/v1/cost/optimize", requestBody);
+      } catch (e: any) {
+        if (method !== "trust-constr" || (e?.name !== "AbortError" && !String(e?.message ?? "").toLowerCase().includes("fetch"))) {
+          throw e;
+        }
+        json = await postCost("/v1/cost/optimize", { ...requestBody, method: "SLSQP" });
+        retryNote = "Primary trust-constr request dropped, so the web app retried with SLSQP. ";
+      }
       const result = json?.result ?? json;
       setResp(result);
       if (result?.inputs) {
@@ -4526,12 +4543,13 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
         }));
       }
       setSolverMessage(
-        json?.message
-          ? `${json?.success ? "Optimisation completed." : "Optimisation finished with solver warning."} ${json.message}`
-          : "Optimisation completed."
+        retryNote +
+          (json?.message
+            ? `${json?.success ? "Optimisation completed." : "Optimisation finished with solver warning."} ${json.message}`
+            : "Optimisation completed.")
       );
     } catch (e: any) {
-      setErr(String(e?.message ?? e));
+      setErr(e?.name === "AbortError" ? "Cost optimisation timed out. Please try SLSQP or adjust inputs." : String(e?.message ?? e));
     } finally {
       setOptBusy(false);
     }
@@ -4541,17 +4559,11 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     setParetoBusy(true);
     setErr(null);
     try {
-      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/cost/pareto`, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...authHeaders(token) },
-        body: JSON.stringify(requestBody),
-      });
-      const json = await res.json();
-      if (!res.ok || json?.error) throw new Error(json?.error ?? "Pareto failed");
+      const json = await postCost("/v1/cost/pareto", requestBody);
       setPareto(json?.rows ?? []);
       setFrontier(json?.frontier ?? json?.rows ?? []);
     } catch (e: any) {
-      setErr(String(e?.message ?? e));
+      setErr(e?.name === "AbortError" ? "Pareto exploration timed out. Please try SLSQP or narrower constraints." : String(e?.message ?? e));
     } finally {
       setParetoBusy(false);
     }

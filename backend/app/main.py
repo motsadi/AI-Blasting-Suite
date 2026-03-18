@@ -2274,6 +2274,66 @@ def _cost_bounds(p):
     return [(B_lo, B_hi), (S_lo, S_hi), (sub_lo, sub_hi)]
 
 
+def _cost_minimize_options(method: str, pareto: bool = False):
+    if method == "trust-constr":
+        return {
+            "maxiter": 120 if not pareto else 80,
+            "gtol": 1e-6,
+            "xtol": 1e-6,
+            "barrier_tol": 1e-6,
+        }
+    return {
+        "maxiter": 400 if not pareto else 200,
+        "ftol": 1e-7,
+    }
+
+
+def _cost_run_optimizer(p, weights, use_frag, use_ppv, use_air, method: str, x0, pareto: bool = False):
+    from scipy.optimize import minimize
+
+    def obj(x):
+        trial = p.copy()
+        trial["B"], trial["S"], trial["sub"] = float(x[0]), float(x[1]), float(x[2])
+        res = _cost_metrics(trial)
+        pen = _cost_penalties(trial, res, weights, use_ppv, use_air, use_frag)
+        return res["cost"] + pen["frag"] + pen["ppv"] + pen["air"]
+
+    solver = "SLSQP" if method == "SLSQP" else "trust-constr"
+    try:
+        res = minimize(
+            obj,
+            x0,
+            method=solver,
+            bounds=_cost_bounds(p),
+            constraints=_cost_constraints(p),
+            options=_cost_minimize_options(solver, pareto=pareto),
+        )
+        if solver == "trust-constr" and not bool(res.success):
+            fallback = minimize(
+                obj,
+                res.x if getattr(res, "x", None) is not None else x0,
+                method="SLSQP",
+                bounds=_cost_bounds(p),
+                constraints=_cost_constraints(p),
+                options=_cost_minimize_options("SLSQP", pareto=pareto),
+            )
+            if bool(fallback.success) or not bool(res.success):
+                return fallback, "SLSQP", f"Fallback from trust-constr: {res.message}"
+        return res, solver, ""
+    except Exception as exc:
+        if solver != "trust-constr":
+            raise
+        fallback = minimize(
+            obj,
+            x0,
+            method="SLSQP",
+            bounds=_cost_bounds(p),
+            constraints=_cost_constraints(p),
+            options=_cost_minimize_options("SLSQP", pareto=pareto),
+        )
+        return fallback, "SLSQP", f"Fallback from trust-constr exception: {exc}"
+
+
 @app.get("/v1/cost/defaults")
 def cost_defaults(_token: str = Depends(require_auth)):
     return _cost_defaults()
@@ -2296,7 +2356,6 @@ def cost_compute(payload: dict = Body(default={}), _token: str = Depends(require
 @app.post("/v1/cost/optimize")
 def cost_optimize(payload: dict = Body(default={}), _token: str = Depends(require_auth)):
     import numpy as np
-    from scipy.optimize import minimize
 
     p = _cost_defaults()
     p.update(payload or {})
@@ -2306,34 +2365,22 @@ def cost_optimize(payload: dict = Body(default={}), _token: str = Depends(requir
     use_air = bool(payload.get("use_air", True))
     method = payload.get("method", "SLSQP")
 
-    def obj(x):
-        trial = p.copy()
-        trial["B"], trial["S"], trial["sub"] = float(x[0]), float(x[1]), float(x[2])
-        res = _cost_metrics(trial)
-        pen = _cost_penalties(trial, res, weights, use_ppv, use_air, use_frag)
-        return res["cost"] + pen["frag"] + pen["ppv"] + pen["air"]
-
     x0 = np.array([p["B"], p["S"], p["sub"]], dtype=float)
-    res = minimize(
-        obj,
-        x0,
-        method=("SLSQP" if method == "SLSQP" else "trust-constr"),
-        bounds=_cost_bounds(p),
-        constraints=_cost_constraints(p),
-        options=dict(maxiter=400, ftol=1e-7),
-    )
+    res, solver_used, fallback_note = _cost_run_optimizer(p, weights, use_frag, use_ppv, use_air, method, x0, pareto=False)
     best = p.copy()
     best["B"], best["S"], best["sub"] = float(res.x[0]), float(res.x[1]), float(res.x[2])
     result = _cost_metrics(best)
     result["penalties"] = _cost_penalties(best, result, weights, use_ppv, use_air, use_frag)
     result["constraint_checks"] = _cost_constraint_summary(best, result)
-    return {"success": bool(res.success), "message": str(res.message), "result": result}
+    message = str(res.message)
+    if fallback_note:
+        message = f"{fallback_note}. {message}"
+    return {"success": bool(res.success), "message": message, "solver_used": solver_used, "result": result}
 
 
 @app.post("/v1/cost/pareto")
 def cost_pareto(payload: dict = Body(default={}), _token: str = Depends(require_auth)):
     import numpy as np
-    from scipy.optimize import minimize
 
     p = _cost_defaults()
     p.update(payload or {})
@@ -2353,32 +2400,22 @@ def cost_pareto(payload: dict = Body(default={}), _token: str = Depends(require_
                 weights = {"frag": wf, "ppv": wp, "air": wa}
                 solver_success = False
                 solver_message = ""
+                solver_used = method
 
-                def obj(x):
-                    trial = p.copy()
-                    trial["B"], trial["S"], trial["sub"] = float(x[0]), float(x[1]), float(x[2])
-                    res = _cost_metrics(trial)
-                    pen = _cost_penalties(
-                        trial,
-                        res,
+                try:
+                    res, solver_used, fallback_note = _cost_run_optimizer(
+                        p,
                         weights,
+                        use_frag and wf > 0,
                         use_ppv and wp > 0,
                         use_air and wa > 0,
-                        use_frag and wf > 0,
-                    )
-                    return res["cost"] + pen["frag"] + pen["ppv"] + pen["air"]
-                try:
-                    res = minimize(
-                        obj,
+                        method,
                         x0,
-                        method=("SLSQP" if method == "SLSQP" else "trust-constr"),
-                        bounds=_cost_bounds(p),
-                        constraints=_cost_constraints(p),
-                        options=dict(maxiter=200, ftol=1e-7),
+                        pareto=True,
                     )
                     x = res.x if res.success else x0
                     solver_success = bool(res.success)
-                    solver_message = str(res.message)
+                    solver_message = f"{fallback_note}. {res.message}" if fallback_note else str(res.message)
                 except Exception:
                     x = x0
                 trial = p.copy()
@@ -2403,6 +2440,7 @@ def cost_pareto(payload: dict = Body(default={}), _token: str = Depends(require_
                         "R": trial["R"],
                         "solver_success": solver_success,
                         "solver_message": solver_message,
+                        "solver_used": solver_used,
                     }
                 )
                 x0 = x
