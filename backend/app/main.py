@@ -875,9 +875,11 @@ def _feature_importance_df(df, top_k: int):
         return {"error": "No numeric rows available."}
 
     X = work.iloc[:, : Xraw.shape[1]].values
+    Xdf = work.iloc[:, : Xraw.shape[1]].copy()
     ydf = work.iloc[:, Xraw.shape[1] :]
     out = {}
     perm_out = {}
+    consensus_out = {}
     explainability = {}
     for out_name in ydf.columns:
         y = ydf[out_name].values
@@ -885,6 +887,7 @@ def _feature_importance_df(df, top_k: int):
         if mask.sum() < 20:
             continue
         Xc = X[mask]
+        Xc_df = Xdf.loc[mask].reset_index(drop=True)
         yc = y[mask]
         if len(yc) >= 30:
             Xtr, Xte, ytr, yte = train_test_split(Xc, yc, test_size=0.2, random_state=42)
@@ -899,6 +902,7 @@ def _feature_importance_df(df, top_k: int):
         ]
         items.sort(key=lambda r: r["importance"], reverse=True)
         out[out_name] = items[: max(3, int(top_k))]
+        pitems = []
         try:
             perm = permutation_importance(mdl, Xte, yte, n_repeats=8, random_state=42)
             pitems = [
@@ -914,8 +918,28 @@ def _feature_importance_df(df, top_k: int):
         except Exception:
             perm_out[out_name] = []
 
+        rf_map = {it["feature"]: float(it["importance"]) for it in items}
+        perm_map = {it["feature"]: float(abs(it["importance"])) for it in pitems}
+        score_features = list(dict.fromkeys([*(it["feature"] for it in items), *(it["feature"] for it in pitems)]))
+        rf_max = max([rf_map.get(f, 0.0) for f in score_features] or [1.0])
+        perm_max = max([perm_map.get(f, 0.0) for f in score_features] or [1.0])
+        consensus = []
+        for feat in score_features:
+            rf_score = rf_map.get(feat, 0.0) / (rf_max or 1.0)
+            perm_score = perm_map.get(feat, 0.0) / (perm_max or 1.0)
+            consensus.append(
+                {
+                    "feature": feat,
+                    "score": float(0.55 * rf_score + 0.45 * perm_score),
+                    "rf_importance": float(rf_map.get(feat, 0.0)),
+                    "permutation_importance": float(perm_map.get(feat, 0.0)),
+                }
+            )
+        consensus.sort(key=lambda r: r["score"], reverse=True)
+        consensus_out[out_name] = consensus[: max(3, int(top_k))]
+
         pdp_source = perm_out[out_name] if perm_out[out_name] else out[out_name]
-        top_features = [it["feature"] for it in pdp_source[: min(3, len(pdp_source))]]
+        top_features = [it["feature"] for it in pdp_source[: min(4, len(pdp_source))]]
         baseline = pd.DataFrame(Xte if len(Xte) else Xtr, columns=Xraw.columns)
         if len(baseline) > 200:
             baseline = baseline.sample(200, random_state=42)
@@ -936,14 +960,90 @@ def _feature_importance_df(df, top_k: int):
                 ys.append(float(np.mean(mdl.predict(probe.values))))
             pdp.append({"feature": feat, "xs": xs.tolist(), "ys": ys})
 
+        local_effects = []
+        baseline_pred = representative_pred = None
+        representative_values = {}
+        if len(Xc_df):
+            ref = Xc_df.median(numeric_only=True).reindex(Xraw.columns).astype(float)
+            scale = Xc_df.std(ddof=0).replace(0, 1).fillna(1.0)
+            distances = (((Xc_df - ref) / scale) ** 2).sum(axis=1)
+            rep_idx = int(distances.idxmin())
+            representative = Xc_df.iloc[rep_idx].astype(float)
+            representative_values = {col: float(representative[col]) for col in Xraw.columns}
+            baseline_pred = float(mdl.predict(pd.DataFrame([ref], columns=Xraw.columns).values)[0])
+            representative_pred = float(mdl.predict(pd.DataFrame([representative], columns=Xraw.columns).values)[0])
+            for feat in top_features[: min(6, len(top_features))]:
+                probe = ref.copy()
+                probe[feat] = float(representative[feat])
+                effect = float(mdl.predict(pd.DataFrame([probe], columns=Xraw.columns).values)[0] - baseline_pred)
+                local_effects.append(
+                    {
+                        "feature": feat,
+                        "effect": effect,
+                        "abs_effect": abs(effect),
+                        "value": float(representative[feat]),
+                        "baseline_value": float(ref[feat]),
+                    }
+                )
+            local_effects.sort(key=lambda r: abs(r["effect"]), reverse=True)
+
         explainability[out_name] = {
             "train_r2": _score_r2(ytr, mdl.predict(Xtr)),
             "test_r2": _score_r2(yte, mdl.predict(Xte)),
             "partial_dependence": pdp,
+            "local_explanation": {
+                "method": "SHAP-style local effect from a representative blast versus the dataset median baseline.",
+                "baseline_prediction": baseline_pred,
+                "representative_prediction": representative_pred,
+                "representative_values": representative_values,
+                "feature_impacts": local_effects,
+            },
         }
+
+    matrix_outputs = [name for name in ydf.columns if name in consensus_out]
+    matrix_features = []
+    for out_name in matrix_outputs:
+        for item in consensus_out.get(out_name, [])[: min(5, len(consensus_out.get(out_name, [])))]:
+            if item["feature"] not in matrix_features:
+                matrix_features.append(item["feature"])
+    matrix_features = matrix_features[:8]
+    importance_matrix = None
+    if matrix_outputs and matrix_features:
+        importance_matrix = {
+            "features": matrix_features,
+            "outputs": matrix_outputs,
+            "values": [
+                [
+                    float(
+                        next(
+                            (
+                                item["score"]
+                                for item in consensus_out.get(out_name, [])
+                                if item["feature"] == feat
+                            ),
+                            0.0,
+                        )
+                    )
+                    for out_name in matrix_outputs
+                ]
+                for feat in matrix_features
+            ],
+        }
+
+    correlation_matrix = None
+    if len(matrix_features) >= 2:
+        corr = Xdf[matrix_features].corr().fillna(0.0)
+        correlation_matrix = {
+            "features": matrix_features,
+            "values": [[float(corr.loc[row, col]) for col in matrix_features] for row in matrix_features],
+        }
+
     return {
         "feature_importance": out,
         "permutation_importance": perm_out,
+        "consensus_importance": consensus_out,
+        "importance_matrix": importance_matrix,
+        "correlation_matrix": correlation_matrix,
         "explainability": explainability,
         "note": note,
         "diagnostics": {
@@ -999,6 +1099,7 @@ def _feature_pca_df(df):
         points = points[np.random.choice(len(points), 800, replace=False)]
     return {
         "explained_variance_ratio": [float(v) for v in pca.explained_variance_ratio_],
+        "cumulative_explained_variance": [float(v) for v in np.cumsum(pca.explained_variance_ratio_)],
         "top_loadings": out,
         "points": [{"pc1": float(p[0]), "pc2": float(p[1])} for p in points],
         "note": note,
@@ -1042,7 +1143,9 @@ def _resolve_map(df_cols, expected, synonyms_map):
 @app.get("/v1/feature/importance")
 def feature_importance_dataset(top_k: int = 12, _token: str = Depends(require_auth)):
     df = _combined_df()
-    return _feature_importance_df(df, top_k)
+    out = _feature_importance_df(df, top_k)
+    out["dataset"] = DATASETS["combined"]
+    return out
 
 
 @app.post("/v1/feature/importance")
@@ -1052,13 +1155,17 @@ def feature_importance_dataset_upload(
     _token: str = Depends(require_auth),
 ):
     df = _read_upload_df(file, DATASETS["combined"])
-    return _feature_importance_df(df, top_k)
+    out = _feature_importance_df(df, top_k)
+    out["dataset"] = file.filename if file is not None else DATASETS["combined"]
+    return out
 
 
 @app.get("/v1/feature/pca")
 def feature_pca(_token: str = Depends(require_auth)):
     df = _combined_df()
-    return _feature_pca_df(df)
+    out = _feature_pca_df(df)
+    out["dataset"] = DATASETS["combined"]
+    return out
 
 
 @app.post("/v1/feature/pca")
@@ -1067,7 +1174,11 @@ def feature_pca_upload(
     _token: str = Depends(require_auth),
 ):
     df = _read_upload_df(file, DATASETS["combined"])
-    return feature_pca(_token=_token) if file is None else _feature_pca_df(df)
+    if file is None:
+        return feature_pca(_token=_token)
+    out = _feature_pca_df(df)
+    out["dataset"] = file.filename
+    return out
 
 
 @app.post("/v1/flyrock/predict")
