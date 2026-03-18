@@ -1828,9 +1828,9 @@ def _param_surface_df(df, payload):
     x1 = payload.get("x1", inputs[0])
     x2 = payload.get("x2", inputs[1] if len(inputs) > 1 else inputs[0])
     objective = payload.get("objective", "max")
-    grid = max(12, min(36, int(payload.get("grid", 24))))
-    samples = max(1, min(10, int(payload.get("samples", 4))))
-    max_iter = max(20, min(90, int(payload.get("max_iter", 45))))
+    grid = max(12, min(36, int(payload.get("grid", 12))))
+    samples = max(1, min(10, int(payload.get("samples", 3))))
+    max_iter = max(20, min(90, int(payload.get("max_iter", 35))))
 
     if output not in outputs or x1 not in inputs or x2 not in inputs or x1 == x2:
         return {"error": "Invalid output/x1/x2 selection."}

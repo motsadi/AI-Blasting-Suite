@@ -3989,8 +3989,11 @@ function ParamPanel({
   const [tolerance, setTolerance] = useState(1e-3);
   const [selectedCell, setSelectedCell] = useState<{ i: number; j: number } | null>(null);
   const resolvedDatasetName = dataset?.file?.name ?? activeDatasetName ?? "(default)";
-  const surfaceGrid = 24;
-  const surfaceSamples = 4;
+  const surfaceGrid = 12;
+  const surfaceSamples = 3;
+  const surfaceMaxIter = 35;
+  const fallbackSurfaceSamples = 1;
+  const fallbackSurfaceMaxIter = 22;
   const [msg, setMsg] = useState(
     "Creates an optimisation surface by minimising/maximising the chosen output.\n" +
       "Other inputs are optimised by a surrogate model within observed bounds.\n\n" +
@@ -4055,28 +4058,52 @@ function ParamPanel({
     setBusy(true);
     setErr(null);
     try {
-      let res: Response;
-      if (dataset?.file) {
-        const fd = new FormData();
-        fd.append("file", dataset.file);
-        fd.append("payload_json", JSON.stringify({ output, x1, x2, objective, grid: surfaceGrid, samples: surfaceSamples }));
-        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface/upload`, {
-          method: "POST",
-          headers: { ...authHeaders(token) },
-          body: fd,
-        });
-      } else {
-        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface`, {
+      const requestSurface = async (samples: number, maxIter: number) => {
+        if (dataset?.file) {
+          const fd = new FormData();
+          fd.append("file", dataset.file);
+          fd.append("payload_json", JSON.stringify({ output, x1, x2, objective, grid: surfaceGrid, samples, max_iter: maxIter }));
+          return fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface/upload`, {
+            method: "POST",
+            headers: { ...authHeaders(token) },
+            body: fd,
+          });
+        }
+        return fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface`, {
           method: "POST",
           headers: { "content-type": "application/json", ...authHeaders(token) },
-          body: JSON.stringify({ output, x1, x2, objective, grid: surfaceGrid, samples: surfaceSamples, dataset: resolvedDatasetName }),
+          body: JSON.stringify({
+            output,
+            x1,
+            x2,
+            objective,
+            grid: surfaceGrid,
+            samples,
+            max_iter: maxIter,
+            dataset: resolvedDatasetName,
+          }),
         });
+      };
+
+      let res: Response;
+      let json: any;
+      try {
+        res = await requestSurface(surfaceSamples, surfaceMaxIter);
+        json = await res.json();
+      } catch (primaryErr: any) {
+        // Retry once with a lighter optimisation workload if the first request drops.
+        res = await requestSurface(fallbackSurfaceSamples, fallbackSurfaceMaxIter);
+        json = await res.json();
+        setMsg(
+          `Optimised surface built with a lightweight retry.\nOutput: ${json.output}\nAxes: ${json.x1}, ${json.x2}\nBest value: ${formatNum(json?.best?.value)}`
+        );
       }
-      const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Surface failed");
       setResp(json);
-      setMsg(
-        `Optimised surface built.\nOutput: ${json.output}\nAxes: ${json.x1}, ${json.x2}\nBest value: ${formatNum(json?.best?.value)}`
+      setMsg((prev) =>
+        prev.startsWith("Optimised surface built with a lightweight retry.")
+          ? prev
+          : `Optimised surface built.\nOutput: ${json.output}\nAxes: ${json.x1}, ${json.x2}\nBest value: ${formatNum(json?.best?.value)}`
       );
     } catch (e: any) {
       setErr(String(e?.message ?? e));
