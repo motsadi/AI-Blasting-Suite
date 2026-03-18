@@ -60,20 +60,35 @@ def sync_assets_from_gcs(
     skipped: List[str] = []
     missing: List[str] = []
 
-    for name in required:
-        blob_name = f"{prefix}{name}" if prefix else name
-        blob = b.blob(blob_name)
-        if not blob.exists(client=cli):
-            missing.append(blob_name)
-            continue
+    prefix_candidates: list[str] = []
+    for candidate in [prefix, "assets/", "datasets/", ""]:
+        normalized = candidate or ""
+        if normalized and not normalized.endswith("/"):
+            normalized = f"{normalized}/"
+        if normalized not in prefix_candidates:
+            prefix_candidates.append(normalized)
 
+    for name in required:
         out_path = dest_dir / name
         if out_path.exists() and out_path.stat().st_size > 0:
             skipped.append(name)
             continue
 
-        blob.download_to_filename(str(out_path))
-        downloaded.append(name)
+        found = False
+        attempted: list[str] = []
+        for pref in prefix_candidates:
+            blob_name = f"{pref}{name}" if pref else name
+            attempted.append(blob_name)
+            blob = b.blob(blob_name)
+            if not blob.exists(client=cli):
+                continue
+            blob.download_to_filename(str(out_path))
+            downloaded.append(name)
+            found = True
+            break
+
+        if not found:
+            missing.extend(attempted)
 
     return GcsSyncResult(downloaded=downloaded, skipped=skipped, missing=missing)
 

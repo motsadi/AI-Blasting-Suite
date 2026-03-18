@@ -82,6 +82,49 @@ def _combined_dataset_choices() -> list[str]:
     return existing or list(COMBINED_DATASET_CHOICES)
 
 
+def _asset_search_paths() -> list[Path]:
+    return [
+        *([local_assets_path] if local_assets_path else []),
+        REPO_ROOT / "assets",
+        WORKSPACE_ROOT / "assets",
+        Path(core_bundle_path),
+        Path("/tmp/ai-blasting-assets"),
+    ]
+
+
+def _reload_assets_from_disk() -> LoadedAssets:
+    global _assets
+    search_paths = [p for p in _asset_search_paths() if p and p.exists()]
+    _assets = load_local_assets(*search_paths)
+    return _assets
+
+
+def _ensure_prediction_assets_ready() -> None:
+    global _assets
+    if _assets.scaler and (_assets.mdl_frag or _assets.mdl_ppv or _assets.mdl_air):
+        return
+
+    _reload_assets_from_disk()
+    if _assets.scaler and (_assets.mdl_frag or _assets.mdl_ppv or _assets.mdl_air):
+        return
+
+    if not settings.gcs_bucket:
+        return
+
+    dest = Path("/tmp/ai-blasting-assets")
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        sync_assets_from_gcs(
+            bucket=settings.gcs_bucket.strip(),
+            prefix=(settings.gcs_prefix or "").strip(),
+            dest_dir=dest,
+        )
+    except Exception:
+        return
+
+    _reload_assets_from_disk()
+
+
 @app.on_event("startup")
 def _startup_sync_assets():
     """
@@ -137,6 +180,7 @@ def health():
 
 @app.get("/v1/assets/status", response_model=AssetsStatus)
 def get_assets_status():
+    _ensure_prediction_assets_ready()
     st = assets_status(_assets)
     return AssetsStatus(**st)
 
@@ -324,6 +368,8 @@ def predict(req: PredictRequest, _token: str = Depends(require_auth)):
         rr = None
 
     ml = None
+    if req.want_ml:
+        _ensure_prediction_assets_ready()
     if req.want_ml and not (_assets.scaler and (_assets.mdl_frag or _assets.mdl_ppv or _assets.mdl_air)):
         _maybe_train_models_from_default_dataset()
     if req.want_ml and _assets.scaler and (_assets.mdl_frag or _assets.mdl_ppv or _assets.mdl_air):
