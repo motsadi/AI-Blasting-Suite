@@ -1371,45 +1371,29 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     ru: 0.2,
     B: 4,
   });
+  const modelReadyRef = useRef(false);
+  const seededFromDataRef = useRef(false);
+  const fileKey = file?.name ?? "__default__";
 
-  function resolveFeature(features: string[], synonyms: string[]) {
-    const lower = features.map((f) => f.toLowerCase());
-    for (const s of synonyms) {
-      const idx = lower.findIndex((f) => f === s || f.includes(s));
-      if (idx >= 0) return features[idx];
-    }
-    return null;
-  }
-
-  function buildInputsFromParams(features: string[]) {
-    const mapping = {
-      gamma: resolveFeature(features, ["gamma", "unit weight"]),
-      c: resolveFeature(features, ["c", "cohesion"]),
-      phi: resolveFeature(features, ["phi", "friction angle"]),
-      beta: resolveFeature(features, ["beta", "slope angle"]),
-      H: resolveFeature(features, ["h", "height"]),
-      ru: resolveFeature(features, ["ru", "pore pressure ratio"]),
+  function buildInputsFromParams() {
+    return {
+      H_m: params.H,
+      beta_deg: params.beta,
+      c_kPa: params.c,
+      phi_deg: params.phi,
+      gamma_kN_m3: params.gamma,
+      ru: params.ru,
     };
-    const inputs: Record<string, number> = {};
-    if (mapping.gamma) inputs[mapping.gamma] = params.gamma;
-    if (mapping.c) inputs[mapping.c] = params.c;
-    if (mapping.phi) inputs[mapping.phi] = params.phi;
-    if (mapping.beta) inputs[mapping.beta] = params.beta;
-    if (mapping.H) inputs[mapping.H] = params.H;
-    if (mapping.ru) inputs[mapping.ru] = params.ru;
-    return inputs;
   }
 
-  async function run() {
+  async function run(options?: { preserveSliders?: boolean }) {
     if (!apiBaseUrl) return;
     setBusy(true);
     setErr(null);
     try {
       const fd = new FormData();
       if (file) fd.append("file", file);
-      if (resp?.features?.length) {
-        fd.append("inputs_json", JSON.stringify(buildInputsFromParams(resp.features)));
-      }
+      fd.append("inputs_json", JSON.stringify(buildInputsFromParams()));
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/slope/predict`, {
         method: "POST",
         headers: { ...authHeaders(token) },
@@ -1418,6 +1402,20 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
       const json = await res.json().catch(() => ({}));
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Slope failed");
       setResp(json);
+      if (json?.feature_stats && !options?.preserveSliders && !seededFromDataRef.current) {
+        const H = Number(json.feature_stats?.H_m?.median ?? params.H);
+        setParams({
+          H,
+          beta: Number(json.feature_stats?.beta_deg?.median ?? params.beta),
+          c: Number(json.feature_stats?.c_kPa?.median ?? params.c),
+          phi: Number(json.feature_stats?.phi_deg?.median ?? params.phi),
+          gamma: Number(json.feature_stats?.gamma_kN_m3?.median ?? params.gamma),
+          ru: Number(json.feature_stats?.ru?.median ?? params.ru),
+          B: Math.max(0, 0.4 * H),
+        });
+        seededFromDataRef.current = true;
+      }
+      modelReadyRef.current = true;
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
@@ -1425,21 +1423,41 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     }
   }
 
+  useEffect(() => {
+    modelReadyRef.current = false;
+    seededFromDataRef.current = false;
+    setResp(null);
+    setErr(null);
+  }, [fileKey]);
+
+  useEffect(() => {
+    if (!modelReadyRef.current || busy) return;
+    const id = window.setTimeout(() => {
+      void run({ preserveSliders: true });
+    }, 250);
+    return () => window.clearTimeout(id);
+  }, [params]);
+
+  const predictionLabel =
+    resp?.prob_stable == null
+      ? "Prediction: —"
+      : `Prediction: ${resp.prob_stable >= 0.5 ? "Stable" : "Failure"}  (P(stable)=${Number(resp.prob_stable).toFixed(2)})`;
+
   return (
     <div className="card">
       <div className="grid2">
         <div>
           <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Slope Stability — Stable / Failure (ML)</div>
-          <div className="subtitle">Load CSV to train, then adjust parameters.</div>
+          <div className="subtitle">Desktop-aligned ML classifier: load a slope CSV, seed the model from data, then adjust the section interactively.</div>
 
           <div style={{ marginTop: 10 }}>
             <label className="label">Load CSV</label>
-            <input className="input" type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+            <input className="input" type="file" accept=".csv,.xlsx,.xls" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
           </div>
 
           <div style={{ marginTop: 10 }}>
             <button className="btn btnPrimary" onClick={run} disabled={busy}>
-              {busy ? "Running…" : "Predict"}
+              {busy ? "Running…" : resp?.features?.length ? "Reload / Refit" : "Load & Predict"}
             </button>
           </div>
 
@@ -1454,14 +1472,19 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
           </div>
 
           {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
+          <div className="kpi" style={{ marginTop: 12 }}>
+            <div className="kpiTitle">Prediction</div>
+            <div className="kpiValue" style={{ fontSize: 20 }}>
+              {resp?.prob_stable != null
+                ? `${resp.prob_stable >= 0.5 ? "Stable" : "Failure"} (${(Number(resp.prob_stable) * 100).toFixed(1)}%)`
+                : "—"}
+            </div>
+          </div>
+          <div className="subtitle" style={{ marginTop: 8 }}>
+            {predictionLabel}
+          </div>
           {resp?.prob_stable != null && (
             <>
-              <div className="kpi" style={{ marginTop: 12 }}>
-                <div className="kpiTitle">Prediction</div>
-                <div className="kpiValue">
-                  {resp.prob_stable >= 0.5 ? "🟢 Stable" : "🔴 Failure"} (P(stable)={(Number(resp.prob_stable) * 100).toFixed(1)}%)
-                </div>
-              </div>
               <div className="grid3" style={{ marginTop: 10 }}>
                 <div className="kpi">
                   <div className="kpiTitle">Train accuracy</div>
@@ -1478,6 +1501,26 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
                   </div>
                 </div>
               </div>
+              <div className="card" style={{ marginTop: 10 }}>
+                <div className="sectionTitle">Dataset-driven inputs</div>
+                <div className="subtitle">
+                  The web module now mirrors the desktop behavior more closely: the first run uses the actual slider values, and once the model is loaded the prediction updates as you adjust the parameters.
+                </div>
+                <div className="grid3" style={{ marginTop: 10 }}>
+                  <div className="kpi">
+                    <div className="kpiTitle">Gamma median</div>
+                    <div className="kpiValue">{formatNum(resp.feature_stats?.gamma_kN_m3?.median)}</div>
+                  </div>
+                  <div className="kpi">
+                    <div className="kpiTitle">Phi median</div>
+                    <div className="kpiValue">{formatNum(resp.feature_stats?.phi_deg?.median)}</div>
+                  </div>
+                  <div className="kpi">
+                    <div className="kpiTitle">ru median</div>
+                    <div className="kpiValue">{formatNum(resp.feature_stats?.ru?.median)}</div>
+                  </div>
+                </div>
+              </div>
             </>
           )}
         </div>
@@ -1489,6 +1532,9 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
             B={params.B}
             prob={resp?.prob_stable}
           />
+          <div className="subtitle" style={{ marginTop: 8 }}>
+            Bench geometry sketch mirrors the desktop module: equal aspect, bench width marker, beta angle arc, height arrow, and a result banner outside the slope body.
+          </div>
         </div>
       </div>
     </div>
@@ -4346,13 +4392,13 @@ function SliderField({
 }
 
 function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number; prob?: number }) {
-  const w = 620;
-  const h = 360;
+  const w = 720;
+  const h = 460;
   const betaRad = (beta * Math.PI) / 180;
   const run = H / Math.max(Math.tan(betaRad), 1e-3);
   const toeX = B + run;
-  const pad = 20;
-  const scale = Math.min((w - 2 * pad) / (toeX * 1.2), (h - 2 * pad) / (H * 1.2));
+  const pad = 34;
+  const scale = Math.min((w - 2 * pad) / (toeX * 1.18), (h - 2 * pad) / (H * 1.28));
   const sx = (x: number) => pad + x * scale;
   const sy = (y: number) => h - pad - y * scale;
   const x0 = 0;
@@ -4365,26 +4411,60 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
   const y3 = 0;
   const label = prob == null ? "—" : prob >= 0.5 ? `Stable (P=${prob.toFixed(2)})` : `Failure (P=${prob.toFixed(2)})`;
   const col = prob == null ? "#64748b" : prob >= 0.5 ? "#22c55e" : "#ef4444";
+  const arcR = Math.max(10, Math.min(run, H) * scale * 0.12);
+  const arcCx = sx(toeX);
+  const arcCy = sy(0);
+  const theta1 = Math.PI;
+  const theta2 = Math.PI - betaRad;
+  const arcStartX = arcCx + arcR * Math.cos(theta1);
+  const arcStartY = arcCy + arcR * Math.sin(theta1);
+  const arcEndX = arcCx + arcR * Math.cos(theta2);
+  const arcEndY = arcCy + arcR * Math.sin(theta2);
+  const largeArc = beta > 180 ? 1 : 0;
 
   return (
     <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
+      <defs>
+        <linearGradient id="slopeFill" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#e5e7eb" />
+          <stop offset="100%" stopColor="#cbd5e1" />
+        </linearGradient>
+      </defs>
       <polygon
         points={`${sx(x0)},${sy(y0)} ${sx(x1)},${sy(y1)} ${sx(x2)},${sy(y2)} ${sx(x3)},${sy(y3)}`}
-        fill="#d6d7db"
-        opacity="0.7"
+        fill="url(#slopeFill)"
+        opacity="0.92"
         stroke="#0f172a"
         strokeWidth="2"
       />
-      <line x1={sx(0)} y1={sy(0)} x2={sx(toeX * 1.06)} y2={sy(0)} stroke="#0f172a" strokeWidth="1.5" />
-      <line x1={sx(0)} y1={sy(0)} x2={sx(0)} y2={sy(H * 1.05)} stroke="#0f172a" strokeWidth="1.5" />
-      <text x={sx(0) + 10} y={sy(H / 2)} fill="#1f77b4" fontSize="10">
+      <line x1={sx(0)} y1={sy(0)} x2={sx(toeX * 1.08)} y2={sy(0)} stroke="#0f172a" strokeWidth="1.5" />
+      <line x1={sx(0)} y1={sy(0)} x2={sx(0)} y2={sy(H * 1.08)} stroke="#0f172a" strokeWidth="1.5" />
+
+      <line x1={sx(-0.04 * toeX)} y1={sy(0)} x2={sx(-0.04 * toeX)} y2={sy(H)} stroke="#1f77b4" strokeWidth="2" />
+      <polygon points={`${sx(-0.04 * toeX) - 4},${sy(H) + 6} ${sx(-0.04 * toeX) + 4},${sy(H) + 6} ${sx(-0.04 * toeX)},${sy(H)}` } fill="#1f77b4" />
+      <polygon points={`${sx(-0.04 * toeX) - 4},${sy(0) - 6} ${sx(-0.04 * toeX) + 4},${sy(0) - 6} ${sx(-0.04 * toeX)},${sy(0)}` } fill="#1f77b4" />
+      <text x={sx(-0.065 * toeX)} y={sy(H / 2)} fill="#1f77b4" fontSize="11" textAnchor="middle" transform={`rotate(-90 ${sx(-0.065 * toeX)} ${sy(H / 2)})`}>
         H = {H.toFixed(1)} m
       </text>
-      <text x={sx(toeX - run / 2)} y={sy(H) - 6} fill="#555" fontSize="10">
-        B = {B.toFixed(1)} m
+
+      {B > 0 ? (
+        <>
+          <line x1={sx(0)} y1={sy(H * 1.08)} x2={sx(B)} y2={sy(H * 1.08)} stroke="#475569" strokeWidth="1.2" />
+          <polygon points={`${sx(0) + 4},${sy(H * 1.08) - 4} ${sx(0) + 4},${sy(H * 1.08) + 4} ${sx(0)},${sy(H * 1.08)}` } fill="#475569" />
+          <polygon points={`${sx(B) - 4},${sy(H * 1.08) - 4} ${sx(B) - 4},${sy(H * 1.08) + 4} ${sx(B)},${sy(H * 1.08)}` } fill="#475569" />
+          <text x={sx(B / 2)} y={sy(H * 1.11)} fill="#475569" fontSize="10" textAnchor="middle">
+            B = {B.toFixed(1)} m
+          </text>
+        </>
+      ) : null}
+
+      <path d={`M ${arcStartX} ${arcStartY} A ${arcR} ${arcR} 0 ${largeArc} 1 ${arcEndX} ${arcEndY}`} fill="none" stroke="#0f172a" strokeWidth="1.4" />
+      <text x={arcCx - arcR * 0.9} y={arcCy - arcR * 0.25} fill="#0f172a" fontSize="11">
+        β = {beta.toFixed(1)}°
       </text>
-      <rect x={sx(toeX * 0.55)} y={sy(H * 1.15)} width={160} height={24} fill={col} rx={6} />
-      <text x={sx(toeX * 0.55) + 8} y={sy(H * 1.15) + 16} fill="#fff" fontSize="12">
+
+      <rect x={sx(toeX * 0.58)} y={sy(H * 1.18)} width={178} height={28} fill={col} rx={8} />
+      <text x={sx(toeX * 0.58) + 10} y={sy(H * 1.18) + 18} fill="#fff" fontSize="12" fontWeight="700">
         {label}
       </text>
     </svg>
