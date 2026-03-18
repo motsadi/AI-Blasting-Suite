@@ -2320,7 +2320,7 @@ def cost_optimize(payload: dict = Body(default={}), _token: str = Depends(requir
         method=("SLSQP" if method == "SLSQP" else "trust-constr"),
         bounds=_cost_bounds(p),
         constraints=_cost_constraints(p),
-        options=dict(maxiter=300, ftol=1e-7),
+        options=dict(maxiter=400, ftol=1e-7),
     )
     best = p.copy()
     best["B"], best["S"], best["sub"] = float(res.x[0]), float(res.x[1]), float(res.x[2])
@@ -2341,16 +2341,31 @@ def cost_pareto(payload: dict = Body(default={}), _token: str = Depends(require_
     rows = []
     x0 = np.array([p["B"], p["S"], p["sub"]], dtype=float)
     method = payload.get("method", "SLSQP")
+    use_frag = bool(payload.get("use_frag", True))
+    use_ppv = bool(payload.get("use_ppv", True))
+    use_air = bool(payload.get("use_air", True))
 
     for wf in w_list:
         for wp in w_list:
             for wa in w_list:
+                if wf == 0.0 and wp == 0.0 and wa == 0.0 and rows:
+                    continue
                 weights = {"frag": wf, "ppv": wp, "air": wa}
+                solver_success = False
+                solver_message = ""
+
                 def obj(x):
                     trial = p.copy()
                     trial["B"], trial["S"], trial["sub"] = float(x[0]), float(x[1]), float(x[2])
                     res = _cost_metrics(trial)
-                    pen = _cost_penalties(trial, res, weights, wp > 0, wa > 0, wf > 0)
+                    pen = _cost_penalties(
+                        trial,
+                        res,
+                        weights,
+                        use_ppv and wp > 0,
+                        use_air and wa > 0,
+                        use_frag and wf > 0,
+                    )
                     return res["cost"] + pen["frag"] + pen["ppv"] + pen["air"]
                 try:
                     res = minimize(
@@ -2362,6 +2377,8 @@ def cost_pareto(payload: dict = Body(default={}), _token: str = Depends(require_
                         options=dict(maxiter=200, ftol=1e-7),
                     )
                     x = res.x if res.success else x0
+                    solver_success = bool(res.success)
+                    solver_message = str(res.message)
                 except Exception:
                     x = x0
                 trial = p.copy()
@@ -2384,6 +2401,8 @@ def cost_pareto(payload: dict = Body(default={}), _token: str = Depends(require_
                         "PF": met["derived"]["PF"],
                         "Qdelay": met["derived"]["Q_delay"],
                         "R": trial["R"],
+                        "solver_success": solver_success,
+                        "solver_message": solver_message,
                     }
                 )
                 x0 = x
@@ -2410,5 +2429,6 @@ def cost_pareto(payload: dict = Body(default={}), _token: str = Depends(require_
                 break
         if not dominated:
             frontier.append(row)
+    frontier.sort(key=lambda row: (row["cost"], row["PPV"], row["Air"], row["Oversize%"]))
     return {"rows": rows, "frontier": frontier}
 

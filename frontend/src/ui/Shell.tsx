@@ -2886,30 +2886,95 @@ function PcaLoadingsGrid({ topLoadings }: { topLoadings: Array<Array<{ feature: 
 function ParetoScatter({ rows }: { rows: Array<Record<string, any>> }) {
   if (!rows?.length) return null;
   const w = 620;
-  const h = 260;
+  const h = 300;
+  const padL = 54;
+  const padR = 20;
+  const padT = 22;
+  const padB = 38;
   const xs = rows.map((r) => Number(r.cost) || 0);
-  const ys = rows.map((r) => Number(r["Oversize%"]) || 0);
+  const ys = rows.map((r) => Number(r.PPV) || 0);
+  const airs = rows.map((r) => Number(r.Air) || 0);
+  const overs = rows.map((r) => Number(r["Oversize%"]) || 0);
   const xmin = Math.min(...xs);
   const xmax = Math.max(...xs);
   const ymin = Math.min(...ys);
   const ymax = Math.max(...ys);
+  const amin = Math.min(...airs);
+  const amax = Math.max(...airs);
+  const omin = Math.min(...overs);
+  const omax = Math.max(...overs);
   const norm = (v: number, a: number, b: number) => (b - a === 0 ? 0.5 : (v - a) / (b - a));
   return (
     <div style={{ marginTop: 10 }}>
       <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
+        <line x1={padL} y1={h - padB} x2={w - padR} y2={h - padB} stroke="rgba(148,163,184,0.45)" />
+        <line x1={padL} y1={padT} x2={padL} y2={h - padB} stroke="rgba(148,163,184,0.45)" />
         {rows.map((r, i) => {
-          const x = 10 + norm(Number(r.cost) || 0, xmin, xmax) * (w - 20);
-          const y = 10 + (1 - norm(Number(r["Oversize%"]) || 0, ymin, ymax)) * (h - 20);
-          const t = norm(Number(r.PPV) || 0, Math.min(...rows.map((x) => Number(x.PPV) || 0)), Math.max(...rows.map((x) => Number(x.PPV) || 0)));
+          const x = padL + norm(Number(r.cost) || 0, xmin, xmax) * (w - padL - padR);
+          const y = padT + (1 - norm(Number(r.PPV) || 0, ymin, ymax)) * (h - padT - padB);
+          const t = norm(Number(r.Air) || 0, amin, amax);
           const color = `hsl(${220 - 200 * t}, 80%, 55%)`;
-          return <circle key={i} cx={x} cy={y} r={4} fill={color} opacity={0.9} />;
+          const rSize = 4 + norm(Number(r["Oversize%"]) || 0, omin, omax) * 8;
+          return <circle key={i} cx={x} cy={y} r={rSize} fill={color} opacity={0.82} stroke="rgba(255,255,255,0.55)" strokeWidth={0.8} />;
         })}
+        <text x={w / 2} y={h - 10} fill="var(--muted)" fontSize="10" textAnchor="middle">Cost (BWP)</text>
+        <text x={14} y={h / 2} fill="var(--muted)" fontSize="10" textAnchor="middle" transform={`rotate(-90 14 ${h / 2})`}>PPV (mm/s)</text>
+        <text x={padL} y={h - 22} fill="var(--muted)" fontSize="10">{formatNum(xmin)}</text>
+        <text x={w - padR} y={h - 22} fill="var(--muted)" fontSize="10" textAnchor="end">{formatNum(xmax)}</text>
+        <text x={padL - 8} y={h - padB + 4} fill="var(--muted)" fontSize="10" textAnchor="end">{formatNum(ymin)}</text>
+        <text x={padL - 8} y={padT + 4} fill="var(--muted)" fontSize="10" textAnchor="end">{formatNum(ymax)}</text>
       </svg>
       <div className="label" style={{ marginTop: 6 }}>
-        X: Cost · Y: Oversize% · Color: PPV
+        X: Cost · Y: PPV · Marker size: Oversize% · Color: Airblast
       </div>
     </div>
   );
+}
+
+function formatCostReport(resp: any) {
+  if (!resp?.inputs || !resp?.derived) return "";
+  const p = resp.inputs;
+  const d = resp.derived;
+  const ci = Number(resp.cost_break?.[0] ?? 0);
+  const ce = Number(resp.cost_break?.[1] ?? 0);
+  const cd = Number(resp.cost_break?.[2] ?? 0);
+  const checks = [
+    ["Spacing/Burden min", p.S >= p.kS_min * p.B],
+    ["Spacing/Burden max", p.S <= p.kS_max * p.B],
+    ["Stemming/Burden min", p.stem >= p.kStem_min * p.B],
+    ["Stemming/Burden max", p.stem <= p.kStem_max * p.B],
+    ["Subdrill/Burden min", p.sub >= p.kSub_min * p.B],
+    ["Subdrill/Burden max", p.sub <= p.kSub_max * p.B],
+    ["Stiffness ratio min", p.bench / Math.max(1e-9, p.B) >= p.stiff_min],
+    ["Stiffness ratio max", p.bench / Math.max(1e-9, p.B) <= p.stiff_max],
+  ];
+  return [
+    "=== Pattern & Charge ===",
+    `Diameter: ${formatNum(p.d_mm)} mm | Bench: ${formatNum(p.bench)} m`,
+    `Burden: ${formatNum(p.B)} m | Spacing: ${formatNum(p.S)} m | Subdrill: ${formatNum(p.sub)} m | Stemming: ${formatNum(p.stem)} m`,
+    `Holes: ${formatNum(p.n_holes)} | HPD: ${formatNum(p.hpd)} | Charge length: ${formatNum(d.charge_len)} m | rho: ${formatNum(p.rho_gcc)} g/cc`,
+    `Mass/hole (Q): ${formatNum(d.m_per_hole)} kg | Total explosive: ${formatNum(d.m_total)} kg`,
+    `Block volume: ${formatNum(d.vol)} m3 | Achieved PF (K): ${formatNum(d.PF)} kg/m3`,
+    "",
+    "=== Cost ===",
+    `Total Cost: BWP ${formatNum(resp.cost)}`,
+    `  - Initiation: BWP ${formatNum(ci)}`,
+    `  - Explosive: BWP ${formatNum(ce)}`,
+    `  - Drilling: BWP ${formatNum(cd)}`,
+    "",
+    "=== Vibration & Airblast ===",
+    `Q/delay: ${formatNum(d.Q_delay)} kg | Distance R: ${formatNum(p.R)} m | Scaled distance SD: ${formatNum(resp.SD)}`,
+    `PPV: ${formatNum(resp.PPV)} mm/s (limit ${formatNum(p.ppv_lim)}) [${resp.PPV <= p.ppv_lim ? "OK" : "EXCEED"}]`,
+    `Airblast: ${formatNum(resp.L)} dB (limit ${formatNum(p.air_lim)}) [${resp.L <= p.air_lim ? "OK" : "EXCEED"}]`,
+    "",
+    "=== Fragmentation (Kuz-Ram + RR) ===",
+    `Xm (Kuz-Ram): ${formatNum(resp.Xm)} mm | X50 (RR): ${formatNum(resp.X50)} mm (target ${formatNum(p.x50_target)})`,
+    `Oversize@${formatNum(p.x_ov)} mm: ${formatNum((resp.oversize ?? 0) * 100)}% (allowed ${formatNum((p.ov_max ?? 0) * 100)}%) [${resp.oversize <= p.ov_max ? "OK" : "EXCEED"}]`,
+    `Uniformity n (RR): ${formatNum(p.nrr)} | RWS: ${formatNum(p.rws)} | A: ${formatNum(p.Ak)}`,
+    "",
+    "=== Engineering Constraint Checks ===",
+    ...checks.map(([name, ok]) => `${name}: ${ok ? "Pass" : "Check"}`),
+  ].join("\n");
 }
 
 let _rowIdSeed = 1;
@@ -4374,7 +4439,8 @@ function ParamPanel({
 
 function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const [defaults, setDefaults] = useState<Record<string, number>>({});
-  const [busy, setBusy] = useState(false);
+  const [computeBusy, setComputeBusy] = useState(false);
+  const [optBusy, setOptBusy] = useState(false);
   const [resp, setResp] = useState<any>(null);
   const [err, setErr] = useState<string | null>(null);
   const [weights, setWeights] = useState({ frag: 1.0, ppv: 1.0, air: 0.7 });
@@ -4386,26 +4452,46 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
   const [frontier, setFrontier] = useState<any[] | null>(null);
   const [paretoBusy, setParetoBusy] = useState(false);
   const [objectiveMode, setObjectiveMode] = useState("Min Cost + Frag + PPV/Air");
+  const [solverMessage, setSolverMessage] = useState<string | null>(null);
+  const autoComputedRef = useRef(false);
 
   useEffect(() => {
     if (!apiBaseUrl) return;
     (async () => {
-      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/cost/defaults`, {
-        headers: { ...authHeaders(token) },
-      });
-      const json = await res.json();
-      setDefaults(json);
+      try {
+        const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/cost/defaults`, {
+          headers: { ...authHeaders(token) },
+        });
+        const json = await res.json();
+        if (!res.ok || json?.error) throw new Error(json?.error ?? "Failed to load cost defaults");
+        setDefaults(json);
+        setErr(null);
+      } catch (e: any) {
+        setErr(String(e?.message ?? e));
+      }
     })();
   }, [apiBaseUrl, token]);
 
+  useEffect(() => {
+    if (!apiBaseUrl || autoComputedRef.current || !Object.keys(defaults).length) return;
+    autoComputedRef.current = true;
+    void runCompute();
+  }, [apiBaseUrl, defaults]);
+
+  const requestBody = useMemo(
+    () => ({ ...defaults, weights, use_frag: useFrag, use_ppv: usePpv, use_air: useAir, method }),
+    [defaults, method, useAir, useFrag, usePpv, weights]
+  );
+
   async function runCompute() {
-    setBusy(true);
+    setComputeBusy(true);
     setErr(null);
+    setSolverMessage(null);
     try {
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/cost/compute`, {
         method: "POST",
         headers: { "content-type": "application/json", ...authHeaders(token) },
-        body: JSON.stringify({ ...defaults, weights, use_frag: useFrag, use_ppv: usePpv, use_air: useAir, method }),
+        body: JSON.stringify(requestBody),
       });
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Compute failed");
@@ -4413,26 +4499,41 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
-      setBusy(false);
+      setComputeBusy(false);
     }
   }
 
   async function runOptimize() {
-    setBusy(true);
+    setOptBusy(true);
     setErr(null);
+    setSolverMessage(null);
     try {
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/cost/optimize`, {
         method: "POST",
         headers: { "content-type": "application/json", ...authHeaders(token) },
-        body: JSON.stringify({ ...defaults, weights, use_frag: useFrag, use_ppv: usePpv, use_air: useAir, method }),
+        body: JSON.stringify(requestBody),
       });
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Optimise failed");
-      setResp(json?.result ?? json);
+      const result = json?.result ?? json;
+      setResp(result);
+      if (result?.inputs) {
+        setDefaults((prev) => ({
+          ...prev,
+          B: Number(result.inputs.B ?? prev.B),
+          S: Number(result.inputs.S ?? prev.S),
+          sub: Number(result.inputs.sub ?? prev.sub),
+        }));
+      }
+      setSolverMessage(
+        json?.message
+          ? `${json?.success ? "Optimisation completed." : "Optimisation finished with solver warning."} ${json.message}`
+          : "Optimisation completed."
+      );
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
-      setBusy(false);
+      setOptBusy(false);
     }
   }
 
@@ -4443,7 +4544,7 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/cost/pareto`, {
         method: "POST",
         headers: { "content-type": "application/json", ...authHeaders(token) },
-        body: JSON.stringify({ ...defaults, weights, use_frag: useFrag, use_ppv: usePpv, use_air: useAir, method }),
+        body: JSON.stringify(requestBody),
       });
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Pareto failed");
@@ -4471,6 +4572,11 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
       setUseAir(true);
     }
   }, [objectiveMode]);
+
+  const busy = computeBusy || optBusy || paretoBusy;
+  const report = useMemo(() => formatCostReport(resp), [resp]);
+  const frontierRows = frontier ?? pareto ?? [];
+  const frontierColumns = ["wf", "wp", "wa", "B", "S", "sub", "PF", "Qdelay", "cost", "PPV", "Air", "Oversize%", "X50", "Xm", "R"];
 
   const groups = [
     {
@@ -4539,7 +4645,7 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
   return (
     <div className="card">
       <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Cost Optimisation</div>
-      <div className="subtitle">Matches the local CTk layout and naming.</div>
+      <div className="subtitle">Desktop-aligned blast cost optimisation with KPI compute, solver optimisation, and Pareto exploration.</div>
 
       <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
         {groups.map((group) => (
@@ -4605,18 +4711,23 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <button className="btn btnPrimary" onClick={runCompute} disabled={busy}>
-          {busy ? "Working…" : "Compute KPIs"}
+          {computeBusy ? "Working…" : "Compute KPIs"}
         </button>
         <button className="btn" onClick={runOptimize} disabled={busy}>
-          {busy ? "Optimising…" : "Optimise"}
+          {optBusy ? "Optimising…" : "Optimise"}
         </button>
-        <button className="btn" onClick={runPareto} disabled={paretoBusy}>
+        <button className="btn" onClick={runPareto} disabled={busy}>
           {paretoBusy ? "Running…" : "Pareto"}
         </button>
       </div>
       {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
+      {solverMessage && <div className="card" style={{ marginTop: 10, padding: 12 }}>{solverMessage}</div>}
       {resp && (
         <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
+          <div className="card">
+            <div className="label">Engineering Report</div>
+            <pre style={pre}>{report}</pre>
+          </div>
           <div className="grid3">
             <div className="kpi">
               <div className="kpiTitle">Cost</div>
@@ -4680,27 +4791,58 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
               </div>
             </div>
           )}
-          <div className="card">
-            <div className="label">Derived</div>
-            <pre style={pre}>{JSON.stringify(resp.derived, null, 2)}</pre>
-          </div>
         </div>
       )}
       {pareto && (
         <div className="card" style={{ marginTop: 12 }}>
-          <div className="label">Pareto Frontier (Cost vs Oversize%)</div>
+          <div className="label">Pareto Frontier</div>
+          <div className="subtitle" style={{ marginTop: 6 }}>
+            Mirrors the desktop sweep over weight combinations and keeps non-dominated solutions on cost, PPV, airblast, and oversize.
+          </div>
           <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
             <button
               className="btn"
               onClick={() =>
-                downloadCsv(frontier ?? [], frontier?.length ? Object.keys(frontier[0]) : [], "cost_pareto_frontier.csv")
+                downloadCsv(pareto ?? [], pareto?.length ? Object.keys(pareto[0]) : [], "cost_pareto_all_rows.csv")
+              }
+            >
+              Export All Rows CSV
+            </button>
+            <button
+              className="btn"
+              onClick={() =>
+                downloadCsv(frontierRows, frontierRows.length ? frontierColumns : [], "cost_pareto_frontier.csv")
               }
             >
               Export Frontier CSV
             </button>
           </div>
-          <ParetoScatter rows={frontier ?? pareto} />
-          <pre style={{ ...pre, marginTop: 10 }}>{JSON.stringify((frontier ?? pareto).slice(0, 12), null, 2)}</pre>
+          <ParetoScatter rows={frontierRows} />
+          <div className="card" style={{ marginTop: 10 }}>
+            <div className="label">Frontier Preview</div>
+            <div style={{ overflow: "auto", marginTop: 8 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    {frontierColumns.map((col) => (
+                      <th key={col} style={{ textAlign: "left", padding: "8px 10px", borderBottom: "1px solid rgba(148,163,184,0.2)" }}>{col}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {frontierRows.slice(0, 12).map((row, idx) => (
+                    <tr key={`${row.wf}-${row.wp}-${row.wa}-${idx}`}>
+                      {frontierColumns.map((col) => (
+                        <td key={col} style={{ padding: "8px 10px", borderBottom: "1px solid rgba(148,163,184,0.12)" }}>
+                          {formatNum(row[col])}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
     </div>
