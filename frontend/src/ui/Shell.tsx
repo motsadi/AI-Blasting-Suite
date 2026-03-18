@@ -3979,7 +3979,8 @@ function ParamPanel({
   const [meta, setMeta] = useState<any>(null);
   const [resp, setResp] = useState<any>(null);
   const [goal, setGoal] = useState<any>(null);
-  const [busy, setBusy] = useState(false);
+  const [surfaceBusy, setSurfaceBusy] = useState(false);
+  const [goalBusy, setGoalBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [output, setOutput] = useState("");
   const [x1, setX1] = useState("");
@@ -3994,6 +3995,7 @@ function ParamPanel({
   const surfaceMaxIter = 35;
   const fallbackSurfaceSamples = 1;
   const fallbackSurfaceMaxIter = 22;
+  const requestTimeoutMs = 45000;
   const [msg, setMsg] = useState(
     "Creates an optimisation surface by minimising/maximising the chosen output.\n" +
       "Other inputs are optimised by a surrogate model within observed bounds.\n\n" +
@@ -4055,34 +4057,46 @@ function ParamPanel({
 
   async function runSurface() {
     if (!apiBaseUrl || !output || !x1 || !x2) return;
-    setBusy(true);
+    setSurfaceBusy(true);
     setErr(null);
     try {
       const requestSurface = async (samples: number, maxIter: number) => {
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), requestTimeoutMs);
         if (dataset?.file) {
           const fd = new FormData();
           fd.append("file", dataset.file);
           fd.append("payload_json", JSON.stringify({ output, x1, x2, objective, grid: surfaceGrid, samples, max_iter: maxIter }));
-          return fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface/upload`, {
-            method: "POST",
-            headers: { ...authHeaders(token) },
-            body: fd,
-          });
+          try {
+            return await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface/upload`, {
+              method: "POST",
+              headers: { ...authHeaders(token) },
+              body: fd,
+              signal: controller.signal,
+            });
+          } finally {
+            window.clearTimeout(timeoutId);
+          }
         }
-        return fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface`, {
-          method: "POST",
-          headers: { "content-type": "application/json", ...authHeaders(token) },
-          body: JSON.stringify({
-            output,
-            x1,
-            x2,
-            objective,
-            grid: surfaceGrid,
-            samples,
-            max_iter: maxIter,
-            dataset: resolvedDatasetName,
-          }),
-        });
+        try {
+          return await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface`, {
+            method: "POST",
+            headers: { "content-type": "application/json", ...authHeaders(token) },
+            body: JSON.stringify({
+              output,
+              x1,
+              x2,
+              objective,
+              grid: surfaceGrid,
+              samples,
+              max_iter: maxIter,
+              dataset: resolvedDatasetName,
+            }),
+            signal: controller.signal,
+          });
+        } finally {
+          window.clearTimeout(timeoutId);
+        }
       };
 
       let res: Response;
@@ -4106,33 +4120,45 @@ function ParamPanel({
           : `Optimised surface built.\nOutput: ${json.output}\nAxes: ${json.x1}, ${json.x2}\nBest value: ${formatNum(json?.best?.value)}`
       );
     } catch (e: any) {
-      setErr(String(e?.message ?? e));
+      if (e?.name === "AbortError") {
+        setErr("Surface optimisation timed out. Please try again; the backend is taking too long to respond.");
+      } else {
+        setErr(String(e?.message ?? e));
+      }
     } finally {
-      setBusy(false);
+      setSurfaceBusy(false);
     }
   }
 
   async function runGoal() {
     if (!apiBaseUrl || !output) return;
-    setBusy(true);
+    setGoalBusy(true);
     setErr(null);
     try {
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), requestTimeoutMs);
       let res: Response;
-      if (dataset?.file) {
-        const fd = new FormData();
-        fd.append("file", dataset.file);
-        fd.append("payload_json", JSON.stringify({ output, target, tolerance }));
-        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/goal-seek/upload`, {
-          method: "POST",
-          headers: { ...authHeaders(token) },
-          body: fd,
-        });
-      } else {
-        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/goal-seek`, {
-          method: "POST",
-          headers: { "content-type": "application/json", ...authHeaders(token) },
-          body: JSON.stringify({ output, target, tolerance, dataset: resolvedDatasetName }),
-        });
+      try {
+        if (dataset?.file) {
+          const fd = new FormData();
+          fd.append("file", dataset.file);
+          fd.append("payload_json", JSON.stringify({ output, target, tolerance }));
+          res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/goal-seek/upload`, {
+            method: "POST",
+            headers: { ...authHeaders(token) },
+            body: fd,
+            signal: controller.signal,
+          });
+        } else {
+          res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/goal-seek`, {
+            method: "POST",
+            headers: { "content-type": "application/json", ...authHeaders(token) },
+            body: JSON.stringify({ output, target, tolerance, dataset: resolvedDatasetName }),
+            signal: controller.signal,
+          });
+        }
+      } finally {
+        window.clearTimeout(timeoutId);
       }
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Goal seek failed");
@@ -4141,9 +4167,13 @@ function ParamPanel({
         `Goal seek target: ${formatNum(json?.target)}\nPredicted: ${formatNum(json?.best?.predicted)}\nAbsolute error: ${formatNum(json?.abs_error)}`
       );
     } catch (e: any) {
-      setErr(String(e?.message ?? e));
+      if (e?.name === "AbortError") {
+        setErr("Goal seek timed out. Please try again; the backend is taking too long to respond.");
+      } else {
+        setErr(String(e?.message ?? e));
+      }
     } finally {
-      setBusy(false);
+      setGoalBusy(false);
     }
   }
 
@@ -4232,10 +4262,10 @@ function ParamPanel({
         </div>
 
         <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-          <button className="btn btnPrimary" onClick={runSurface} disabled={busy}>
-            {busy ? "Running..." : "Optimise & Plot Surface"}
+          <button className="btn btnPrimary" onClick={runSurface} disabled={surfaceBusy || goalBusy}>
+            {surfaceBusy ? "Running..." : "Optimise & Plot Surface"}
           </button>
-          <button className="btn" onClick={exportSurface} disabled={!resp?.Z}>
+          <button className="btn" onClick={exportSurface} disabled={!resp?.Z || surfaceBusy}>
             Export surface CSV
           </button>
           <select className="input" value={objective} onChange={(e) => setObjective(e.target.value as any)} style={{ width: 140 }}>
@@ -4250,8 +4280,8 @@ function ParamPanel({
         <div className="grid3" style={{ marginTop: 8 }}>
           <input className="input" type="number" value={target} onChange={(e) => setTarget(Number(e.target.value))} placeholder="Target output" />
           <input className="input" type="number" value={tolerance} onChange={(e) => setTolerance(Number(e.target.value))} placeholder="Tolerance" />
-          <button className="btn" onClick={runGoal} disabled={busy}>
-            {busy ? "Running..." : "Run Goal Seek (All Inputs)"}
+          <button className="btn" onClick={runGoal} disabled={surfaceBusy || goalBusy}>
+            {goalBusy ? "Running..." : "Run Goal Seek (All Inputs)"}
           </button>
         </div>
       </div>

@@ -259,9 +259,11 @@ def set_combined_dataset(payload: dict = Body(...), _token: str = Depends(requir
 
     DATASETS["combined"] = name
 
-    # Reset ML cache/models so the next ML request trains on the selected dataset.
-    global _ml_cache_key, _assets
+    # Reset ML/optimisation caches so the next request retrains on the selected dataset.
+    global _ml_cache_key, _assets, _param_cache_key, _param_cache_bundle
     _ml_cache_key = None
+    _param_cache_key = None
+    _param_cache_bundle = None
     _assets = LoadedAssets(scaler=None, mdl_frag=None, mdl_ppv=None, mdl_air=None)
 
     return {"ok": True, "active": name}
@@ -761,6 +763,8 @@ def _feature_map_synonyms():
 
 
 _ml_cache_key: str | None = None
+_param_cache_key: str | None = None
+_param_cache_bundle: dict | None = None
 
 
 def _maybe_train_models_from_default_dataset() -> None:
@@ -1717,12 +1721,16 @@ def _split_inputs_outputs(df):
     return num, inputs, outputs
 
 
-def _fit_param_surrogate(df):
+def _fit_param_surrogate(df, cache_key: str | None = None):
     import numpy as np
     import pandas as pd
     from sklearn.model_selection import train_test_split
     from sklearn.neural_network import MLPRegressor
     from sklearn.preprocessing import MinMaxScaler
+
+    global _param_cache_key, _param_cache_bundle
+    if cache_key and _param_cache_key == cache_key and _param_cache_bundle is not None:
+        return _param_cache_bundle
 
     num, inputs, outputs = _split_inputs_outputs(df)
     Xdf = num[inputs].apply(pd.to_numeric, errors="coerce")
@@ -1763,14 +1771,15 @@ def _fit_param_surrogate(df):
         Xtr, Xte, ytr, yte = Xs, Xs, Ys, Ys
 
     mdl = MLPRegressor(
-        hidden_layer_sizes=(128, 64, 32),
+        hidden_layer_sizes=(64, 32),
         activation="relu",
         solver="adam",
-        learning_rate_init=0.01,
-        max_iter=600,
+        learning_rate_init=0.008,
+        max_iter=220,
         random_state=42,
         early_stopping=len(Xtr) >= 120,
         validation_fraction=0.15,
+        n_iter_no_change=12,
     )
     mdl.fit(Xtr, ytr)
 
@@ -1782,7 +1791,7 @@ def _fit_param_surrogate(df):
         train_r2[out_name] = _score_r2(ytr[:, i], ytr_hat[:, i])
         test_r2[out_name] = _score_r2(yte[:, i], yte_hat[:, i])
 
-    return {
+    bundle = {
         "num": work,
         "inputs": inputs,
         "outputs": outputs,
@@ -1795,6 +1804,10 @@ def _fit_param_surrogate(df):
         "test_r2": test_r2,
         "rows_used": int(len(work)),
     }
+    if cache_key:
+        _param_cache_key = cache_key
+        _param_cache_bundle = bundle
+    return bundle
 
 
 def _param_predict_output(model_bundle, vec: dict[str, float], output_name: str) -> float:
@@ -1816,7 +1829,8 @@ def _param_surface_df(df, payload):
     import numpy as np
     from scipy.optimize import minimize
 
-    bundle = _fit_param_surrogate(df)
+    cache_key = payload.get("dataset") if not payload.get("_uploaded") else None
+    bundle = _fit_param_surrogate(df, cache_key=cache_key)
     if bundle.get("error"):
         return {"error": bundle["error"]}
 
@@ -1924,7 +1938,8 @@ def _param_goal_seek_df(df, payload):
     import numpy as np
     from scipy.optimize import minimize
 
-    bundle = _fit_param_surrogate(df)
+    cache_key = payload.get("dataset") if not payload.get("_uploaded") else None
+    bundle = _fit_param_surrogate(df, cache_key=cache_key)
     if bundle.get("error"):
         return {"error": bundle["error"]}
 
@@ -2036,6 +2051,7 @@ def param_surface_upload(
             payload = json.loads(payload_json)
         except Exception:
             payload = {}
+    payload["_uploaded"] = True
     df = _read_upload_df(file, DATASETS["combined"])
     return _param_surface_df(df, payload)
 
@@ -2060,6 +2076,7 @@ def param_goal_seek_upload(
             payload = json.loads(payload_json)
         except Exception:
             payload = {}
+    payload["_uploaded"] = True
     df = _read_upload_df(file, DATASETS["combined"])
     return _param_goal_seek_df(df, payload)
 
