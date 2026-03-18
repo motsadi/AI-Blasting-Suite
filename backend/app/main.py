@@ -1653,18 +1653,23 @@ def delay_predict(
         return df_in.rename(columns=rename)
 
     try:
+        dataset_used = DATASETS["delay_v1"]
         train_df = _standardize_delay_df(_read_upload_df(None, DATASETS["delay_v1"]))
     except Exception:
+        dataset_used = DATASETS["delay_v2"]
         train_df = _standardize_delay_df(_read_upload_df(None, DATASETS["delay_v2"]))
     infer_df = _standardize_delay_df(_read_upload_df(file, DATASETS["delay_v1"])) if file is not None else train_df.copy()
 
     train_keep = ["Depth", "Charge", "X", "Y"] + (["Z"] if "Z" in train_df.columns else [])
     train_clean = train_df.dropna(subset=train_keep).copy()
-    X_train = train_clean[[c for c in ["Depth", "Charge", "X", "Y", "Z"] if c in train_clean.columns]].apply(pd.to_numeric, errors="coerce").values
+    feature_cols = [c for c in ["Depth", "Charge", "X", "Y", "Z"] if c in train_clean.columns]
+    X_train = train_clean[feature_cols].apply(pd.to_numeric, errors="coerce").values
     if "Delay" in train_clean.columns:
         y_train_full = pd.to_numeric(train_clean["Delay"], errors="coerce").values
+        target_source = "observed_delay"
     else:
         y_train_full = np.clip(10 + 0.02 * X_train[:, 0] + 0.0005 * X_train[:, 2], 5, 250)
+        target_source = "synthetic_fallback"
 
     Xtr, Xte, ytr, yte = train_test_split(X_train, y_train_full, test_size=0.2, random_state=42)
     sc = StandardScaler().fit(Xtr)
@@ -1681,6 +1686,8 @@ def delay_predict(
             "Delay": yhat,
         }
     )
+    if "Delay" in infer_clean.columns:
+        dfv["ActualDelay"] = pd.to_numeric(infer_clean["Delay"], errors="coerce")
     if "Depth" in infer_clean.columns:
         dfv["Depth"] = pd.to_numeric(infer_clean["Depth"], errors="coerce")
     if "Charge" in infer_clean.columns:
@@ -1702,6 +1709,10 @@ def delay_predict(
         "test_r2": _score_r2(yte, mdl.predict(sc.transform(Xte))),
         "training_rows": int(len(train_clean)),
         "predicted_rows": int(len(dfv)),
+        "dataset_used": dataset_used,
+        "features_used": feature_cols,
+        "target_source": target_source,
+        "actual_delay_available": bool("ActualDelay" in dfv.columns),
     }
 
 

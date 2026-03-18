@@ -1501,9 +1501,13 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   const [err, setErr] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [colorBy, setColorBy] = useState("Delay");
-  const [sizeBy, setSizeBy] = useState("Delay");
-  const [animate, setAnimate] = useState(false);
-  const [timeCutoff, setTimeCutoff] = useState<number | undefined>(undefined);
+  const [sizeBy, setSizeBy] = useState("Charge");
+  const [playing, setPlaying] = useState(false);
+  const [stepIndex, setStepIndex] = useState(0);
+  const [speed, setSpeed] = useState(1);
+  const [showLabels, setShowLabels] = useState(true);
+  const [showShock, setShowShock] = useState(true);
+  const [selectedPoint, setSelectedPoint] = useState<Record<string, any> | null>(null);
 
   async function run() {
     if (!apiBaseUrl) return;
@@ -1521,14 +1525,15 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Delay failed");
       setResp(json);
       if (json?.points?.length) {
-        const keys = Object.keys(json.points[0] ?? {});
-        if (keys.includes("Delay")) {
+        const numericKeys = Object.keys(json.points[0] ?? {}).filter((k) =>
+          json.points.some((p: any) => Number.isFinite(Number(p?.[k])))
+        );
+        if (numericKeys.includes("Delay")) {
           setColorBy("Delay");
-          setSizeBy("Delay");
-          const delays = json.points.map((p: any) => Number(p.Delay)).filter((v: number) => Number.isFinite(v));
-          if (delays.length) {
-            setTimeCutoff(Math.min(...delays));
-          }
+          setSizeBy(numericKeys.includes("Charge") ? "Charge" : "Delay");
+          setStepIndex(0);
+          setSelectedPoint(null);
+          setPlaying(false);
         }
       }
     } catch (e: any) {
@@ -1538,30 +1543,73 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     }
   }
 
+  const points = useMemo(
+    () => (resp?.points ?? []).map((p: Record<string, any>, idx: number) => ({ ...p, __idx: idx })),
+    [resp]
+  );
+  const numericFields = useMemo(() => {
+    if (!points.length) return [] as string[];
+    return Object.keys(points[0]).filter((k) => k !== "__idx" && points.some((p) => Number.isFinite(Number(p?.[k]))));
+  }, [points]);
+  const uniqueTimes = useMemo(() => {
+    const vals = points.map((p) => Number(p.Delay)).filter((v) => Number.isFinite(v));
+    return Array.from(new Set(vals)).sort((a, b) => a - b);
+  }, [points]);
+  const currentTime = uniqueTimes.length ? uniqueTimes[Math.max(0, Math.min(stepIndex, uniqueTimes.length - 1))] : undefined;
+  const previousTime = uniqueTimes.length && stepIndex > 0 ? uniqueTimes[stepIndex - 1] : undefined;
+  const delayStats = useMemo(() => {
+    if (!uniqueTimes.length) return null;
+    const delays = points.map((p) => Number(p.Delay)).filter((v) => Number.isFinite(v));
+    const counts = new Map<number, number>();
+    delays.forEach((d) => counts.set(d, (counts.get(d) ?? 0) + 1));
+    const groupSizes = Array.from(counts.values()).sort((a, b) => a - b);
+    const span = Math.max(...delays) - Math.min(...delays);
+    const medianGroup = groupSizes[Math.floor(groupSizes.length / 2)] ?? 0;
+    return {
+      min: Math.min(...delays),
+      max: Math.max(...delays),
+      span,
+      unique: uniqueTimes.length,
+      medianGroup,
+    };
+  }, [points, uniqueTimes]);
+  const currentGroup = useMemo(() => {
+    if (currentTime == null) return [] as Array<Record<string, any>>;
+    return points.filter((p) => Math.abs(Number(p.Delay) - currentTime) < 1e-6);
+  }, [points, currentTime]);
+  const selectedActualGap =
+    selectedPoint && Number.isFinite(Number(selectedPoint.ActualDelay))
+      ? Number(selectedPoint.Delay) - Number(selectedPoint.ActualDelay)
+      : null;
+
   useEffect(() => {
-    if (!animate || !resp?.points?.length) return;
-    const delays = resp.points.map((p: any) => Number(p.Delay)).filter((v: number) => Number.isFinite(v));
-    if (!delays.length) return;
-    const minD = Math.min(...delays);
-    const maxD = Math.max(...delays);
-    let t = timeCutoff ?? minD;
-    const step = (maxD - minD) / 50;
-    const id = setInterval(() => {
-      t += step;
-      if (t > maxD) t = minD;
-      setTimeCutoff(t);
-    }, 200);
-    return () => clearInterval(id);
-  }, [animate, resp, timeCutoff]);
+    if (!playing || !uniqueTimes.length) return;
+    const id = window.setInterval(() => {
+      setStepIndex((prev) => (prev >= uniqueTimes.length - 1 ? 0 : prev + 1));
+    }, Math.max(120, 700 / Math.max(0.5, speed)));
+    return () => window.clearInterval(id);
+  }, [playing, speed, uniqueTimes]);
+
+  useEffect(() => {
+    if (!numericFields.length) return;
+    if (!numericFields.includes(colorBy)) {
+      setColorBy(numericFields.includes("Delay") ? "Delay" : numericFields[0]);
+    }
+    if (!numericFields.includes(sizeBy)) {
+      setSizeBy(numericFields.includes("Charge") ? "Charge" : numericFields[0]);
+    }
+  }, [numericFields, colorBy, sizeBy]);
 
   return (
     <div className="card">
-      <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Delay & Plan View</div>
-      <div className="subtitle">Upload a CSV or use the default dataset (Hole_data_v1.csv).</div>
+      <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Delay Prediction & Blast Simulation</div>
+      <div className="subtitle">
+        Blast-sequence view with equal-aspect plan geometry, delay-labelled holes, firing-step playback, and sequence analysis.
+      </div>
       <div style={{ marginTop: 10 }} className="grid2">
         <div>
-          <label className="label">Upload CSV</label>
-          <input className="input" type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+          <label className="label">Upload CSV / XLSX</label>
+          <input className="input" type="file" accept=".csv,.xlsx,.xls" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
         </div>
         <div style={{ display: "flex", alignItems: "flex-end" }}>
           <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict Delays"}</button>
@@ -1569,13 +1617,11 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
       </div>
       {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
       {resp?.points?.length ? (
-        <div className="kpi" style={{ marginTop: 12 }}>
-          <div className="kpiTitle">Predicted points</div>
-          <div className="kpiValue">{resp.points.length}</div>
-        </div>
-      ) : null}
-      {resp?.points?.length ? (
         <div className="grid3" style={{ marginTop: 10 }}>
+          <div className="kpi">
+            <div className="kpiTitle">Predicted holes</div>
+            <div className="kpiValue">{resp.points.length}</div>
+          </div>
           <div className="kpi">
             <div className="kpiTitle">Training rows</div>
             <div className="kpiValue">{resp.training_rows ?? "—"}</div>
@@ -1588,58 +1634,155 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
             <div className="kpiTitle">Test R²</div>
             <div className="kpiValue">{formatNum(resp.test_r2)}</div>
           </div>
+          <div className="kpi">
+            <div className="kpiTitle">Firing steps</div>
+            <div className="kpiValue">{delayStats?.unique ?? "—"}</div>
+          </div>
+          <div className="kpi">
+            <div className="kpiTitle">Delay span</div>
+            <div className="kpiValue">{delayStats ? `${formatNum(delayStats.span)} ms` : "—"}</div>
+          </div>
+          <div className="kpi">
+            <div className="kpiTitle">Median holes/step</div>
+            <div className="kpiValue">{delayStats?.medianGroup ?? "—"}</div>
+          </div>
         </div>
       ) : null}
       {resp?.points?.length ? (
         <div style={{ marginTop: 12 }}>
-          {(() => {
-            const delays = resp.points.map((p: any) => Number(p.Delay)).filter((v: number) => Number.isFinite(v));
-            const minDelay = delays.length ? Math.min(...delays) : 0;
-            const maxDelay = delays.length ? Math.max(...delays) : 100;
-            return (
-              <>
-          <div className="grid3">
-            <div>
-              <label className="label">Color by</label>
-              <select className="input" value={colorBy} onChange={(e) => setColorBy(e.target.value)}>
-                {Object.keys(resp.points[0] ?? {}).map((k) => (
-                  <option key={k} value={k}>{k}</option>
-                ))}
-              </select>
+          <div className="card">
+            <div className="sectionTitle">Simulation Controls</div>
+            <div className="subtitle">
+              Dataset: {resp.dataset_used ?? "default"} · target source: {resp.target_source ?? "observed_delay"} · features: {(resp.features_used ?? []).join(", ")}
             </div>
-            <div>
-              <label className="label">Size by</label>
-              <select className="input" value={sizeBy} onChange={(e) => setSizeBy(e.target.value)}>
-                {Object.keys(resp.points[0] ?? {}).map((k) => (
-                  <option key={k} value={k}>{k}</option>
-                ))}
-              </select>
+            <div className="grid3" style={{ marginTop: 10 }}>
+              <div>
+                <label className="label">Color by</label>
+                <select className="input" value={colorBy} onChange={(e) => setColorBy(e.target.value)}>
+                  {numericFields.map((k) => (
+                    <option key={k} value={k}>{k}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label">Size by</label>
+                <select className="input" value={sizeBy} onChange={(e) => setSizeBy(e.target.value)}>
+                  {numericFields.map((k) => (
+                    <option key={k} value={k}>{k}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label">Playback speed</label>
+                <input className="input" type="range" min="0.5" max="5" step="0.25" value={speed} onChange={(e) => setSpeed(Number(e.target.value))} />
+                <div className="subtitle">{formatNum(speed)}x</div>
+              </div>
             </div>
-            <div>
-              <label className="label">Simulate blast</label>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <input type="checkbox" checked={animate} onChange={(e) => setAnimate(e.target.checked)} />
+            <div className="grid3" style={{ marginTop: 10 }}>
+              <div>
+                <label className="label">Simulation step</label>
                 <input
                   className="input"
                   type="range"
-                  min={minDelay}
-                  max={maxDelay}
+                  min={0}
+                  max={Math.max(0, uniqueTimes.length - 1)}
                   step="1"
-                  value={timeCutoff ?? minDelay}
-                  onChange={(e) => setTimeCutoff(Number(e.target.value))}
+                  value={Math.max(0, Math.min(stepIndex, Math.max(0, uniqueTimes.length - 1)))}
+                  onChange={(e) => setStepIndex(Number(e.target.value))}
                 />
+                <div className="subtitle">
+                  {currentTime == null ? "No delay sequence" : `Step ${stepIndex + 1}/${uniqueTimes.length} · t = ${formatNum(currentTime)} ms`}
+                </div>
+              </div>
+              <div>
+                <label className="label">Playback</label>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+                  <button className="btn btnPrimary" onClick={() => setPlaying(true)} disabled={playing}>Play</button>
+                  <button className="btn" onClick={() => setPlaying(false)}>Pause</button>
+                  <button className="btn" onClick={() => { setPlaying(false); setStepIndex(0); }}>Reset</button>
+                </div>
+              </div>
+              <div>
+                <label className="label">Visual overlays</label>
+                <div style={{ display: "grid", gap: 6, marginTop: 8 }}>
+                  <label className="label"><input type="checkbox" checked={showLabels} onChange={(e) => setShowLabels(e.target.checked)} /> Show delay labels</label>
+                  <label className="label"><input type="checkbox" checked={showShock} onChange={(e) => setShowShock(e.target.checked)} /> Show shock-front rings</label>
+                </div>
               </div>
             </div>
           </div>
-          <PlanView points={resp.points} colorBy={colorBy} sizeBy={sizeBy} timeCutoff={animate ? timeCutoff : undefined} />
+
+          <div className="grid2" style={{ marginTop: 12 }}>
+            <PlanView
+              points={points}
+              colorBy={colorBy}
+              sizeBy={sizeBy}
+              currentTime={currentTime}
+              previousTime={previousTime}
+              showLabels={showLabels}
+              showShock={showShock}
+              selectedPoint={selectedPoint}
+              onSelect={setSelectedPoint}
+            />
+            <div style={{ display: "grid", gap: 12 }}>
+              <DelaySequenceChart points={points} currentTime={currentTime} />
+              <div className="card">
+                <div className="sectionTitle">Current Firing Step</div>
+                <div className="subtitle">
+                  {currentTime == null
+                    ? "No active firing step selected."
+                    : `${currentGroup.length} hole(s) firing at ${formatNum(currentTime)} ms.`}
+                </div>
+                <div className="grid3" style={{ marginTop: 10 }}>
+                  {currentGroup.slice(0, 9).map((point) => (
+                    <div key={point.__idx} className="kpi" onClick={() => setSelectedPoint(point)} style={{ cursor: "pointer" }}>
+                      <div className="kpiTitle">{point.HoleID ? `Hole ${point.HoleID}` : `Hole ${point.__idx + 1}`}</div>
+                      <div className="kpiValue">{Math.round(Number(point.Delay))} ms</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="card">
+                <div className="sectionTitle">Selected Hole</div>
+                {selectedPoint ? (
+                  <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+                    <div className="subtitle">
+                      {selectedPoint.HoleID ? `Hole ${selectedPoint.HoleID}` : `Hole ${selectedPoint.__idx + 1}`} · X {formatNum(selectedPoint.X)} · Y {formatNum(selectedPoint.Y)}
+                    </div>
+                    <div className="grid2">
+                      <div className="kpi">
+                        <div className="kpiTitle">Predicted delay</div>
+                        <div className="kpiValue">{formatNum(selectedPoint.Delay)} ms</div>
+                      </div>
+                      <div className="kpi">
+                        <div className="kpiTitle">Actual delay</div>
+                        <div className="kpiValue">{Number.isFinite(Number(selectedPoint.ActualDelay)) ? `${formatNum(selectedPoint.ActualDelay)} ms` : "—"}</div>
+                      </div>
+                      <div className="kpi">
+                        <div className="kpiTitle">Charge</div>
+                        <div className="kpiValue">{formatNum(selectedPoint.Charge)}</div>
+                      </div>
+                      <div className="kpi">
+                        <div className="kpiTitle">Depth</div>
+                        <div className="kpiValue">{formatNum(selectedPoint.Depth)}</div>
+                      </div>
+                    </div>
+                    {selectedActualGap != null ? (
+                      <div className="subtitle">Prediction gap vs actual: {formatNum(selectedActualGap)} ms</div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="subtitle" style={{ marginTop: 8 }}>Click a hole in the plan view to inspect its timing and geometry.</div>
+                )}
+              </div>
+            </div>
+          </div>
+
           <div style={{ marginTop: 10 }}>
-            <button className="btn" onClick={() => downloadCsv(resp.points, Object.keys(resp.points[0] ?? {}), "delay_predictions.csv")}>
+            <button className="btn" onClick={() => downloadCsv(points, Object.keys(points[0] ?? {}).filter((k) => k !== "__idx"), "delay_predictions.csv")}>
               Export CSV
             </button>
           </div>
-              </>
-            );
-          })()}
         </div>
       ) : null}
     </div>
@@ -2069,49 +2212,233 @@ function RRChart({ rr }: { rr: any }) {
   );
 }
 
+function delayQuantile(values: number[], q: number) {
+  const nums = values.filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+  if (!nums.length) return 0;
+  const idx = (nums.length - 1) * q;
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return nums[lo];
+  const t = idx - lo;
+  return nums[lo] * (1 - t) + nums[hi] * t;
+}
+
+function DelaySequenceChart({
+  points,
+  currentTime,
+}: {
+  points: Array<Record<string, any>>;
+  currentTime?: number;
+}) {
+  const delays = points.map((p) => Number(p.Delay)).filter((v) => Number.isFinite(v));
+  if (!delays.length) return null;
+  const w = 620;
+  const h = 180;
+  const uniqueTimes = Array.from(new Set(delays)).sort((a, b) => a - b);
+  const bucketCount = Math.min(40, Math.max(10, Math.floor(Math.sqrt(uniqueTimes.length) * 2)));
+  const minD = Math.min(...delays);
+  const maxD = Math.max(...delays);
+  const bucketSize = (maxD - minD || 1) / bucketCount;
+  const counts = new Array(bucketCount).fill(0);
+  delays.forEach((d) => {
+    const idx = Math.min(bucketCount - 1, Math.floor((d - minD) / bucketSize));
+    counts[idx] += 1;
+  });
+  const ymax = Math.max(...counts, 1);
+  const currentIdx = currentTime == null ? -1 : Math.min(bucketCount - 1, Math.max(0, Math.floor((currentTime - minD) / bucketSize)));
+  const barW = (w - 60) / bucketCount;
+  return (
+    <div className="card">
+      <div className="sectionTitle">Delay Sequence Density</div>
+      <div className="subtitle">Distribution of predicted firing times with the current simulation step highlighted.</div>
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ marginTop: 10, background: "var(--panel)", borderRadius: 12 }}>
+        <line x1={42} y1={h - 24} x2={w - 10} y2={h - 24} stroke="rgba(148,163,184,0.35)" />
+        <line x1={42} y1={18} x2={42} y2={h - 24} stroke="rgba(148,163,184,0.35)" />
+        {counts.map((count, i) => {
+          const bh = ((count || 0) / ymax) * (h - 54);
+          const x = 46 + i * barW;
+          const y = h - 24 - bh;
+          const active = i === currentIdx;
+          return <rect key={i} x={x} y={y} width={Math.max(3, barW - 2)} height={bh} fill={active ? "#f59e0b" : "#60a5fa"} opacity={active ? 0.95 : 0.72} rx={3} />;
+        })}
+        <text x={42} y={14} fill="var(--muted)" fontSize="10">{ymax}</text>
+        <text x={42} y={h - 8} fill="var(--muted)" fontSize="10">{formatNum(minD)}</text>
+        <text x={w - 10} y={h - 8} fill="var(--muted)" fontSize="10" textAnchor="end">{formatNum(maxD)}</text>
+      </svg>
+    </div>
+  );
+}
+
 function PlanView({
   points,
   colorBy,
   sizeBy,
-  timeCutoff,
+  currentTime,
+  previousTime,
+  showLabels,
+  showShock,
+  selectedPoint,
+  onSelect,
 }: {
   points: Array<Record<string, any>>;
   colorBy: string;
   sizeBy: string;
-  timeCutoff?: number;
+  currentTime?: number;
+  previousTime?: number;
+  showLabels: boolean;
+  showShock: boolean;
+  selectedPoint: Record<string, any> | null;
+  onSelect: (point: Record<string, any>) => void;
 }) {
-  const w = 620;
-  const h = 360;
-  const xs = points.map((p) => Number(p.X));
-  const ys = points.map((p) => Number(p.Y));
-  const cs = points.map((p) => Number(p[colorBy]));
-  const ss = points.map((p) => Number(p[sizeBy]));
-  const ds = points.map((p) => Number(p.Delay));
+  const w = 760;
+  const h = 520;
+  const pad = { left: 52, right: 94, top: 28, bottom: 46 };
+  const pts = points
+    .map((p, idx) => ({ ...p, __idx: idx }))
+    .filter((p) => Number.isFinite(Number(p.X)) && Number.isFinite(Number(p.Y)) && Number.isFinite(Number(p.Delay)));
+  if (!pts.length) return null;
+
+  const xs = pts.map((p) => Number(p.X));
+  const ys = pts.map((p) => Number(p.Y));
+  const cvals = pts.map((p) => Number(p[colorBy])).filter((v) => Number.isFinite(v));
+  const svals = pts.map((p) => Number(p[sizeBy])).filter((v) => Number.isFinite(v));
+  const delays = pts.map((p) => Number(p.Delay));
   const xmin = Math.min(...xs);
   const xmax = Math.max(...xs);
   const ymin = Math.min(...ys);
   const ymax = Math.max(...ys);
-  const cmin = Math.min(...cs.filter((v) => Number.isFinite(v)));
-  const cmax = Math.max(...cs.filter((v) => Number.isFinite(v)));
-  const smin = Math.min(...ss.filter((v) => Number.isFinite(v)));
-  const smax = Math.max(...ss.filter((v) => Number.isFinite(v)));
+  const cmin = delayQuantile(cvals, 0.02);
+  const cmax = delayQuantile(cvals, 0.98);
+  const smin = delayQuantile(svals, 0.05);
+  const smax = delayQuantile(svals, 0.95);
+  const dmin = Math.min(...delays);
+  const dmax = Math.max(...delays);
+  const xrange = xmax - xmin || 1;
+  const yrange = ymax - ymin || 1;
+  const span = Math.max(xrange, yrange);
+  const plotW = w - pad.left - pad.right;
+  const plotH = h - pad.top - pad.bottom;
+  const usedW = plotW * (xrange / span);
+  const usedH = plotH * (yrange / span);
+  const offsetX = pad.left + (plotW - usedW) / 2;
+  const offsetY = pad.top + (plotH - usedH) / 2;
   const norm = (v: number, a: number, b: number) => (b - a === 0 ? 0.5 : (v - a) / (b - a));
-  const cutoff = timeCutoff ?? Number.POSITIVE_INFINITY;
+  const mapX = (x: number) => offsetX + norm(x, xmin, xmax) * usedW;
+  const mapY = (y: number) => h - offsetY - norm(y, ymin, ymax) * usedH;
+  const eps = 1e-6;
+  const colorFor = (point: Record<string, any>) => {
+    const t = Math.max(0, Math.min(1, norm(Number(point[colorBy]) || 0, cmin, cmax)));
+    return `hsl(${220 - 200 * t}, 80%, 56%)`;
+  };
+  const sizeFor = (point: Record<string, any>) => 5 + Math.max(0, Math.min(1, norm(Number(point[sizeBy]) || 0, smin, smax))) * 7;
+  const currentPoints = currentTime == null ? [] : pts.filter((p) => Math.abs(Number(p.Delay) - currentTime) < eps);
+  const prevPoints = previousTime == null ? [] : pts.filter((p) => Math.abs(Number(p.Delay) - previousTime) < eps);
+  const currentIds = new Set(currentPoints.map((p) => p.__idx));
+  const prevIds = new Set(prevPoints.map((p) => p.__idx));
+  const waitingCount = currentTime == null ? 0 : pts.filter((p) => Number(p.Delay) > currentTime + eps).length;
+  const firedCount = currentTime == null ? pts.length : pts.filter((p) => Number(p.Delay) < currentTime - eps).length;
+  const labelable = showLabels ? (pts.length <= 450 ? pts : currentPoints.concat(selectedPoint ? [selectedPoint] : [])) : [];
+
   return (
-    <div style={{ marginTop: 12 }}>
-      <div className="label">Plan View (color by {colorBy}, size by {sizeBy})</div>
-      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
-        {points.slice(0, 800).map((p, i) => {
-          const delay = Number(p.Delay);
-          if (Number.isFinite(delay) && delay > cutoff) return null;
-          const x = 10 + norm(p.X, xmin, xmax) * (w - 20);
-          const y = 10 + (1 - norm(p.Y, ymin, ymax)) * (h - 20);
-          const t = norm(Number(p[colorBy]) || 0, cmin, cmax);
-          const s = norm(Number(p[sizeBy]) || 0, smin, smax);
-          const color = `hsl(${(1 - t) * 220}, 80%, 60%)`;
-          return <circle key={i} cx={x} cy={y} r={2 + s * 4} fill={color} />;
+    <div className="card">
+      <div className="sectionTitle">Blast Simulation Plan View</div>
+      <div className="subtitle">
+        Equal-aspect plan view with predicted firing sequence, delay labels, and current blast-front highlighting.
+      </div>
+      <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ marginTop: 10, background: "var(--panel)", borderRadius: 14 }}>
+        <defs>
+          <linearGradient id="delayLegend" x1="0%" y1="100%" x2="0%" y2="0%">
+            <stop offset="0%" stopColor="hsl(220, 80%, 56%)" />
+            <stop offset="50%" stopColor="hsl(120, 80%, 56%)" />
+            <stop offset="100%" stopColor="hsl(20, 85%, 58%)" />
+          </linearGradient>
+        </defs>
+        <rect x={offsetX} y={offsetY} width={usedW} height={usedH} fill="rgba(255,255,255,0.03)" stroke="rgba(148,163,184,0.18)" />
+        <line x1={offsetX} y1={h - offsetY} x2={offsetX + usedW} y2={h - offsetY} stroke="rgba(148,163,184,0.35)" />
+        <line x1={offsetX} y1={offsetY} x2={offsetX} y2={h - offsetY} stroke="rgba(148,163,184,0.35)" />
+        <text x={offsetX} y={h - 12} fill="var(--muted)" fontSize="10">{formatNum(xmin)}</text>
+        <text x={offsetX + usedW} y={h - 12} fill="var(--muted)" fontSize="10" textAnchor="end">{formatNum(xmax)}</text>
+        <text x={18} y={h - offsetY + 4} fill="var(--muted)" fontSize="10">{formatNum(ymin)}</text>
+        <text x={18} y={offsetY + 4} fill="var(--muted)" fontSize="10">{formatNum(ymax)}</text>
+        <text x={offsetX + usedW / 2} y={h - 12} fill="var(--muted)" fontSize="10" textAnchor="middle">X coordinate</text>
+        <text x={16} y={offsetY + usedH / 2} fill="var(--muted)" fontSize="10" textAnchor="middle" transform={`rotate(-90 16 ${offsetY + usedH / 2})`}>Y coordinate</text>
+
+        {showShock &&
+          currentPoints.map((point) => {
+            const x = mapX(Number(point.X));
+            const y = mapY(Number(point.Y));
+            return <circle key={`ring-${point.__idx}`} cx={x} cy={y} r={16} fill="none" stroke="rgba(255,255,255,0.42)" strokeWidth={1.3} />;
+          })}
+        {showShock &&
+          prevPoints.map((point) => {
+            const x = mapX(Number(point.X));
+            const y = mapY(Number(point.Y));
+            return <circle key={`prev-ring-${point.__idx}`} cx={x} cy={y} r={26} fill="none" stroke="rgba(255,255,255,0.18)" strokeWidth={1} />;
+          })}
+
+        {pts.map((point) => {
+          const x = mapX(Number(point.X));
+          const y = mapY(Number(point.Y));
+          const delay = Number(point.Delay);
+          const isCurrent = currentTime != null && Math.abs(delay - currentTime) < eps;
+          const isFired = currentTime != null && delay < currentTime - eps;
+          const isWaiting = currentTime != null && delay > currentTime + eps;
+          const isSelected = selectedPoint != null && selectedPoint.__idx === point.__idx;
+          const fill = isWaiting ? "rgba(148,163,184,0.3)" : colorFor(point);
+          const opacity = isCurrent ? 1 : isFired ? 0.9 : currentTime == null ? 0.92 : 0.52;
+          const radius = sizeFor(point) + (isCurrent ? 2 : 0) + (isSelected ? 1.5 : 0);
+          return (
+            <g key={point.__idx} onClick={() => onSelect(point)} style={{ cursor: "pointer" }}>
+              <circle
+                cx={x}
+                cy={y}
+                r={radius}
+                fill={fill}
+                opacity={opacity}
+                stroke={isCurrent || isSelected ? "#ffffff" : "rgba(15,23,42,0.35)"}
+                strokeWidth={isCurrent || isSelected ? 1.5 : 0.7}
+              />
+              {isCurrent ? <circle cx={x} cy={y} r={radius + 5} fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth={1.4} /> : null}
+            </g>
+          );
         })}
+
+        {labelable.map((point, i) => {
+          if (!point) return null;
+          const x = mapX(Number(point.X));
+          const y = mapY(Number(point.Y));
+          const isCurrent = currentTime != null && Math.abs(Number(point.Delay) - currentTime) < eps;
+          const isSelected = selectedPoint != null && selectedPoint.__idx === point.__idx;
+          if (!isCurrent && !isSelected && pts.length > 450) return null;
+          return (
+            <g key={`lbl-${point.__idx}-${i}`}>
+              <rect x={x + 6} y={y - 12} width={34} height={14} rx={4} fill={isCurrent ? "rgba(15,23,42,0.82)" : "rgba(255,255,255,0.82)"} />
+              <text x={x + 23} y={y - 2} fontSize="8.5" textAnchor="middle" fill={isCurrent ? "#ffffff" : "#0f172a"} fontWeight="700">
+                {Math.round(Number(point.Delay))}
+              </text>
+            </g>
+          );
+        })}
+
+        <rect x={w - 52} y={offsetY} width={14} height={usedH} fill="url(#delayLegend)" rx={7} />
+        <text x={w - 58} y={offsetY + 4} fill="var(--muted)" fontSize="10" textAnchor="end">{formatNum(cmax)}</text>
+        <text x={w - 58} y={offsetY + usedH / 2} fill="var(--muted)" fontSize="10" textAnchor="end">{formatNum((cmin + cmax) / 2)}</text>
+        <text x={w - 58} y={offsetY + usedH - 2} fill="var(--muted)" fontSize="10" textAnchor="end">{formatNum(cmin)}</text>
+        <text x={w - 45} y={offsetY - 8} fill="var(--muted)" fontSize="10" textAnchor="middle">{colorBy}</text>
+
+        <text x={offsetX + 10} y={offsetY + 18} fill="var(--text)" fontSize="11" fontWeight="700">
+          {currentTime == null ? "Static review" : `Current firing time: ${formatNum(currentTime)} ms`}
+        </text>
+        <text x={offsetX + 10} y={offsetY + 34} fill="var(--muted)" fontSize="10">
+          Fired {firedCount} · Current {currentPoints.length} · Waiting {waitingCount}
+        </text>
       </svg>
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 10 }}>
+        <div className="label">Grey = waiting</div>
+        <div className="label">Colour = predicted sequence</div>
+        <div className="label">White halo = current firing hole(s)</div>
+        <div className="label">Size encodes {sizeBy}</div>
+      </div>
     </div>
   );
 }
