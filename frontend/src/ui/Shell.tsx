@@ -1777,30 +1777,6 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
                 )}
               </div>
             </div>
-            <div className="card">
-              <div className="sectionTitle">Simulation Notes</div>
-              <div className="subtitle" style={{ marginTop: 8 }}>
-                The plan view now uses the full available width, keeps the colour legend outside the hole field, and caps marker size against the actual screen spacing so holes remain individually readable.
-              </div>
-              <div className="grid2" style={{ marginTop: 12 }}>
-                <div className="kpi">
-                  <div className="kpiTitle">Colour field</div>
-                  <div className="kpiValue">{colorBy}</div>
-                </div>
-                <div className="kpi">
-                  <div className="kpiTitle">Size field</div>
-                  <div className="kpiValue">{sizeBy}</div>
-                </div>
-                <div className="kpi">
-                  <div className="kpiTitle">Current step</div>
-                  <div className="kpiValue">{currentTime == null ? "—" : `${Math.round(currentTime)} ms`}</div>
-                </div>
-                <div className="kpi">
-                  <div className="kpiTitle">Playback speed</div>
-                  <div className="kpiValue">{formatNum(speed)}x</div>
-                </div>
-              </div>
-            </div>
           </div>
 
           <div style={{ marginTop: 10 }}>
