@@ -2273,65 +2273,199 @@ function ParamSurfaceExplorer({
   );
 }
 
-function SurfaceIsoPlot({ gridX, gridY, Z }: { gridX: number[]; gridY: number[]; Z: number[][] }) {
+function SurfaceIsoPlot({
+  gridX,
+  gridY,
+  Z,
+  xLabel = "X",
+  yLabel = "Y",
+  zLabel = "Z",
+}: {
+  gridX: number[];
+  gridY: number[];
+  Z: number[][];
+  xLabel?: string;
+  yLabel?: string;
+  zLabel?: string;
+}) {
   if (!gridX?.length || !gridY?.length || !Z?.length) return null;
   const w = 620;
   const h = 360;
-  const maxZ = Math.max(...Z.flat().filter((v) => Number.isFinite(v)));
-  const minZ = Math.min(...Z.flat().filter((v) => Number.isFinite(v)));
-  const scale = 0.6;
-  const proj = (x: number, y: number, z: number) => {
-    const px = (x - y) * scale;
-    const py = (x + y) * scale * 0.5 - z * scale * 0.4;
-    return { x: px, y: py };
-  };
-  const cells: Array<{ points: string; color: string }> = [];
-  const allX: number[] = [];
-  const allY: number[] = [];
-  for (let i = 0; i < gridX.length - 1; i++) {
-    for (let j = 0; j < gridY.length - 1; j++) {
-      const z00 = Z[j]?.[i];
-      const z10 = Z[j]?.[i + 1];
-      const z01 = Z[j + 1]?.[i];
-      const z11 = Z[j + 1]?.[i + 1];
-      if (![z00, z10, z01, z11].every((v) => Number.isFinite(v))) continue;
-      const zAvg = (z00 + z10 + z01 + z11) / 4;
-      const t = (zAvg - minZ) / (maxZ - minZ || 1);
-      const color = `hsl(${220 - 200 * t}, 80%, 55%)`;
-      const p00 = proj(gridX[i], gridY[j], z00);
-      const p10 = proj(gridX[i + 1], gridY[j], z10);
-      const p11 = proj(gridX[i + 1], gridY[j + 1], z11);
-      const p01 = proj(gridX[i], gridY[j + 1], z01);
-      const pts = [p00, p10, p11, p01];
-      pts.forEach((p) => {
-        allX.push(p.x);
-        allY.push(p.y);
-      });
-      cells.push({ points: pts.map((p) => `${p.x},${p.y}`).join(" "), color });
+  const pad = 28;
+  const finiteZ = Z.flat().filter((v) => Number.isFinite(v));
+  if (!finiteZ.length) return null;
+  const maxZ = Math.max(...finiteZ);
+  const minZ = Math.min(...finiteZ);
+  const [yaw, setYaw] = useState(-0.82);
+  const [pitch, setPitch] = useState(0.92);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+
+  const scene = useMemo(() => {
+    const minX = Math.min(...gridX);
+    const maxX = Math.max(...gridX);
+    const minY = Math.min(...gridY);
+    const maxY = Math.max(...gridY);
+    const rangeX = maxX - minX || 1;
+    const rangeY = maxY - minY || 1;
+    const rangeZ = maxZ - minZ || 1;
+    const allX: number[] = [];
+    const allY: number[] = [];
+
+    const project = (x: number, y: number, z: number) => {
+      const nx = ((x - minX) / rangeX - 0.5) * 2.4;
+      const ny = ((y - minY) / rangeY - 0.5) * 2.4;
+      const nz = ((z - minZ) / rangeZ - 0.5) * 1.8;
+
+      const yawX = nx * Math.cos(yaw) - ny * Math.sin(yaw);
+      const yawY = nx * Math.sin(yaw) + ny * Math.cos(yaw);
+      const yawZ = nz;
+
+      const pitchY = yawY * Math.cos(pitch) - yawZ * Math.sin(pitch);
+      const pitchZ = yawY * Math.sin(pitch) + yawZ * Math.cos(pitch);
+      const perspective = 1 + pitchY * 0.18;
+      const px = yawX * perspective;
+      const py = pitchZ - pitchY * 0.2;
+      allX.push(px);
+      allY.push(py);
+      return { x: px, y: py, depth: pitchY };
+    };
+
+    const cells: Array<{ points: string; color: string; depth: number }> = [];
+    for (let i = 0; i < gridX.length - 1; i++) {
+      for (let j = 0; j < gridY.length - 1; j++) {
+        const z00 = Number(Z[i]?.[j]);
+        const z10 = Number(Z[i + 1]?.[j]);
+        const z01 = Number(Z[i]?.[j + 1]);
+        const z11 = Number(Z[i + 1]?.[j + 1]);
+        if (![z00, z10, z01, z11].every((v) => Number.isFinite(v))) continue;
+        const zAvg = (z00 + z10 + z01 + z11) / 4;
+        const t = (zAvg - minZ) / (maxZ - minZ || 1);
+        const color = `hsl(${220 - 200 * t}, 80%, 55%)`;
+        const p00 = project(gridX[i], gridY[j], z00);
+        const p10 = project(gridX[i + 1], gridY[j], z10);
+        const p11 = project(gridX[i + 1], gridY[j + 1], z11);
+        const p01 = project(gridX[i], gridY[j + 1], z01);
+        const pts = [p00, p10, p11, p01];
+        cells.push({
+          points: pts.map((p) => `${p.x},${p.y}`).join(" "),
+          color,
+          depth: pts.reduce((sum, p) => sum + p.depth, 0) / pts.length,
+        });
+      }
     }
-  }
-  const xmin = Math.min(...allX);
-  const xmax = Math.max(...allX);
-  const ymin = Math.min(...allY);
-  const ymax = Math.max(...allY);
-  const sx = (x: number) => 20 + ((x - xmin) / (xmax - xmin || 1)) * (w - 40);
-  const sy = (y: number) => h - 20 - ((y - ymin) / (ymax - ymin || 1)) * (h - 40);
-  return (
-    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
-      {cells.map((c, i) => (
-        <polygon
-          key={i}
-          points={c.points.split(" ").map((pt) => {
+
+    const axes = [
+      { key: "x", label: xLabel, from: project(minX, minY, minZ), to: project(maxX, minY, minZ) },
+      { key: "y", label: yLabel, from: project(minX, minY, minZ), to: project(minX, maxY, minZ) },
+      { key: "z", label: zLabel, from: project(minX, minY, minZ), to: project(minX, minY, maxZ) },
+    ];
+
+    const xmin = Math.min(...allX);
+    const xmax = Math.max(...allX);
+    const ymin = Math.min(...allY);
+    const ymax = Math.max(...allY);
+    const sx = (x: number) => pad + ((x - xmin) / (xmax - xmin || 1)) * (w - pad * 2);
+    const sy = (y: number) => h - pad - ((y - ymin) / (ymax - ymin || 1)) * (h - pad * 2);
+    const axisOffset = {
+      x: { dx: 8, dy: 2 },
+      y: { dx: -8, dy: -8 },
+      z: { dx: -6, dy: -10 },
+    } as const;
+
+    return {
+      cells: cells.sort((a, b) => a.depth - b.depth),
+      axes: axes.map((axis) => ({
+        ...axis,
+        x1: sx(axis.from.x),
+        y1: sy(axis.from.y),
+        x2: sx(axis.to.x),
+        y2: sy(axis.to.y),
+        tx: sx(axis.to.x) + axisOffset[axis.key as keyof typeof axisOffset].dx,
+        ty: sy(axis.to.y) + axisOffset[axis.key as keyof typeof axisOffset].dy,
+      })),
+      projectPointString: (points: string) =>
+        points
+          .split(" ")
+          .map((pt) => {
             const [x, y] = pt.split(",").map(Number);
             return `${sx(x)},${sy(y)}`;
-          }).join(" ")}
-          fill={c.color}
-          opacity={0.85}
-          stroke="#ffffff"
-          strokeWidth={0.2}
-        />
-      ))}
-    </svg>
+          })
+          .join(" "),
+    };
+  }, [gridX, gridY, Z, maxZ, minZ, pitch, xLabel, yLabel, yaw, zLabel]);
+
+  const stopDragging = () => {
+    dragRef.current = null;
+    setIsDragging(false);
+  };
+
+  const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    dragRef.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+    setIsDragging(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (!dragRef.current || dragRef.current.pointerId !== e.pointerId) return;
+    const dx = e.clientX - dragRef.current.x;
+    const dy = e.clientY - dragRef.current.y;
+    dragRef.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+    setYaw((prev) => prev + dx * 0.012);
+    setPitch((prev) => Math.max(0.35, Math.min(1.45, prev - dy * 0.01)));
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    stopDragging();
+  };
+
+  return (
+    <div>
+      <div className="subtitle" style={{ marginTop: 8 }}>Drag to rotate. Double-click to reset the view.</div>
+      <svg
+        width="100%"
+        height={h}
+        viewBox={`0 0 ${w} ${h}`}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={stopDragging}
+        onDoubleClick={() => {
+          setYaw(-0.82);
+          setPitch(0.92);
+        }}
+        style={{
+          background: "var(--panel)",
+          borderRadius: 12,
+          cursor: isDragging ? "grabbing" : "grab",
+          touchAction: "none",
+          userSelect: "none",
+        }}
+      >
+        {scene.axes.map((axis) => (
+          <g key={axis.key}>
+            <line x1={axis.x1} y1={axis.y1} x2={axis.x2} y2={axis.y2} stroke="rgba(148,163,184,0.8)" strokeWidth={1.1} />
+            <circle cx={axis.x2} cy={axis.y2} r={2.3} fill="rgba(148,163,184,0.9)" />
+            <text x={axis.tx} y={axis.ty} fill="var(--text)" fontSize="11" fontWeight="600">
+              {axis.label}
+            </text>
+          </g>
+        ))}
+        {scene.cells.map((c, i) => (
+          <polygon
+            key={i}
+            points={scene.projectPointString(c.points)}
+            fill={c.color}
+            opacity={0.88}
+            stroke="rgba(255,255,255,0.35)"
+            strokeWidth={0.45}
+          />
+        ))}
+      </svg>
+    </div>
   );
 }
 
@@ -3853,10 +3987,10 @@ function ParamPanel({
   const [objective, setObjective] = useState<"min" | "max">("max");
   const [target, setTarget] = useState(0);
   const [tolerance, setTolerance] = useState(1e-3);
-  const [grid, setGrid] = useState(24);
-  const [samples, setSamples] = useState(4);
   const [selectedCell, setSelectedCell] = useState<{ i: number; j: number } | null>(null);
   const resolvedDatasetName = dataset?.file?.name ?? activeDatasetName ?? "(default)";
+  const surfaceGrid = 24;
+  const surfaceSamples = 4;
   const [msg, setMsg] = useState(
     "Creates an optimisation surface by minimising/maximising the chosen output.\n" +
       "Other inputs are optimised by a surrogate model within observed bounds.\n\n" +
@@ -3925,7 +4059,7 @@ function ParamPanel({
       if (dataset?.file) {
         const fd = new FormData();
         fd.append("file", dataset.file);
-        fd.append("payload_json", JSON.stringify({ output, x1, x2, objective, grid, samples }));
+        fd.append("payload_json", JSON.stringify({ output, x1, x2, objective, grid: surfaceGrid, samples: surfaceSamples }));
         res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface/upload`, {
           method: "POST",
           headers: { ...authHeaders(token) },
@@ -3935,7 +4069,7 @@ function ParamPanel({
         res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface`, {
           method: "POST",
           headers: { "content-type": "application/json", ...authHeaders(token) },
-          body: JSON.stringify({ output, x1, x2, objective, grid, samples, dataset: resolvedDatasetName }),
+          body: JSON.stringify({ output, x1, x2, objective, grid: surfaceGrid, samples: surfaceSamples, dataset: resolvedDatasetName }),
         });
       }
       const json = await res.json();
@@ -4081,8 +4215,6 @@ function ParamPanel({
             <option value="max">Maximise</option>
             <option value="min">Minimise</option>
           </select>
-          <input className="input" type="number" value={grid} onChange={(e) => setGrid(Math.max(12, Math.min(36, Number(e.target.value) || 24)))} style={{ width: 120 }} />
-          <input className="input" type="number" value={samples} onChange={(e) => setSamples(Math.max(1, Math.min(10, Number(e.target.value) || 4)))} style={{ width: 140 }} />
         </div>
       </div>
 
@@ -4104,23 +4236,6 @@ function ParamPanel({
         <pre style={pre}>{msg}</pre>
       </div>
 
-      {resp && (
-        <div className="grid3">
-          <div className="kpi">
-            <div className="kpiTitle">Rows used</div>
-            <div className="kpiValue">{resp.rows_used ?? "—"}</div>
-          </div>
-          <div className="kpi">
-            <div className="kpiTitle">Train R²</div>
-            <div className="kpiValue">{formatNum(resp.train_r2)}</div>
-          </div>
-          <div className="kpi">
-            <div className="kpiTitle">Test R²</div>
-            <div className="kpiValue">{formatNum(resp.test_r2)}</div>
-          </div>
-        </div>
-      )}
-
       {resp?.Z && (
         <div className="grid2">
           <div className="card">
@@ -4131,7 +4246,7 @@ function ParamPanel({
           <div className="card">
             <div className="sectionTitle">3D surface view</div>
             <div className="subtitle">{resp.note ?? "Optimised surface of the chosen output across the selected axes."}</div>
-            <SurfaceIsoPlot gridX={resp.grid_x} gridY={resp.grid_y} Z={resp.Z} />
+            <SurfaceIsoPlot gridX={resp.grid_x} gridY={resp.grid_y} Z={resp.Z} xLabel={resp.x1} yLabel={resp.x2} zLabel={resp.output} />
           </div>
         </div>
       )}
@@ -4185,20 +4300,6 @@ function ParamPanel({
           <div className="sectionTitle">Goal seek recipe</div>
           <div className="subtitle" style={{ marginTop: 8 }}>
             Predicted {formatNum(goal?.best?.predicted)} · target {formatNum(goal?.target)} · error {formatNum(goal?.abs_error)} · {goal?.within_tolerance ? "within tolerance" : "outside tolerance"}
-          </div>
-          <div className="grid3" style={{ marginTop: 10 }}>
-            <div className="kpi">
-              <div className="kpiTitle">Rows used</div>
-              <div className="kpiValue">{goal?.rows_used ?? "—"}</div>
-            </div>
-            <div className="kpi">
-              <div className="kpiTitle">Train R²</div>
-              <div className="kpiValue">{formatNum(goal?.train_r2)}</div>
-            </div>
-            <div className="kpi">
-              <div className="kpiTitle">Test R²</div>
-              <div className="kpiValue">{formatNum(goal?.test_r2)}</div>
-            </div>
           </div>
           <div className="grid3" style={{ marginTop: 8 }}>
             {Object.entries(goal.best.inputs).map(([k, v]: any) => (
