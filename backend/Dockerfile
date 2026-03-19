@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY backend/app /app/app
 COPY AI_Blasting_Suite_Full_Streamlit_Bundle /app/core_bundle
+COPY datasets /app/datasets
 
 ENV CORE_BUNDLE_PATH=/app/core_bundle
 

@@ -1394,11 +1394,22 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
       const fd = new FormData();
       if (file) fd.append("file", file);
       fd.append("inputs_json", JSON.stringify(buildInputsFromParams()));
-      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/slope/predict`, {
-        method: "POST",
-        headers: { ...authHeaders(token) },
-        body: fd,
-      });
+      const url = `${apiBaseUrl.replace(/\/$/, "")}/v1/slope/predict`;
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          method: "POST",
+          headers: { ...authHeaders(token) },
+          body: fd,
+          signal: AbortSignal.timeout(60000),
+        });
+      } catch (fetchErr: any) {
+        const msg = String(fetchErr?.message ?? fetchErr);
+        if (msg.includes("fetch") || msg.includes("network") || msg.includes("Failed")) {
+          throw new Error("Could not reach the backend. Check that the backend URL is correct, CORS is configured, and the deployment is running.");
+        }
+        throw fetchErr;
+      }
       const json = await res.json().catch(() => ({}));
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Slope failed");
       setResp(json);
@@ -1457,16 +1468,19 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
           <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Slope Stability — Stable / Failure (ML)</div>
           <div className="subtitle">Desktop-aligned ML classifier: load a slope CSV, seed the model from data, then adjust the section interactively.</div>
 
-          <div style={{ marginTop: 10 }}>
+          <div style={{ marginTop: 14, fontWeight: 700, fontSize: 15 }}>Data</div>
+          <div style={{ marginTop: 6 }}>
             <label className="label">Load CSV</label>
             <input className="input" type="file" accept=".csv,.xlsx,.xls" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
           </div>
 
-          <div style={{ marginTop: 10 }}>
-            <button className="btn btnPrimary" onClick={run} disabled={busy}>
+          <div style={{ marginTop: 8 }}>
+            <button className="btn btnPrimary" onClick={() => run()} disabled={busy}>
               {busy ? "Running…" : resp?.features?.length ? "Reload / Refit" : "Load & Predict"}
             </button>
           </div>
+
+          <div style={{ marginTop: 14, fontWeight: 700, fontSize: 15 }}>Parameters</div>
 
           <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
             <SliderField label="H (m)" value={params.H} min={1} max={50} step={0.5} onChange={(v) => setParams({ ...params, H: v })} />
