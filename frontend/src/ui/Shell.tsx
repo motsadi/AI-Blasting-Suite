@@ -1430,6 +1430,13 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     setErr(null);
   }, [fileKey]);
 
+  // Auto-run on mount to mirror local app: load default slope data.csv and seed sliders
+  useEffect(() => {
+    if (apiBaseUrl && !file && !modelReadyRef.current && !busy) {
+      void run();
+    }
+  }, [apiBaseUrl]);
+
   useEffect(() => {
     if (!modelReadyRef.current || busy) return;
     const id = window.setTimeout(() => {
@@ -1441,7 +1448,7 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   const predictionLabel =
     resp?.prob_stable == null
       ? "Prediction: —"
-      : `Prediction: ${resp.prob_stable >= 0.5 ? "Stable" : "Failure"}  (P(stable)=${Number(resp.prob_stable).toFixed(2)})`;
+      : `Prediction: ${resp.prob_stable >= 0.5 ? "🟢 Stable" : "🔴 Failure"}   (P(stable)=${Number(resp.prob_stable).toFixed(2)})`;
 
   return (
     <div className="card">
@@ -4409,8 +4416,8 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
   const y2 = H;
   const x3 = toeX;
   const y3 = 0;
-  const label = prob == null ? "—" : prob >= 0.5 ? `Stable (P=${prob.toFixed(2)})` : `Failure (P=${prob.toFixed(2)})`;
-  const col = prob == null ? "#64748b" : prob >= 0.5 ? "#22c55e" : "#ef4444";
+  const label = prob == null ? "—" : prob >= 0.5 ? `Stable  (P(stable)=${prob.toFixed(2)})` : `Failure  (P(stable)=${prob.toFixed(2)})`;
+  const col = prob == null ? "#64748b" : prob >= 0.5 ? "#1ca04a" : "#c0392b";
   const arcR = Math.max(10, Math.min(run, H) * scale * 0.12);
   const arcCx = sx(toeX);
   const arcCy = sy(0);
@@ -4424,15 +4431,9 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
 
   return (
     <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
-      <defs>
-        <linearGradient id="slopeFill" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#e5e7eb" />
-          <stop offset="100%" stopColor="#cbd5e1" />
-        </linearGradient>
-      </defs>
       <polygon
         points={`${sx(x0)},${sy(y0)} ${sx(x1)},${sy(y1)} ${sx(x2)},${sy(y2)} ${sx(x3)},${sy(y3)}`}
-        fill="url(#slopeFill)"
+        fill="#d6d7db"
         opacity="0.92"
         stroke="#0f172a"
         strokeWidth="2"

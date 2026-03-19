@@ -471,19 +471,31 @@ def _read_upload_df(up: UploadFile | None = None, dataset_name: str | None = Non
     import pandas as pd
     import io
 
+    def _read_csv_robust(path_or_buf):
+        """Try encodings to match local slope_stability.py (utf-8-sig, latin-1 for Unicode headers)."""
+        last_err = None
+        for enc in (None, "utf-8-sig", "latin-1"):
+            try:
+                return pd.read_csv(path_or_buf, encoding=enc) if enc else pd.read_csv(path_or_buf)
+            except (UnicodeDecodeError, Exception) as e:
+                last_err = e
+                if hasattr(path_or_buf, "seek"):
+                    path_or_buf.seek(0)
+        raise last_err
+
     if up is None:
         if not dataset_name:
             raise ValueError("No file or dataset_name provided")
         path = _ensure_dataset(dataset_name)
         if str(path).lower().endswith((".xlsx", ".xls")):
             return pd.read_excel(path)
-        return pd.read_csv(path)
+        return _read_csv_robust(path)
 
     data = up.file.read()
     up.file.seek(0)
     if up.filename and up.filename.lower().endswith((".xlsx", ".xls")):
         return pd.read_excel(io.BytesIO(data))
-    return pd.read_csv(io.BytesIO(data))
+    return _read_csv_robust(io.BytesIO(data))
 
 
 def _preview_df(df, n=20):
