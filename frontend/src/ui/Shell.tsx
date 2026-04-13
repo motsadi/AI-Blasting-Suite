@@ -1360,7 +1360,7 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
 function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const [resp, setResp] = useState<any>(null);
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [, setErr] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [params, setParams] = useState({
     H: 10,
@@ -1441,13 +1441,6 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     setErr(null);
   }, [fileKey]);
 
-  // Auto-run on mount to mirror local app: load default slope data.csv and seed sliders
-  useEffect(() => {
-    if (apiBaseUrl && !file && !modelReadyRef.current && !busy) {
-      void run();
-    }
-  }, [apiBaseUrl]);
-
   useEffect(() => {
     if (!modelReadyRef.current || busy) return;
     const id = window.setTimeout(() => {
@@ -1455,18 +1448,11 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     }, 250);
     return () => window.clearTimeout(id);
   }, [params]);
-
-  const predictionLabel =
-    resp?.prob_stable == null
-      ? "Prediction: —"
-      : `Prediction: ${resp.prob_stable >= 0.5 ? "🟢 Stable" : "🔴 Failure"}   (P(stable)=${Number(resp.prob_stable).toFixed(2)})`;
-
   return (
     <div className="card">
       <div className="grid2">
         <div>
           <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Slope Stability — Stable / Failure (ML)</div>
-          <div className="subtitle">Desktop-aligned ML classifier: load a slope CSV, seed the model from data, then adjust the section interactively.</div>
 
           <div style={{ marginTop: 14, fontWeight: 700, fontSize: 15 }}>Data</div>
           <div style={{ marginTop: 6 }}>
@@ -1476,12 +1462,11 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
 
           <div style={{ marginTop: 8 }}>
             <button className="btn btnPrimary" onClick={() => run()} disabled={busy}>
-              {busy ? "Running…" : resp?.features?.length ? "Reload / Refit" : "Load & Predict"}
+              {busy ? "Running..." : "Load & Predict"}
             </button>
           </div>
 
           <div style={{ marginTop: 14, fontWeight: 700, fontSize: 15 }}>Parameters</div>
-
           <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
             <SliderField label="H (m)" value={params.H} min={1} max={50} step={0.5} onChange={(v) => setParams({ ...params, H: v })} />
             <SliderField label="β (deg)" value={params.beta} min={5} max={80} step={0.5} onChange={(v) => setParams({ ...params, beta: v })} />
@@ -1492,7 +1477,6 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
             <SliderField label="B (m) — sketch only" value={params.B} min={0} max={30} step={0.5} onChange={(v) => setParams({ ...params, B: v })} />
           </div>
 
-          {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
           <div className="kpi" style={{ marginTop: 12 }}>
             <div className="kpiTitle">Prediction</div>
             <div className="kpiValue" style={{ fontSize: 20 }}>
@@ -1500,9 +1484,6 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
                 ? `${resp.prob_stable >= 0.5 ? "Stable" : "Failure"} (${(Number(resp.prob_stable) * 100).toFixed(1)}%)`
                 : "—"}
             </div>
-          </div>
-          <div className="subtitle" style={{ marginTop: 8 }}>
-            {predictionLabel}
           </div>
           {resp?.prob_stable != null && (
             <>
@@ -1522,26 +1503,6 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
                   </div>
                 </div>
               </div>
-              <div className="card" style={{ marginTop: 10 }}>
-                <div className="sectionTitle">Dataset-driven inputs</div>
-                <div className="subtitle">
-                  The web module now mirrors the desktop behavior more closely: the first run uses the actual slider values, and once the model is loaded the prediction updates as you adjust the parameters.
-                </div>
-                <div className="grid3" style={{ marginTop: 10 }}>
-                  <div className="kpi">
-                    <div className="kpiTitle">Gamma median</div>
-                    <div className="kpiValue">{formatNum(resp.feature_stats?.gamma_kN_m3?.median)}</div>
-                  </div>
-                  <div className="kpi">
-                    <div className="kpiTitle">Phi median</div>
-                    <div className="kpiValue">{formatNum(resp.feature_stats?.phi_deg?.median)}</div>
-                  </div>
-                  <div className="kpi">
-                    <div className="kpiTitle">ru median</div>
-                    <div className="kpiValue">{formatNum(resp.feature_stats?.ru?.median)}</div>
-                  </div>
-                </div>
-              </div>
             </>
           )}
         </div>
@@ -1553,9 +1514,6 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
             B={params.B}
             prob={resp?.prob_stable}
           />
-          <div className="subtitle" style={{ marginTop: 8 }}>
-            Bench geometry sketch mirrors the desktop module: equal aspect, bench width marker, beta angle arc, height arrow, and a result banner outside the slope body.
-          </div>
         </div>
       </div>
     </div>
@@ -4418,10 +4376,15 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
   const betaRad = (beta * Math.PI) / 180;
   const run = H / Math.max(Math.tan(betaRad), 1e-3);
   const toeX = B + run;
-  const pad = 34;
-  const scale = Math.min((w - 2 * pad) / (toeX * 1.18), (h - 2 * pad) / (H * 1.28));
-  const sx = (x: number) => pad + x * scale;
-  const sy = (y: number) => h - pad - y * scale;
+  const pad = 30;
+  const xMin = -0.08 * toeX;
+  const xMax = toeX * 1.12;
+  const yMin = -0.06 * H;
+  const yMax = H * 1.24;
+  const xSpan = Math.max(xMax - xMin, 1);
+  const ySpan = Math.max(yMax - yMin, 1);
+  const sx = (x: number) => pad + ((x - xMin) / xSpan) * (w - 2 * pad);
+  const sy = (y: number) => h - pad - ((y - yMin) / ySpan) * (h - 2 * pad);
   const x0 = 0;
   const y0 = 0;
   const x1 = 0;
@@ -4432,7 +4395,8 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
   const y3 = 0;
   const label = prob == null ? "—" : prob >= 0.5 ? `Stable  (P(stable)=${prob.toFixed(2)})` : `Failure  (P(stable)=${prob.toFixed(2)})`;
   const col = prob == null ? "#64748b" : prob >= 0.5 ? "#1ca04a" : "#c0392b";
-  const arcR = Math.max(10, Math.min(run, H) * scale * 0.12);
+  const scale = Math.min((w - 2 * pad) / xSpan, (h - 2 * pad) / ySpan);
+  const arcR = Math.max(10, Math.min(run, H) * scale * 0.1);
   const arcCx = sx(toeX);
   const arcCy = sy(0);
   const theta1 = Math.PI;
@@ -4444,7 +4408,13 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
   const largeArc = beta > 180 ? 1 : 0;
 
   return (
-    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
+    <svg
+      width="100%"
+      height={h}
+      viewBox={`0 0 ${w} ${h}`}
+      style={{ background: "var(--panel)", borderRadius: 12, display: "block" }}
+      preserveAspectRatio="xMidYMid meet"
+    >
       <polygon
         points={`${sx(x0)},${sy(y0)} ${sx(x1)},${sy(y1)} ${sx(x2)},${sy(y2)} ${sx(x3)},${sy(y3)}`}
         fill="#d6d7db"
@@ -4478,8 +4448,8 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
         β = {beta.toFixed(1)}°
       </text>
 
-      <rect x={sx(toeX * 0.58)} y={sy(H * 1.18)} width={178} height={28} fill={col} rx={8} />
-      <text x={sx(toeX * 0.58) + 10} y={sy(H * 1.18) + 18} fill="#fff" fontSize="12" fontWeight="700">
+      <rect x={sx(toeX * 0.65)} y={sy(H * 1.18)} width={178} height={28} fill={col} rx={8} />
+      <text x={sx(toeX * 0.65) + 10} y={sy(H * 1.18) + 18} fill="#fff" fontSize="12" fontWeight="700">
         {label}
       </text>
     </svg>
