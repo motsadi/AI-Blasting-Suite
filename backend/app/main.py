@@ -1606,9 +1606,10 @@ def slope_predict(
         inputs = {c: stats[c]["median"] for c in X.columns}
 
     xstar = np.array([[float(inputs.get(c, stats[c]["median"])) for c in X.columns]])
-    prob = float(pipe.predict_proba(xstar)[0, 1])
+    prob = float(np.clip(pipe.predict_proba(xstar)[0, 1], 0.0, 1.0))
     train_acc = float(pipe.score(Xtr, ytr))
     test_acc = float(pipe.score(Xte, yte))
+    predicted_class = "stable" if prob >= 0.5 else "failure"
     class_balance = {
         "stable": int((prepared["status"] == "stable").sum()),
         "failure": int((prepared["status"] == "failure").sum()),
@@ -1616,6 +1617,8 @@ def slope_predict(
 
     return {
         "prob_stable": prob,
+        "prediction": prob,
+        "predicted_class": predicted_class,
         "feature_stats": stats,
         "features": list(X.columns),
         "train_accuracy": train_acc,

@@ -1360,7 +1360,7 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
 function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const [resp, setResp] = useState<any>(null);
   const [busy, setBusy] = useState(false);
-  const [, setErr] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [params, setParams] = useState({
     H: 10,
@@ -1374,6 +1374,17 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   const modelReadyRef = useRef(false);
   const seededFromDataRef = useRef(false);
   const fileKey = file?.name ?? "__default__";
+  const probStable = useMemo(() => {
+    const direct = toNum(resp?.prob_stable ?? resp?.prediction_probability ?? resp?.probability ?? resp?.prediction);
+    if (Number.isFinite(direct)) {
+      if (direct >= 0 && direct <= 1) return direct;
+      if (direct > 1 && direct <= 100) return direct / 100;
+    }
+    const label = String(resp?.predicted_class ?? resp?.label ?? "").trim().toLowerCase();
+    if (label === "stable") return 1;
+    if (label === "failure" || label === "failed" || label === "unstable") return 0;
+    return null;
+  }, [resp]);
 
   function buildInputsFromParams() {
     return {
@@ -1410,8 +1421,21 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
         }
         throw fetchErr;
       }
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok || json?.error) throw new Error(json?.error ?? "Slope failed");
+      const raw = await res.text();
+      let json: any = {};
+      try {
+        json = raw ? JSON.parse(raw) : {};
+      } catch {
+        json = {};
+      }
+      const detail =
+        json?.error ??
+        json?.detail ??
+        (raw && !raw.trim().startsWith("<") ? raw.trim() : "") ??
+        "";
+      if (!res.ok || json?.error || json?.detail) {
+        throw new Error(detail || `Slope request failed (${res.status})`);
+      }
       setResp(json);
       if (json?.feature_stats && !options?.preserveSliders && !seededFromDataRef.current) {
         const H = Number(json.feature_stats?.H_m?.median ?? params.H);
@@ -1428,6 +1452,7 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
       }
       modelReadyRef.current = true;
     } catch (e: any) {
+      setResp(null);
       setErr(String(e?.message ?? e));
     } finally {
       setBusy(false);
@@ -1480,12 +1505,13 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
           <div className="kpi" style={{ marginTop: 12 }}>
             <div className="kpiTitle">Prediction</div>
             <div className="kpiValue" style={{ fontSize: 20 }}>
-              {resp?.prob_stable != null
-                ? `${resp.prob_stable >= 0.5 ? "Stable" : "Failure"} (${(Number(resp.prob_stable) * 100).toFixed(1)}%)`
+              {probStable != null
+                ? `${probStable >= 0.5 ? "Stable" : "Failure"} (${(probStable * 100).toFixed(1)}%)`
                 : "—"}
             </div>
           </div>
-          {resp?.prob_stable != null && (
+          {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
+          {probStable != null && (
             <>
               <div className="grid3" style={{ marginTop: 10 }}>
                 <div className="kpi">
@@ -1512,7 +1538,7 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
             H={params.H}
             beta={params.beta}
             B={params.B}
-            prob={resp?.prob_stable}
+            prob={probStable ?? undefined}
           />
         </div>
       </div>
@@ -4383,8 +4409,11 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
   const yMax = H * 1.24;
   const xSpan = Math.max(xMax - xMin, 1);
   const ySpan = Math.max(yMax - yMin, 1);
-  const sx = (x: number) => pad + ((x - xMin) / xSpan) * (w - 2 * pad);
-  const sy = (y: number) => h - pad - ((y - yMin) / ySpan) * (h - 2 * pad);
+  const scale = Math.min((w - 2 * pad) / xSpan, (h - 2 * pad) / ySpan);
+  const offsetX = (w - xSpan * scale) / 2;
+  const offsetY = (h - ySpan * scale) / 2;
+  const sx = (x: number) => offsetX + (x - xMin) * scale;
+  const sy = (y: number) => h - offsetY - (y - yMin) * scale;
   const x0 = 0;
   const y0 = 0;
   const x1 = 0;
@@ -4395,8 +4424,8 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
   const y3 = 0;
   const label = prob == null ? "—" : prob >= 0.5 ? `Stable  (P(stable)=${prob.toFixed(2)})` : `Failure  (P(stable)=${prob.toFixed(2)})`;
   const col = prob == null ? "#64748b" : prob >= 0.5 ? "#1ca04a" : "#c0392b";
-  const scale = Math.min((w - 2 * pad) / xSpan, (h - 2 * pad) / ySpan);
-  const arcR = Math.max(10, Math.min(run, H) * scale * 0.1);
+  const arcWorldR = 0.1 * Math.min(H, run);
+  const arcR = Math.max(10, arcWorldR * scale);
   const arcCx = sx(toeX);
   const arcCy = sy(0);
   const theta1 = Math.PI;
@@ -4406,6 +4435,10 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
   const arcEndX = arcCx + arcR * Math.cos(theta2);
   const arcEndY = arcCy + arcR * Math.sin(theta2);
   const largeArc = beta > 180 ? 1 : 0;
+  const bannerW = 190;
+  const bannerH = 30;
+  const bannerX = Math.min(w - pad - bannerW, Math.max(pad, sx(toeX * 0.65)));
+  const bannerY = Math.max(pad, sy(H * 1.18) - bannerH / 2);
 
   return (
     <svg
@@ -4448,8 +4481,8 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
         β = {beta.toFixed(1)}°
       </text>
 
-      <rect x={sx(toeX * 0.65)} y={sy(H * 1.18)} width={178} height={28} fill={col} rx={8} />
-      <text x={sx(toeX * 0.65) + 10} y={sy(H * 1.18) + 18} fill="#fff" fontSize="12" fontWeight="700">
+      <rect x={bannerX} y={bannerY} width={bannerW} height={bannerH} fill={col} rx={8} />
+      <text x={bannerX + 10} y={bannerY + 19} fill="#fff" fontSize="12" fontWeight="700">
         {label}
       </text>
     </svg>
