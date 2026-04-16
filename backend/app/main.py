@@ -2049,9 +2049,14 @@ def _param_surface_df(df, payload):
     x1 = payload.get("x1", inputs[0])
     x2 = payload.get("x2", inputs[1] if len(inputs) > 1 else inputs[0])
     objective = payload.get("objective", "max")
-    grid = max(12, min(36, int(payload.get("grid", 12))))
-    samples = max(1, min(10, int(payload.get("samples", 3))))
-    max_iter = max(20, min(90, int(payload.get("max_iter", 35))))
+    grid = max(8, min(24, int(payload.get("grid", 10))))
+    samples = max(1, min(4, int(payload.get("samples", 2))))
+    max_iter = max(8, min(40, int(payload.get("max_iter", 20))))
+    fast_mode = bool(payload.get("fast_mode", False))
+    if fast_mode:
+        grid = min(grid, 10)
+        samples = 1
+        max_iter = min(max_iter, 8)
 
     if output not in outputs or x1 not in inputs or x2 not in inputs or x1 == x2:
         return {"error": "Invalid output/x1/x2 selection."}
@@ -2061,18 +2066,40 @@ def _param_surface_df(df, payload):
     gx = np.linspace(x1_min, x1_max, grid)
     gy = np.linspace(x2_min, x2_max, grid)
 
+    sx = bundle["sx"]
+    sy = bundle["sy"]
+    mdl = bundle["model"]
+    output_idx = outputs.index(output)
+    x1_idx = inputs.index(x1)
+    x2_idx = inputs.index(x2)
+    med_vec = np.array([medians[c] for c in inputs], dtype=float)
+
+    def _predict_vec(vec: np.ndarray) -> float:
+        Ys = mdl.predict(sx.transform(vec.reshape(1, -1)))
+        Y = sy.inverse_transform(Ys)
+        return float(Y[0, output_idx])
+
     other_inputs = [c for c in inputs if c not in (x1, x2)]
     other_bounds = [bounds[c] for c in other_inputs]
-    other_medians = np.array([medians[c] for c in other_inputs], dtype=float)
+    other_medians = np.array([medians[c] for c in other_inputs], dtype=float) if other_inputs else np.array([], dtype=float)
+    other_indices = [inputs.index(c) for c in other_inputs]
 
     def _optimise_fixed_axes(xv: float, yv: float, start: np.ndarray):
-        fixed = {x1: float(xv), x2: float(yv)}
+        if not other_inputs:
+            vec = med_vec.copy()
+            vec[x1_idx] = float(xv)
+            vec[x2_idx] = float(yv)
+            pred = _predict_vec(vec)
+            solved_inputs = {name: float(val) for name, val in zip(inputs, vec)}
+            return pred, solved_inputs, np.array([], dtype=float)
 
         def _objective(other_vec):
-            probe = {**fixed}
-            for idx, name in enumerate(other_inputs):
-                probe[name] = float(other_vec[idx])
-            pred = _param_predict_output(bundle, probe, output)
+            vec = med_vec.copy()
+            vec[x1_idx] = float(xv)
+            vec[x2_idx] = float(yv)
+            for idx, inp_idx in enumerate(other_indices):
+                vec[inp_idx] = float(other_vec[idx])
+            pred = _predict_vec(vec)
             return pred if objective == "min" else -pred
 
         starts = [np.array(start, dtype=float)]
@@ -2095,10 +2122,13 @@ def _param_surface_df(df, payload):
                 best_score = score
                 best_vec = cand
 
-        best_inputs = {**fixed}
-        for idx, name in enumerate(other_inputs):
-            best_inputs[name] = float(best_vec[idx])
-        pred = _param_predict_output(bundle, best_inputs, output)
+        vec = med_vec.copy()
+        vec[x1_idx] = float(xv)
+        vec[x2_idx] = float(yv)
+        for idx, inp_idx in enumerate(other_indices):
+            vec[inp_idx] = float(best_vec[idx])
+        pred = _predict_vec(vec)
+        best_inputs = {name: float(val) for name, val in zip(inputs, vec)}
         return pred, best_inputs, best_vec
 
     Z = []

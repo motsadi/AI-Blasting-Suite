@@ -4813,12 +4813,13 @@ function ParamPanel({
   const [tolerance, setTolerance] = useState(1e-3);
   const [selectedCell, setSelectedCell] = useState<{ i: number; j: number } | null>(null);
   const resolvedDatasetName = dataset?.file?.name ?? activeDatasetName ?? "(default)";
-  const surfaceGrid = 12;
-  const surfaceSamples = 3;
-  const surfaceMaxIter = 35;
+  const surfaceGrid = 10;
+  const surfaceSamples = 2;
+  const surfaceMaxIter = 20;
+  const fallbackSurfaceGrid = 8;
   const fallbackSurfaceSamples = 1;
-  const fallbackSurfaceMaxIter = 22;
-  const requestTimeoutMs = 45000;
+  const fallbackSurfaceMaxIter = 8;
+  const requestTimeoutMs = 90000;
   const [msg, setMsg] = useState(
     "Creates an optimisation surface by minimising/maximising the chosen output.\n" +
       "Other inputs are optimised by a surrogate model within observed bounds.\n\n" +
@@ -4883,13 +4884,13 @@ function ParamPanel({
     setSurfaceBusy(true);
     setErr(null);
     try {
-      const requestSurface = async (samples: number, maxIter: number) => {
+      const requestSurface = async (samples: number, maxIter: number, grid: number, fastMode: boolean) => {
         const controller = new AbortController();
         const timeoutId = window.setTimeout(() => controller.abort(), requestTimeoutMs);
         if (dataset?.file) {
           const fd = new FormData();
           fd.append("file", dataset.file);
-          fd.append("payload_json", JSON.stringify({ output, x1, x2, objective, grid: surfaceGrid, samples, max_iter: maxIter }));
+          fd.append("payload_json", JSON.stringify({ output, x1, x2, objective, grid, samples, max_iter: maxIter, fast_mode: fastMode }));
           try {
             return await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface/upload`, {
               method: "POST",
@@ -4910,9 +4911,10 @@ function ParamPanel({
               x1,
               x2,
               objective,
-              grid: surfaceGrid,
+              grid,
               samples,
               max_iter: maxIter,
+              fast_mode: fastMode,
               dataset: resolvedDatasetName,
             }),
             signal: controller.signal,
@@ -4925,11 +4927,11 @@ function ParamPanel({
       let res: Response;
       let json: any;
       try {
-        res = await requestSurface(surfaceSamples, surfaceMaxIter);
+        res = await requestSurface(surfaceSamples, surfaceMaxIter, surfaceGrid, false);
         json = await res.json();
       } catch (primaryErr: any) {
         // Retry once with a lighter optimisation workload if the first request drops.
-        res = await requestSurface(fallbackSurfaceSamples, fallbackSurfaceMaxIter);
+        res = await requestSurface(fallbackSurfaceSamples, fallbackSurfaceMaxIter, fallbackSurfaceGrid, true);
         json = await res.json();
         setMsg(
           `Optimised surface built with a lightweight retry.\nOutput: ${json.output}\nAxes: ${json.x1}, ${json.x2}\nBest value: ${formatNum(json?.best?.value)}`
