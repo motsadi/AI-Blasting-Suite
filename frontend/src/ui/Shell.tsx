@@ -4821,12 +4821,6 @@ function ParamPanel({
   const fallbackSurfaceSamples = 1;
   const fallbackSurfaceMaxIter = 8;
   const requestTimeoutMs = 90000;
-  const [msg, setMsg] = useState(
-    "Creates an optimisation surface by minimising/maximising the chosen output.\n" +
-      "Other inputs are optimised by a surrogate model within observed bounds.\n\n" +
-      "Use Goal Seek to search for a full input recipe that achieves the chosen target output."
-  );
-
   useEffect(() => {
     if (!apiBaseUrl) return;
     (async () => {
@@ -4858,10 +4852,6 @@ function ParamPanel({
         setSelectedCell(null);
         setSurfaceReady(false);
         setErr(null);
-        setMsg(
-          `Active dataset: ${json?.dataset ?? resolvedDatasetName}\n` +
-            "Surrogate optimisation mirrors the desktop workflow by optimising non-axis inputs inside observed dataset bounds."
-        );
       } catch (e: any) {
         setErr(String(e?.message ?? e));
       }
@@ -4873,10 +4863,6 @@ function ParamPanel({
     if (output === "Fragmentation") {
       setTarget(100);
       setTolerance(10);
-      setMsg(
-        `Active dataset: ${resolvedDatasetName}\n` +
-          "Fragmentation in this module is mean fragmentation. Recommended target band is 90-110 mm (default set to 100 ± 10)."
-      );
     }
   }, [output, resolvedDatasetName]);
 
@@ -4947,18 +4933,10 @@ function ParamPanel({
         // Retry once with a lighter optimisation workload if the first request drops.
         res = await requestSurface(fallbackSurfaceSamples, fallbackSurfaceMaxIter, fallbackSurfaceGrid, true);
         json = await res.json();
-        setMsg(
-          `Optimised surface built with a lightweight retry.\nOutput: ${json.output}\nAxes: ${json.x1}, ${json.x2}\nBest value: ${formatNum(json?.best?.value)}`
-        );
       }
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Surface failed");
       setResp(json);
       setSurfaceReady(true);
-      setMsg((prev) =>
-        prev.startsWith("Optimised surface built with a lightweight retry.")
-          ? prev
-          : `Optimised surface built.\nOutput: ${json.output}\nAxes: ${json.x1}, ${json.x2}\nBest value: ${formatNum(json?.best?.value)}`
-      );
     } catch (e: any) {
       if (e?.name === "AbortError") {
         setErr("Surface optimisation timed out. Please try again; the backend is taking too long to respond.");
@@ -5012,9 +4990,6 @@ function ParamPanel({
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Goal seek failed");
       setGoal(json);
-      setMsg(
-        `Goal seek target: ${formatNum(json?.target)}\nPredicted: ${formatNum(json?.best?.predicted)}\nAbsolute error: ${formatNum(json?.abs_error)}`
-      );
     } catch (e: any) {
       if (e?.name === "AbortError") {
         setErr("Goal seek timed out. Please try again; the backend is taking too long to respond.");
@@ -5136,11 +5111,6 @@ function ParamPanel({
       </div>
 
       {err && <div className="error">{err}</div>}
-
-      <div className="card">
-        <div className="label">Message</div>
-        <pre style={pre}>{msg}</pre>
-      </div>
 
       {resp?.Z && (
         <div className="grid2">
