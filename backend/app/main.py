@@ -77,9 +77,34 @@ def _dataset_search_candidates(name: str) -> list[Path]:
     ]
 
 
+def _paired_dataset_name(name: str) -> str | None:
+    low = name.lower()
+    if low.endswith(".csv"):
+        return name[:-4] + ".xlsx"
+    if low.endswith(".xlsx"):
+        return name[:-5] + ".csv"
+    if low.endswith(".xls"):
+        return name[:-4] + ".csv"
+    return None
+
+
+def _resolve_dataset_name(name: str, allowed: list[str] | None = None) -> str:
+    allowed_set = set(allowed or [])
+    if not allowed_set or name in allowed_set:
+        return name
+    alt = _paired_dataset_name(name)
+    if alt and alt in allowed_set:
+        return alt
+    return name
+
+
 def _combined_dataset_choices() -> list[str]:
     existing = [name for name in COMBINED_DATASET_CHOICES if any(path.exists() for path in _dataset_search_candidates(name))]
-    return existing or list(COMBINED_DATASET_CHOICES)
+    if existing:
+        return existing
+    # If no direct hits, keep static choices so UI still renders but runtime
+    # resolution can map csv<->xlsx where needed.
+    return list(COMBINED_DATASET_CHOICES)
 
 
 def _asset_search_paths() -> list[Path]:
@@ -254,10 +279,11 @@ def set_combined_dataset(payload: dict = Body(...), _token: str = Depends(requir
     """
     name = str(payload.get("name") or "").strip()
     choices = _combined_dataset_choices()
-    if name not in choices:
+    name_resolved = _resolve_dataset_name(name, allowed=choices)
+    if name_resolved not in choices:
         raise HTTPException(status_code=400, detail=f"Unsupported dataset. Choose one of: {choices}")
 
-    DATASETS["combined"] = name
+    DATASETS["combined"] = name_resolved
 
     # Reset ML/optimisation caches so the next request retrains on the selected dataset.
     global _ml_cache_key, _assets, _param_cache_key, _param_cache_bundle
@@ -266,7 +292,7 @@ def set_combined_dataset(payload: dict = Body(...), _token: str = Depends(requir
     _param_cache_bundle = None
     _assets = LoadedAssets(scaler=None, mdl_frag=None, mdl_ppv=None, mdl_air=None)
 
-    return {"ok": True, "active": name}
+    return {"ok": True, "active": name_resolved}
 
 
 @app.post("/v1/assets/sync", response_model=AssetsStatus)
@@ -445,6 +471,13 @@ def _ensure_dataset(name: str) -> Path:
         if p.exists():
             return p
 
+    alt_name = _paired_dataset_name(name)
+    if alt_name:
+        alt_candidates = _dataset_search_candidates(alt_name)
+        for p in alt_candidates:
+            if p.exists():
+                return p
+
     if not settings.gcs_bucket:
         raise FileNotFoundError(f"Dataset not found locally and BLAST_GCS_BUCKET is not set: {name}")
 
@@ -464,6 +497,16 @@ def _ensure_dataset(name: str) -> Path:
                 return dest
         except Exception:
             continue
+    if alt_name:
+        for pref in prefixes:
+            blob = bucket.blob(f"{pref}{alt_name}")
+            try:
+                if blob.exists():
+                    dest = dest_dir / alt_name
+                    blob.download_to_filename(dest)
+                    return dest
+            except Exception:
+                continue
     raise FileNotFoundError(f"Dataset not found in GCS bucket {settings.gcs_bucket}: {name}")
 
 
