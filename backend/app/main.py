@@ -48,6 +48,9 @@ app.add_middleware(
 )
 
 _assets = load_local_assets(*(p for p in [local_assets_path, core_bundle_path] if p))
+_ml_rollout_state: dict[str, dict] = {}
+_ml_residual_models: dict[str, object] = {}
+_ml_model_choice: dict[str, str] = {}
 
 DATASETS = {
     "combined": "combinedv2Orapa.csv",
@@ -286,10 +289,15 @@ def set_combined_dataset(payload: dict = Body(...), _token: str = Depends(requir
     DATASETS["combined"] = name_resolved
 
     # Reset ML/optimisation caches so the next request retrains on the selected dataset.
-    global _ml_cache_key, _assets, _param_cache_key, _param_cache_bundle
+    global _ml_cache_key, _ml_rollout_cache_key, _assets, _param_cache_key, _param_cache_bundle
+    global _ml_rollout_state, _ml_residual_models, _ml_model_choice
     _ml_cache_key = None
+    _ml_rollout_cache_key = None
     _param_cache_key = None
     _param_cache_bundle = None
+    _ml_rollout_state = {}
+    _ml_residual_models = {}
+    _ml_model_choice = {}
     _assets = LoadedAssets(scaler=None, mdl_frag=None, mdl_ppv=None, mdl_air=None)
 
     return {"ok": True, "active": name_resolved}
@@ -401,17 +409,18 @@ def predict(req: PredictRequest, _token: str = Depends(require_auth)):
     if req.want_ml and not (_assets.scaler and (_assets.mdl_frag or _assets.mdl_ppv or _assets.mdl_air)):
         _maybe_train_models_from_default_dataset()
     if req.want_ml and _assets.scaler and (_assets.mdl_frag or _assets.mdl_ppv or _assets.mdl_air):
-        import numpy as np
-
-        X = np.array([[vals.get(n, 0.0) for n in INPUT_LABELS]], dtype=float)
-        Xs = _assets.scaler.transform(X)
+        _maybe_prepare_physics_rollout_from_default_dataset()
+    if req.want_ml and _assets.scaler and (_assets.mdl_frag or _assets.mdl_ppv or _assets.mdl_air):
         ml = {k: float("nan") for k in outputs}
-        if _assets.mdl_ppv:
-            ml["Ground Vibration"] = float(_assets.mdl_ppv.predict(Xs)[0])
-        if _assets.mdl_air:
-            ml["Airblast"] = float(_assets.mdl_air.predict(Xs)[0])
-        if _assets.mdl_frag:
-            ml["Fragmentation"] = float(_assets.mdl_frag.predict(Xs)[0])
+        gv = _predict_ml_output("Ground Vibration", vals)
+        ab = _predict_ml_output("Airblast", vals)
+        fr = _predict_ml_output("Fragmentation", vals)
+        if gv is not None:
+            ml["Ground Vibration"] = float(gv)
+        if ab is not None:
+            ml["Airblast"] = float(ab)
+        if fr is not None:
+            ml["Fragmentation"] = float(fr)
 
     return PredictResponse(empirical=emp, ml=ml, assets_loaded=assets_status(_assets), rr=rr)
 
@@ -858,6 +867,14 @@ def feature_importance(_token: str = Depends(require_auth)):
     return {"feature_importance": out}
 
 
+@app.get("/v1/models/rollout")
+def model_rollout_status(_token: str = Depends(require_auth)):
+    return {
+        "active_models": dict(_ml_model_choice),
+        "rollout": dict(_ml_rollout_state),
+    }
+
+
 def _feature_map_synonyms():
     return {
         "inputs": {
@@ -883,8 +900,149 @@ def _feature_map_synonyms():
 
 
 _ml_cache_key: str | None = None
+_ml_rollout_cache_key: str | None = None
 _param_cache_key: str | None = None
 _param_cache_bundle: dict | None = None
+
+
+def _clamp_physical_output(name: str, value: float) -> float:
+    if name in {"Ground Vibration", "Airblast", "Fragmentation"}:
+        return float(max(0.0, value))
+    return float(value)
+
+
+def _empirical_value_for_output(vals: dict[str, float], output_name: str) -> float:
+    p = EmpiricalParams()
+    out = empirical_predictions(vals, p, [output_name])
+    raw = float(out.get(output_name, 0.0))
+    return _clamp_physical_output(output_name, raw)
+
+
+def _empirical_series_for_frame(frame, output_name: str):
+    import numpy as np
+
+    ys = []
+    for _, row in frame.iterrows():
+        vals = {name: float(row.get(name, 0.0)) for name in INPUT_LABELS}
+        vals["HPD_override"] = 1.0
+        try:
+            ys.append(_empirical_value_for_output(vals, output_name))
+        except Exception:
+            ys.append(float("nan"))
+    return np.array(ys, dtype=float)
+
+
+def _check_physics_consistency(
+    output_name: str,
+    scaler,
+    baseline_model,
+    residual_model,
+    feature_frame,
+):
+    import numpy as np
+    import pandas as pd
+
+    if feature_frame is None or feature_frame.empty:
+        return {"passed": False, "checks": {"error": "No feature rows for consistency checks"}}
+
+    ref = {}
+    for c in INPUT_LABELS:
+        s = pd.to_numeric(feature_frame[c], errors="coerce")
+        finite = s[np.isfinite(s.values)]
+        ref[c] = float(finite.median()) if len(finite) else 0.0
+
+    def predict_mode(mode: str, vec: dict[str, float]) -> float:
+        X = np.array([[float(vec.get(c, 0.0)) for c in INPUT_LABELS]], dtype=float)
+        Xs = scaler.transform(X)
+        if mode == "baseline":
+            raw = float(baseline_model.predict(Xs)[0])
+            return _clamp_physical_output(output_name, raw)
+        emp = _empirical_value_for_output({**vec, "HPD_override": 1.0}, output_name)
+        raw = float(emp + residual_model.predict(Xs)[0])
+        return _clamp_physical_output(output_name, raw)
+
+    checks = {}
+
+    distance_name = "Distance (m)"
+    if distance_name in feature_frame.columns:
+        s = pd.to_numeric(feature_frame[distance_name], errors="coerce").dropna()
+        if len(s):
+            lo = float(s.quantile(0.2))
+            hi = float(s.quantile(0.8))
+            if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+                lo_vec = dict(ref)
+                hi_vec = dict(ref)
+                lo_vec[distance_name] = lo
+                hi_vec[distance_name] = hi
+                low_pred = predict_mode("candidate", lo_vec)
+                high_pred = predict_mode("candidate", hi_vec)
+                checks["distance_decay"] = bool(low_pred >= high_pred)
+
+    mass_name = "Explosive mass (kg)"
+    if mass_name in feature_frame.columns:
+        s = pd.to_numeric(feature_frame[mass_name], errors="coerce").dropna()
+        if len(s):
+            lo = float(s.quantile(0.2))
+            hi = float(s.quantile(0.8))
+            if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+                lo_vec = dict(ref)
+                hi_vec = dict(ref)
+                lo_vec[mass_name] = lo
+                hi_vec[mass_name] = hi
+                low_pred = predict_mode("candidate", lo_vec)
+                high_pred = predict_mode("candidate", hi_vec)
+                checks["mass_monotonic"] = bool(high_pred >= low_pred)
+
+    if output_name == "Fragmentation":
+        pf_name = "Powder factor (kg/m³)"
+        if pf_name in feature_frame.columns:
+            s = pd.to_numeric(feature_frame[pf_name], errors="coerce").dropna()
+            if len(s):
+                lo = float(s.quantile(0.2))
+                hi = float(s.quantile(0.8))
+                if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+                    lo_vec = dict(ref)
+                    hi_vec = dict(ref)
+                    lo_vec[pf_name] = lo
+                    hi_vec[pf_name] = hi
+                    low_pred = predict_mode("candidate", lo_vec)
+                    high_pred = predict_mode("candidate", hi_vec)
+                    checks["powder_factor_reduces_size"] = bool(high_pred <= low_pred)
+
+    if not checks:
+        checks["basic_non_negative"] = True
+    passed = all(bool(v) for v in checks.values())
+    return {"passed": bool(passed), "checks": checks}
+
+
+def _predict_ml_output(output_name: str, vals: dict[str, float]) -> float | None:
+    import numpy as np
+
+    model_map = {
+        "Ground Vibration": _assets.mdl_ppv,
+        "Airblast": _assets.mdl_air,
+        "Fragmentation": _assets.mdl_frag,
+    }
+    mdl = model_map.get(output_name)
+    if mdl is None or _assets.scaler is None:
+        return None
+
+    X = np.array([[vals.get(n, 0.0) for n in INPUT_LABELS]], dtype=float)
+    Xs = _assets.scaler.transform(X)
+    base_pred = _clamp_physical_output(output_name, float(mdl.predict(Xs)[0]))
+
+    if _ml_model_choice.get(output_name) != "physics_hybrid":
+        return base_pred
+    residual = _ml_residual_models.get(output_name)
+    if residual is None:
+        return base_pred
+
+    try:
+        emp = _empirical_value_for_output(vals, output_name)
+        pred = _clamp_physical_output(output_name, float(emp + residual.predict(Xs)[0]))
+        return pred
+    except Exception:
+        return base_pred
 
 
 def _maybe_train_models_from_default_dataset() -> None:
@@ -895,17 +1053,155 @@ def _maybe_train_models_from_default_dataset() -> None:
         return
 
 
+def _maybe_prepare_physics_rollout_from_default_dataset() -> None:
+    try:
+        df = _read_upload_df(None, DATASETS["combined"])
+        _maybe_prepare_physics_rollout_from_df(df)
+    except Exception:
+        return
+
+
+def _maybe_prepare_physics_rollout_from_df(df) -> None:
+    global _ml_rollout_state, _ml_residual_models, _ml_model_choice, _ml_rollout_cache_key
+    if not (_assets.scaler and (_assets.mdl_frag or _assets.mdl_ppv or _assets.mdl_air)):
+        return
+
+    import numpy as np
+    import pandas as pd
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.metrics import mean_absolute_error
+    from sklearn.model_selection import train_test_split
+
+    cols = list(df.columns)
+    key = f"{len(df)}|{','.join(map(str, cols))}"
+    if _ml_rollout_cache_key == key and _ml_rollout_state:
+        return
+
+    syn = _feature_map_synonyms()
+    in_res = _resolve_map(df.columns, INPUT_LABELS, syn["inputs"])
+    out_res = _resolve_map(df.columns, ["Fragmentation", "Ground Vibration", "Airblast"], syn["outputs"])
+    name_mode_ok = (not any(v is None for v in in_res)) and (not any(v is None for v in out_res))
+    if not name_mode_ok:
+        return
+
+    Xraw = df[in_res].copy()
+    Yraw = df[out_res].copy()
+    Xraw.columns = list(INPUT_LABELS)
+    Yraw.columns = ["Fragmentation", "Ground Vibration", "Airblast"]
+    Xnum = Xraw.apply(pd.to_numeric, errors="coerce")
+    Ynum = Yraw.apply(pd.to_numeric, errors="coerce")
+    work = Xnum.join(Ynum, how="inner").dropna()
+    if work.empty:
+        return
+
+    Xdf = work.iloc[:, : Xraw.shape[1]].copy()
+    Ydf = work.iloc[:, Xraw.shape[1] :].copy()
+    X = Xdf.values
+
+    model_map = {
+        "Ground Vibration": _assets.mdl_ppv,
+        "Airblast": _assets.mdl_air,
+        "Fragmentation": _assets.mdl_frag,
+    }
+    rollout = {}
+    residual_models = {}
+    model_choice = {}
+
+    for out_name in ["Fragmentation", "Ground Vibration", "Airblast"]:
+        base = model_map.get(out_name)
+        if base is None or out_name not in Ydf.columns:
+            continue
+        y = pd.to_numeric(Ydf[out_name], errors="coerce").values
+        mask = np.isfinite(X).all(axis=1) & np.isfinite(y)
+        if int(mask.sum()) < 10:
+            continue
+        Xc = X[mask]
+        Xc_df = Xdf.loc[mask].reset_index(drop=True)
+        yc = y[mask]
+        if len(yc) >= 25:
+            Xtr, Xte, ytr, yte, Xtr_df, Xte_df = train_test_split(
+                Xc,
+                yc,
+                Xc_df,
+                test_size=0.2,
+                random_state=42,
+            )
+        else:
+            Xtr, Xte, ytr, yte, Xtr_df, Xte_df = Xc, Xc, yc, yc, Xc_df, Xc_df
+
+        Xte_s = _assets.scaler.transform(Xte)
+        base_mae = float(mean_absolute_error(yte, base.predict(Xte_s)))
+        rollout_item = {
+            "active": "baseline",
+            "baseline_mae": float(base_mae),
+            "candidate_mae": None,
+            "physics_checks": None,
+            "candidate_ready": False,
+            "reason": "Physics candidate unavailable or did not outperform baseline",
+        }
+        model_choice[out_name] = "baseline"
+
+        emp_tr = _empirical_series_for_frame(Xtr_df, out_name)
+        emp_te = _empirical_series_for_frame(Xte_df, out_name)
+        ok_mask_tr = np.isfinite(emp_tr) & np.isfinite(ytr)
+        ok_mask_te = np.isfinite(emp_te) & np.isfinite(yte)
+        if int(ok_mask_tr.sum()) >= 10 and int(ok_mask_te.sum()) >= 3:
+            res_model = RandomForestRegressor(n_estimators=400, random_state=42)
+            Xtr_h = Xtr[ok_mask_tr]
+            Xte_h = Xte[ok_mask_te]
+            ytr_h = ytr[ok_mask_tr]
+            yte_h = yte[ok_mask_te]
+            emp_tr_h = emp_tr[ok_mask_tr]
+            emp_te_h = emp_te[ok_mask_te]
+            Xtr_hs = _assets.scaler.transform(Xtr_h)
+            Xte_hs = _assets.scaler.transform(Xte_h)
+            res_model.fit(Xtr_hs, ytr_h - emp_tr_h)
+            cand_pred = emp_te_h + res_model.predict(Xte_hs)
+            cand_pred = np.array([_clamp_physical_output(out_name, float(v)) for v in cand_pred], dtype=float)
+            cand_mae = float(mean_absolute_error(yte_h, cand_pred))
+            consistency = _check_physics_consistency(out_name, _assets.scaler, base, res_model, Xtr_df)
+            improved = cand_mae <= (base_mae * 0.995)
+            if improved and bool(consistency.get("passed")):
+                model_choice[out_name] = "physics_hybrid"
+                residual_models[out_name] = res_model
+                rollout_item = {
+                    "active": "physics_hybrid",
+                    "baseline_mae": float(base_mae),
+                    "candidate_mae": float(cand_mae),
+                    "physics_checks": consistency.get("checks"),
+                    "candidate_ready": True,
+                    "reason": "Promoted: lower holdout MAE and passed physics consistency checks",
+                }
+            else:
+                rollout_item = {
+                    "active": "baseline",
+                    "baseline_mae": float(base_mae),
+                    "candidate_mae": float(cand_mae),
+                    "physics_checks": consistency.get("checks"),
+                    "candidate_ready": True,
+                    "reason": "Not promoted: candidate did not beat baseline and/or failed checks",
+                }
+        rollout[out_name] = rollout_item
+
+    _ml_rollout_state = rollout
+    _ml_residual_models = residual_models
+    _ml_model_choice = model_choice
+    _ml_rollout_cache_key = key
+
+
 def _maybe_train_models_from_df(df) -> None:
     """
     Train fallback ML models from a dataset if joblib assets are missing.
     """
-    global _assets, _ml_cache_key
+    global _assets, _ml_cache_key, _ml_rollout_cache_key, _ml_rollout_state, _ml_residual_models, _ml_model_choice
     if _assets.scaler and (_assets.mdl_frag or _assets.mdl_ppv or _assets.mdl_air):
         return
 
     import numpy as np
     import pandas as pd
     from sklearn.ensemble import RandomForestRegressor
+    from sklearn.metrics import mean_absolute_error
+    from sklearn.model_selection import train_test_split
     from sklearn.preprocessing import StandardScaler
 
     cols = list(df.columns)
@@ -921,6 +1217,8 @@ def _maybe_train_models_from_df(df) -> None:
     if name_mode_ok:
         Xraw = df[in_res].copy()
         Yraw = df[out_res].copy()
+        Xraw.columns = list(INPUT_LABELS)
+        Yraw.columns = ["Fragmentation", "Ground Vibration", "Airblast"]
     else:
         num = df.select_dtypes(include=[np.number]).copy()
         if num.shape[1] < 4:
@@ -934,20 +1232,108 @@ def _maybe_train_models_from_df(df) -> None:
     if work.empty:
         return
 
-    X = work.iloc[:, : Xraw.shape[1]].values
+    Xdf = work.iloc[:, : Xraw.shape[1]].copy()
+    Ydf = work.iloc[:, Xraw.shape[1] :].copy()
+    X = Xdf.values
     scaler = StandardScaler().fit(X)
     Xs = scaler.transform(X)
 
     mdl_frag = mdl_ppv = mdl_air = None
+    rollout = {}
+    residual_models = {}
+    model_choice = {}
     for out_name in ["Fragmentation", "Ground Vibration", "Airblast"]:
-        if out_name not in Yraw.columns:
+        if out_name not in Ydf.columns:
             continue
-        y = pd.to_numeric(work[out_name], errors="coerce").values
+        y = pd.to_numeric(Ydf[out_name], errors="coerce").values
         # Allow training on smaller datasets (preview/sample datasets can be small).
         if len(y) < 10:
             continue
-        mdl = RandomForestRegressor(n_estimators=400, random_state=42)
-        mdl.fit(Xs, y)
+
+        mask = np.isfinite(X).all(axis=1) & np.isfinite(y)
+        if int(mask.sum()) < 10:
+            continue
+        Xc = X[mask]
+        Xc_df = Xdf.loc[mask].reset_index(drop=True)
+        yc = y[mask]
+        if len(yc) >= 25:
+            Xtr, Xte, ytr, yte, Xtr_df, Xte_df = train_test_split(
+                Xc,
+                yc,
+                Xc_df,
+                test_size=0.2,
+                random_state=42,
+            )
+        else:
+            Xtr, Xte, ytr, yte, Xtr_df, Xte_df = Xc, Xc, yc, yc, Xc_df, Xc_df
+
+        Xtr_s = scaler.transform(Xtr)
+        Xte_s = scaler.transform(Xte)
+        base = RandomForestRegressor(n_estimators=400, random_state=42)
+        base.fit(Xtr_s, ytr)
+        base_pred = base.predict(Xte_s)
+        base_mae = float(mean_absolute_error(yte, base_pred))
+
+        rollout_item = {
+            "active": "baseline",
+            "baseline_mae": float(base_mae),
+            "candidate_mae": None,
+            "physics_checks": None,
+            "candidate_ready": False,
+            "reason": "Physics candidate unavailable or did not outperform baseline",
+        }
+        active_model = base
+        chosen = "baseline"
+        residual_model = None
+
+        if name_mode_ok:
+            emp_tr = _empirical_series_for_frame(Xtr_df, out_name)
+            emp_te = _empirical_series_for_frame(Xte_df, out_name)
+            ok_mask_tr = np.isfinite(emp_tr) & np.isfinite(ytr)
+            ok_mask_te = np.isfinite(emp_te) & np.isfinite(yte)
+            if int(ok_mask_tr.sum()) >= 10 and int(ok_mask_te.sum()) >= 3:
+                res_model = RandomForestRegressor(n_estimators=400, random_state=42)
+                Xtr_h = Xtr[ok_mask_tr]
+                Xte_h = Xte[ok_mask_te]
+                ytr_h = ytr[ok_mask_tr]
+                yte_h = yte[ok_mask_te]
+                emp_tr_h = emp_tr[ok_mask_tr]
+                emp_te_h = emp_te[ok_mask_te]
+                Xtr_hs = scaler.transform(Xtr_h)
+                Xte_hs = scaler.transform(Xte_h)
+                res_model.fit(Xtr_hs, ytr_h - emp_tr_h)
+                cand_pred = emp_te_h + res_model.predict(Xte_hs)
+                cand_pred = np.array([_clamp_physical_output(out_name, float(v)) for v in cand_pred], dtype=float)
+                cand_mae = float(mean_absolute_error(yte_h, cand_pred))
+                consistency = _check_physics_consistency(out_name, scaler, base, res_model, Xtr_df)
+                improved = cand_mae <= (base_mae * 0.995)
+                if improved and bool(consistency.get("passed")):
+                    active_model = base
+                    chosen = "physics_hybrid"
+                    residual_model = res_model
+                    rollout_item = {
+                        "active": "physics_hybrid",
+                        "baseline_mae": float(base_mae),
+                        "candidate_mae": float(cand_mae),
+                        "physics_checks": consistency.get("checks"),
+                        "candidate_ready": True,
+                        "reason": "Promoted: lower holdout MAE and passed physics consistency checks",
+                    }
+                else:
+                    rollout_item = {
+                        "active": "baseline",
+                        "baseline_mae": float(base_mae),
+                        "candidate_mae": float(cand_mae),
+                        "physics_checks": consistency.get("checks"),
+                        "candidate_ready": True,
+                        "reason": "Not promoted: candidate did not beat baseline and/or failed checks",
+                    }
+
+        mdl = active_model
+        if residual_model is not None:
+            residual_models[out_name] = residual_model
+        model_choice[out_name] = chosen
+        rollout[out_name] = rollout_item
         if out_name == "Fragmentation":
             mdl_frag = mdl
         elif out_name == "Ground Vibration":
@@ -959,7 +1345,11 @@ def _maybe_train_models_from_df(df) -> None:
     # (Otherwise we'd permanently skip retraining for this dataset shape.)
     if mdl_frag or mdl_ppv or mdl_air:
         _assets = LoadedAssets(scaler=scaler, mdl_frag=mdl_frag, mdl_ppv=mdl_ppv, mdl_air=mdl_air)
+        _ml_rollout_state = rollout
+        _ml_residual_models = residual_models
+        _ml_model_choice = model_choice
         _ml_cache_key = key
+        _ml_rollout_cache_key = key
 
 
 def _feature_importance_df(df, top_k: int):
