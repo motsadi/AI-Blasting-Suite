@@ -1373,6 +1373,7 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   });
   const modelReadyRef = useRef(false);
   const seededFromDataRef = useRef(false);
+  const backendUnavailableRef = useRef(false);
   const fileKey = file?.name ?? "__default__";
   const probStable = useMemo(() => {
     const direct = toNum(resp?.prob_stable ?? resp?.prediction_probability ?? resp?.probability ?? resp?.prediction);
@@ -1397,59 +1398,136 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     };
   }
 
+  function localSlopeEstimate() {
+    const H = Math.max(0.1, Number(params.H));
+    const betaDeg = Math.min(89, Math.max(1, Number(params.beta)));
+    const phiDeg = Math.min(89, Math.max(0.1, Number(params.phi)));
+    const c = Math.max(0, Number(params.c));
+    const gamma = Math.max(1e-3, Number(params.gamma));
+    const ru = Math.min(1, Math.max(0, Number(params.ru)));
+    const betaRad = (betaDeg * Math.PI) / 180;
+    const phiRad = (phiDeg * Math.PI) / 180;
+    const sigma = gamma * H * Math.cos(betaRad) ** 2;
+    const tau = Math.max(1e-6, gamma * H * Math.sin(betaRad) * Math.cos(betaRad));
+    const sigmaEff = sigma * (1 - ru);
+    const shearResistance = c + Math.max(0, sigmaEff) * Math.tan(phiRad);
+    const fs = shearResistance / tau;
+    const prob = Math.min(1, Math.max(0, 1 / (1 + Math.exp(-4 * (fs - 1)))));
+    return {
+      prob_stable: prob,
+      prediction: prob,
+      predicted_class: prob >= 0.5 ? "stable" : "failure",
+      mode: "local_fallback",
+      factor_of_safety: fs,
+      feature_stats: {
+        H_m: { min: 1, max: 50, median: H },
+        beta_deg: { min: 5, max: 80, median: betaDeg },
+        c_kPa: { min: 1, max: 200, median: c },
+        phi_deg: { min: 5, max: 60, median: phiDeg },
+        gamma_kN_m3: { min: 14, max: 28, median: gamma },
+        ru: { min: 0, max: 1, median: ru },
+      },
+    };
+  }
+
+  function slopeUrls(): string[] {
+    const base = apiBaseUrl.replace(/\/$/, "");
+    const sameOrigin = window.location.origin.replace(/\/$/, "");
+    const urls: string[] = [];
+    if (base) urls.push(`${base}/v1/slope/predict`);
+    if (base && base === sameOrigin) urls.push(`${base}/api/v1/slope/predict`);
+    if (base && base !== sameOrigin) {
+      urls.push(`${sameOrigin}/api/v1/slope/predict`);
+      urls.push(`${sameOrigin}/v1/slope/predict`);
+    }
+    return Array.from(new Set(urls));
+  }
+
   async function run(options?: { preserveSliders?: boolean }) {
-    if (!apiBaseUrl) return;
+    if (!apiBaseUrl) {
+      setResp(localSlopeEstimate());
+      setErr("Backend URL is not configured. Showing local slope estimate.");
+      return;
+    }
     setBusy(true);
     setErr(null);
     try {
+      if (options?.preserveSliders && backendUnavailableRef.current) {
+        setResp(localSlopeEstimate());
+        return;
+      }
       const fd = new FormData();
       if (file) fd.append("file", file);
       fd.append("inputs_json", JSON.stringify(buildInputsFromParams()));
-      const url = `${apiBaseUrl.replace(/\/$/, "")}/v1/slope/predict`;
-      let res: Response;
-      try {
-        res = await fetch(url, {
-          method: "POST",
-          headers: { ...authHeaders(token) },
-          body: fd,
-          signal: AbortSignal.timeout(60000),
-        });
-      } catch (fetchErr: any) {
-        const msg = String(fetchErr?.message ?? fetchErr);
-        if (msg.includes("fetch") || msg.includes("network") || msg.includes("Failed")) {
-          throw new Error("Could not reach the backend. Check that the backend URL is correct, CORS is configured, and the deployment is running.");
+      const urls = slopeUrls();
+      let lastErr: any = null;
+      let gotBackendResponse = false;
+
+      for (const url of urls) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = window.setTimeout(() => controller.abort(), 65000);
+          let res: Response;
+          try {
+            res = await fetch(url, {
+              method: "POST",
+              headers: { ...authHeaders(token) },
+              body: fd,
+              signal: controller.signal,
+            });
+          } finally {
+            window.clearTimeout(timeoutId);
+          }
+          const raw = await res.text();
+          let json: any = {};
+          try {
+            json = raw ? JSON.parse(raw) : {};
+          } catch {
+            json = {};
+          }
+          const detail =
+            json?.error ??
+            json?.detail ??
+            (raw && !raw.trim().startsWith("<") ? raw.trim() : "") ??
+            "";
+          if (!res.ok || json?.error || json?.detail) {
+            throw new Error(detail || `Slope request failed (${res.status})`);
+          }
+
+          gotBackendResponse = true;
+          backendUnavailableRef.current = false;
+          setResp(json);
+          if (json?.feature_stats && !options?.preserveSliders && !seededFromDataRef.current) {
+            const H = Number(json.feature_stats?.H_m?.median ?? params.H);
+            setParams({
+              H,
+              beta: Number(json.feature_stats?.beta_deg?.median ?? params.beta),
+              c: Number(json.feature_stats?.c_kPa?.median ?? params.c),
+              phi: Number(json.feature_stats?.phi_deg?.median ?? params.phi),
+              gamma: Number(json.feature_stats?.gamma_kN_m3?.median ?? params.gamma),
+              ru: Number(json.feature_stats?.ru?.median ?? params.ru),
+              B: Math.max(0, 0.4 * H),
+            });
+            seededFromDataRef.current = true;
+          }
+          break;
+        } catch (attemptErr: any) {
+          lastErr = attemptErr;
         }
-        throw fetchErr;
       }
-      const raw = await res.text();
-      let json: any = {};
-      try {
-        json = raw ? JSON.parse(raw) : {};
-      } catch {
-        json = {};
+
+      if (!gotBackendResponse) {
+        const msg = String(lastErr?.message ?? lastErr ?? "");
+        if (/(fetch|network|failed|cors|abort|timeout)/i.test(msg)) {
+          backendUnavailableRef.current = true;
+          setResp(localSlopeEstimate());
+          setErr("Could not reach backend ML service. Showing local slope estimate while backend connectivity is restored.");
+          modelReadyRef.current = true;
+          return;
+        }
+        throw lastErr ?? new Error("Slope prediction failed.");
       }
-      const detail =
-        json?.error ??
-        json?.detail ??
-        (raw && !raw.trim().startsWith("<") ? raw.trim() : "") ??
-        "";
-      if (!res.ok || json?.error || json?.detail) {
-        throw new Error(detail || `Slope request failed (${res.status})`);
-      }
-      setResp(json);
-      if (json?.feature_stats && !options?.preserveSliders && !seededFromDataRef.current) {
-        const H = Number(json.feature_stats?.H_m?.median ?? params.H);
-        setParams({
-          H,
-          beta: Number(json.feature_stats?.beta_deg?.median ?? params.beta),
-          c: Number(json.feature_stats?.c_kPa?.median ?? params.c),
-          phi: Number(json.feature_stats?.phi_deg?.median ?? params.phi),
-          gamma: Number(json.feature_stats?.gamma_kN_m3?.median ?? params.gamma),
-          ru: Number(json.feature_stats?.ru?.median ?? params.ru),
-          B: Math.max(0, 0.4 * H),
-        });
-        seededFromDataRef.current = true;
-      }
+
       modelReadyRef.current = true;
     } catch (e: any) {
       setResp(null);
@@ -1462,6 +1540,7 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   useEffect(() => {
     modelReadyRef.current = false;
     seededFromDataRef.current = false;
+    backendUnavailableRef.current = false;
     setResp(null);
     setErr(null);
   }, [fileKey]);
@@ -4397,12 +4476,12 @@ function SliderField({
 }
 
 function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number; prob?: number }) {
-  const w = 720;
-  const h = 460;
+  const w = 860;
+  const h = 520;
   const betaRad = (beta * Math.PI) / 180;
   const run = H / Math.max(Math.tan(betaRad), 1e-3);
   const toeX = B + run;
-  const pad = 30;
+  const pad = 28;
   const xMin = -0.08 * toeX;
   const xMax = toeX * 1.12;
   const yMin = -0.06 * H;
@@ -4422,7 +4501,8 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
   const y2 = H;
   const x3 = toeX;
   const y3 = 0;
-  const label = prob == null ? "—" : prob >= 0.5 ? `Stable  (P(stable)=${prob.toFixed(2)})` : `Failure  (P(stable)=${prob.toFixed(2)})`;
+  const label =
+    prob == null ? "Prediction pending" : prob >= 0.5 ? `Stable (P(stable)=${prob.toFixed(2)})` : `Failure (P(stable)=${prob.toFixed(2)})`;
   const col = prob == null ? "#64748b" : prob >= 0.5 ? "#1ca04a" : "#c0392b";
   const arcWorldR = 0.1 * Math.min(H, run);
   const arcR = Math.max(10, arcWorldR * scale);
@@ -4435,19 +4515,33 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
   const arcEndX = arcCx + arcR * Math.cos(theta2);
   const arcEndY = arcCy + arcR * Math.sin(theta2);
   const largeArc = beta > 180 ? 1 : 0;
-  const bannerW = 190;
-  const bannerH = 30;
-  const bannerX = Math.min(w - pad - bannerW, Math.max(pad, sx(toeX * 0.65)));
-  const bannerY = Math.max(pad, sy(H * 1.18) - bannerH / 2);
+  const bannerW = 260;
+  const bannerH = 34;
+  const bannerX = Math.min(w - pad - bannerW, Math.max(pad, sx(xMin + 0.72 * xSpan)));
+  const bannerY = Math.max(pad, sy(H * 1.15) - bannerH / 2);
 
   return (
     <svg
       width="100%"
       height={h}
       viewBox={`0 0 ${w} ${h}`}
-      style={{ background: "var(--panel)", borderRadius: 12, display: "block" }}
+      style={{ background: "#ffffff", borderRadius: 12, display: "block" }}
       preserveAspectRatio="xMidYMid meet"
     >
+      <defs>
+        <marker id="arrow-blue-up" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 z" fill="#1f77b4" />
+        </marker>
+        <marker id="arrow-blue-down" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M8,0 L0,4 L8,8 z" fill="#1f77b4" />
+        </marker>
+        <marker id="arrow-gray-left" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M8,0 L0,4 L8,8 z" fill="#555" />
+        </marker>
+        <marker id="arrow-gray-right" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 z" fill="#555" />
+        </marker>
+      </defs>
       <polygon
         points={`${sx(x0)},${sy(y0)} ${sx(x1)},${sy(y1)} ${sx(x2)},${sy(y2)} ${sx(x3)},${sy(y3)}`}
         fill="#d6d7db"
@@ -4458,18 +4552,32 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
       <line x1={sx(0)} y1={sy(0)} x2={sx(toeX * 1.08)} y2={sy(0)} stroke="#0f172a" strokeWidth="1.5" />
       <line x1={sx(0)} y1={sy(0)} x2={sx(0)} y2={sy(H * 1.08)} stroke="#0f172a" strokeWidth="1.5" />
 
-      <line x1={sx(-0.04 * toeX)} y1={sy(0)} x2={sx(-0.04 * toeX)} y2={sy(H)} stroke="#1f77b4" strokeWidth="2" />
-      <polygon points={`${sx(-0.04 * toeX) - 4},${sy(H) + 6} ${sx(-0.04 * toeX) + 4},${sy(H) + 6} ${sx(-0.04 * toeX)},${sy(H)}` } fill="#1f77b4" />
-      <polygon points={`${sx(-0.04 * toeX) - 4},${sy(0) - 6} ${sx(-0.04 * toeX) + 4},${sy(0) - 6} ${sx(-0.04 * toeX)},${sy(0)}` } fill="#1f77b4" />
+      <line
+        x1={sx(-0.05 * toeX)}
+        y1={sy(0)}
+        x2={sx(-0.05 * toeX)}
+        y2={sy(H)}
+        stroke="#1f77b4"
+        strokeWidth="2"
+        markerStart="url(#arrow-blue-down)"
+        markerEnd="url(#arrow-blue-up)"
+      />
       <text x={sx(-0.065 * toeX)} y={sy(H / 2)} fill="#1f77b4" fontSize="11" textAnchor="middle" transform={`rotate(-90 ${sx(-0.065 * toeX)} ${sy(H / 2)})`}>
         H = {H.toFixed(1)} m
       </text>
 
       {B > 0 ? (
         <>
-          <line x1={sx(0)} y1={sy(H * 1.08)} x2={sx(B)} y2={sy(H * 1.08)} stroke="#475569" strokeWidth="1.2" />
-          <polygon points={`${sx(0) + 4},${sy(H * 1.08) - 4} ${sx(0) + 4},${sy(H * 1.08) + 4} ${sx(0)},${sy(H * 1.08)}` } fill="#475569" />
-          <polygon points={`${sx(B) - 4},${sy(H * 1.08) - 4} ${sx(B) - 4},${sy(H * 1.08) + 4} ${sx(B)},${sy(H * 1.08)}` } fill="#475569" />
+          <line
+            x1={sx(0)}
+            y1={sy(H * 1.06)}
+            x2={sx(B)}
+            y2={sy(H * 1.06)}
+            stroke="#555"
+            strokeWidth="1.2"
+            markerStart="url(#arrow-gray-left)"
+            markerEnd="url(#arrow-gray-right)"
+          />
           <text x={sx(B / 2)} y={sy(H * 1.11)} fill="#475569" fontSize="10" textAnchor="middle">
             B = {B.toFixed(1)} m
           </text>
@@ -4482,7 +4590,7 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
       </text>
 
       <rect x={bannerX} y={bannerY} width={bannerW} height={bannerH} fill={col} rx={8} />
-      <text x={bannerX + 10} y={bannerY + 19} fill="#fff" fontSize="12" fontWeight="700">
+      <text x={bannerX + bannerW / 2} y={bannerY + 22} fill="#fff" fontSize="13" fontWeight="700" textAnchor="middle">
         {label}
       </text>
     </svg>
