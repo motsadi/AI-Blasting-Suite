@@ -1199,7 +1199,7 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
   }
 
   async function runSurface(xName?: string, yName?: string) {
-    if (!apiBaseUrl || !resp?.features?.length) return;
+    if (!apiBaseUrl) return;
     const x = xName ?? xAxis;
     const y = yName ?? yAxis;
     if (!x || !y || x === y) return;
@@ -1341,7 +1341,14 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
               </select>
             </div>
             {surface?.Z ? (
-              <SurfaceIsoPlot gridX={surface.grid_x} gridY={surface.grid_y} Z={surface.Z} />
+              <SurfaceIsoPlot
+                gridX={surface.grid_x}
+                gridY={surface.grid_y}
+                Z={surface.Z}
+                xLabel={surface?.x_name ?? xAxis}
+                yLabel={surface?.y_name ?? yAxis}
+                zLabel="Predicted flyrock"
+              />
             ) : (
               <div className="subtitle" style={{ marginTop: 10 }}>
                 Run prediction to enable the flyrock surface.
@@ -2172,9 +2179,13 @@ function FeaturePanel({
 function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
   const [resp, setResp] = useState<any>(null);
   const [busy, setBusy] = useState(false);
+  const [surfaceBusy, setSurfaceBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [inputs, setInputs] = useState<Record<string, number>>({});
   const [file, setFile] = useState<File | null>(null);
+  const [xAxis, setXAxis] = useState("");
+  const [yAxis, setYAxis] = useState("");
+  const [surface, setSurface] = useState<any>(null);
 
   async function run() {
     if (!apiBaseUrl) return;
@@ -2199,10 +2210,54 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
         });
         setInputs(next);
       }
+      if (json?.features?.length) {
+        const nextX = json.features.includes(xAxis) ? xAxis : json.features[0];
+        const fallbackY = json.features.find((f: string) => f !== nextX) ?? json.features[0];
+        const nextY = json.features.includes(yAxis) && yAxis !== nextX ? yAxis : fallbackY;
+        if (nextX !== xAxis) setXAxis(nextX);
+        if (nextY !== yAxis) setYAxis(nextY);
+        if (nextX && nextY && nextX !== nextY) {
+          await runSurface(nextX, nextY);
+        }
+      }
     } catch (e: any) {
       setErr(String(e?.message ?? e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function runSurface(xName?: string, yName?: string) {
+    if (!apiBaseUrl || !resp?.features?.length) return;
+    const x = xName ?? xAxis;
+    const y = yName ?? yAxis;
+    if (!x || !y || x === y) return;
+    setSurfaceBusy(true);
+    try {
+      let res: Response;
+      if (file) {
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("payload_json", JSON.stringify({ x_name: x, y_name: y, inputs_json: inputs }));
+        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/backbreak/surface/upload`, {
+          method: "POST",
+          headers: { ...authHeaders(token) },
+          body: fd,
+        });
+      } else {
+        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/backbreak/surface`, {
+          method: "POST",
+          headers: { "content-type": "application/json", ...authHeaders(token) },
+          body: JSON.stringify({ x_name: x, y_name: y, inputs_json: inputs }),
+        });
+      }
+      const json = await res.json();
+      if (!res.ok || json?.error) throw new Error(json?.error ?? "Backbreak surface failed");
+      setSurface(json);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally {
+      setSurfaceBusy(false);
     }
   }
 
@@ -2220,6 +2275,11 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
     const t = window.setTimeout(() => run(), 350);
     return () => window.clearTimeout(t);
   }, [inputs]);
+
+  useEffect(() => {
+    if (!resp?.features?.length || !xAxis || !yAxis || xAxis === yAxis) return;
+    void runSurface(xAxis, yAxis);
+  }, [xAxis, yAxis]);
 
   return (
     <div className="card">
@@ -2291,6 +2351,37 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
               />
             ) : (
               <div className="subtitle">Load a CSV and run prediction to see importances.</div>
+            )}
+          </div>
+
+          <div className="card" style={{ marginTop: 12 }}>
+            <div className="label">Backbreak Surface</div>
+            <div className="grid2" style={{ marginTop: 8 }}>
+              <select className="input" value={xAxis} onChange={(e) => setXAxis(e.target.value)}>
+                {(resp?.features ?? []).map((f: string) => (
+                  <option key={f} value={f}>{f}</option>
+                ))}
+              </select>
+              <select className="input" value={yAxis} onChange={(e) => setYAxis(e.target.value)}>
+                {(resp?.features ?? []).map((f: string) => (
+                  <option key={f} value={f}>{f}</option>
+                ))}
+              </select>
+            </div>
+            {surfaceBusy ? <div className="subtitle" style={{ marginTop: 10 }}>Building surface...</div> : null}
+            {surface?.Z ? (
+              <SurfaceIsoPlot
+                gridX={surface.grid_x}
+                gridY={surface.grid_y}
+                Z={surface.Z}
+                xLabel={surface?.x_name ?? xAxis}
+                yLabel={surface?.y_name ?? yAxis}
+                zLabel="Predicted backbreak"
+              />
+            ) : (
+              <div className="subtitle" style={{ marginTop: 10 }}>
+                Run prediction to generate backbreak surface.
+              </div>
             )}
           </div>
         </div>
@@ -2957,6 +3048,9 @@ function SurfaceIsoPlot({
           />
         ))}
       </svg>
+      <div className="subtitle" style={{ marginTop: 6 }}>
+        X: {xLabel} · Y: {yLabel} · Z: {zLabel}
+      </div>
     </div>
   );
 }

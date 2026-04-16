@@ -697,6 +697,71 @@ def _infer_backbreak_target(df):
     return None
 
 
+def _prepare_backbreak_bundle(df):
+    import numpy as np
+    import pandas as pd
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.model_selection import train_test_split
+
+    if df.shape[1] < 2:
+        raise ValueError("CSV must have at least 2 columns (features + target).")
+
+    for c in df.columns:
+        try:
+            df[c] = pd.to_numeric(df[c], errors="ignore")
+        except Exception:
+            pass
+
+    tgt = _infer_backbreak_target(df)
+    if tgt is None:
+        raise ValueError("Could not infer Back Break target column.")
+
+    num = df.select_dtypes(include=[np.number]).copy()
+    if tgt not in num.columns:
+        ytmp = pd.to_numeric(df[tgt], errors="coerce")
+        num[tgt] = ytmp
+
+    X = num.drop(columns=[tgt], errors="ignore").copy()
+    y = pd.to_numeric(df[tgt], errors="coerce")
+
+    mask = X.notna().all(axis=1) & y.notna()
+    X, y = X[mask], y[mask]
+    if X.shape[0] < 30 or X.shape[1] < 2:
+        raise ValueError("Not enough clean rows or features to train Random Forest (need >=30 rows, >=2 features).")
+
+    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=42)
+    model = RandomForestRegressor(n_estimators=500, random_state=42)
+    model.fit(Xtr, ytr)
+    train_r2 = _score_r2(ytr, model.predict(Xtr))
+    test_r2 = _score_r2(yte, model.predict(Xte))
+
+    imp = model.feature_importances_
+    order = np.argsort(imp)[::-1]
+    feat_names = list(X.columns)
+    keep = [feat_names[i] for i in order[: min(6, len(order))]]
+    feat_importance = [{"feature": feat_names[i], "importance": float(imp[i])} for i in order]
+
+    stats = {}
+    for name in keep:
+        col = pd.to_numeric(X[name], errors="coerce").dropna()
+        vmin = float(col.quantile(0.02)) if col.size else 0.0
+        vmax = float(col.quantile(0.98)) if col.size else 1.0
+        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+            vmin, vmax = (float(col.min()), float(col.max())) if col.size else (0.0, 1.0)
+            if vmin == vmax:
+                vmax = vmin + 1.0
+        stats[name] = {"min": vmin, "max": vmax, "median": float(col.median()) if col.size else 0.0}
+
+    return {
+        "model": model,
+        "keep": keep,
+        "stats": stats,
+        "feat_importance": feat_importance,
+        "train_r2": train_r2,
+        "test_r2": test_r2,
+    }
+
+
 @app.post("/v1/data/preview")
 def data_preview(file: UploadFile = File(...), _token: str = Depends(require_auth)):
     df = _read_upload_df(file)
@@ -1479,63 +1544,18 @@ def backbreak_predict(
 ):
     import json
     import numpy as np
-    import pandas as pd
-    from sklearn.ensemble import RandomForestRegressor
-    from sklearn.model_selection import train_test_split
 
     df = _read_upload_df(file, DATASETS["backbreak"])
-    if df.shape[1] < 2:
-        return {"error": "CSV must have at least 2 columns (features + target)."}
-
-    for c in df.columns:
-        try:
-            df[c] = pd.to_numeric(df[c], errors="ignore")
-        except Exception:
-            pass
-
-    tgt = _infer_backbreak_target(df)
-    if tgt is None:
-        return {"error": "Could not infer Back Break target column."}
-
-    num = df.select_dtypes(include=[np.number]).copy()
-    if tgt not in num.columns:
-        y = pd.to_numeric(df[tgt], errors="coerce")
-        num[tgt] = y
-
-    X = num.drop(columns=[tgt], errors="ignore").copy()
-    y = pd.to_numeric(df[tgt], errors="coerce")
-
-    mask = X.notna().all(axis=1) & y.notna()
-    X, y = X[mask], y[mask]
-
-    if X.shape[0] < 30 or X.shape[1] < 2:
-        return {"error": "Not enough clean rows or features to train Random Forest (need >=30 rows, >=2 features)."}
-
-    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=42)
-    model = RandomForestRegressor(n_estimators=500, random_state=42)
-    model.fit(Xtr, ytr)
-    train_r2 = _score_r2(ytr, model.predict(Xtr))
-    test_r2 = _score_r2(yte, model.predict(Xte))
-
-    imp = model.feature_importances_
-    order = np.argsort(imp)[::-1]
-    feat_names = list(X.columns)
-    keep = [feat_names[i] for i in order[: min(6, len(order))]]
-    feat_importance = [
-        {"feature": feat_names[i], "importance": float(imp[i])}
-        for i in order
-    ]
-
-    stats = {}
-    for name in keep:
-        col = pd.to_numeric(X[name], errors="coerce").dropna()
-        vmin = float(col.quantile(0.02)) if col.size else 0.0
-        vmax = float(col.quantile(0.98)) if col.size else 1.0
-        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
-            vmin, vmax = (float(col.min()), float(col.max())) if col.size else (0.0, 1.0)
-            if vmin == vmax:
-                vmax = vmin + 1.0
-        stats[name] = {"min": vmin, "max": vmax, "median": float(col.median()) if col.size else 0.0}
+    try:
+        bundle = _prepare_backbreak_bundle(df)
+    except Exception as e:
+        return {"error": str(e)}
+    model = bundle["model"]
+    keep = bundle["keep"]
+    stats = bundle["stats"]
+    feat_importance = bundle["feat_importance"]
+    train_r2 = bundle["train_r2"]
+    test_r2 = bundle["test_r2"]
 
     inputs = None
     if inputs_json:
@@ -1557,6 +1577,124 @@ def backbreak_predict(
         "train_r2": train_r2,
         "test_r2": test_r2,
     }
+
+
+@app.post("/v1/backbreak/surface")
+def backbreak_surface(payload: dict = Body(default={}), _token: str = Depends(require_auth)):
+    import json
+    import numpy as np
+
+    x_name = payload.get("x_name")
+    y_name = payload.get("y_name")
+    grid = int(payload.get("grid", 40))
+    inputs_json = payload.get("inputs_json")
+
+    df = _read_upload_df(None, DATASETS["backbreak"])
+    try:
+        bundle = _prepare_backbreak_bundle(df)
+    except Exception as e:
+        return {"error": str(e)}
+
+    model = bundle["model"]
+    keep = bundle["keep"]
+    stats = bundle["stats"]
+
+    if not x_name:
+        x_name = keep[0]
+    if not y_name:
+        y_name = keep[1] if len(keep) > 1 else keep[0]
+    if x_name not in keep or y_name not in keep or x_name == y_name:
+        return {"error": "Invalid x_name/y_name."}
+
+    inputs = None
+    if isinstance(inputs_json, str):
+        try:
+            inputs = json.loads(inputs_json)
+        except Exception:
+            inputs = None
+    elif isinstance(inputs_json, dict):
+        inputs = inputs_json
+    if not isinstance(inputs, dict):
+        inputs = {c: stats[c]["median"] for c in keep}
+
+    x_min, x_max = stats[x_name]["min"], stats[x_name]["max"]
+    y_min, y_max = stats[y_name]["min"], stats[y_name]["max"]
+    xs = np.linspace(x_min, x_max, grid)
+    ys = np.linspace(y_min, y_max, grid)
+    XX, YY = np.meshgrid(xs, ys)
+    base = np.array([[float(inputs.get(c, stats[c]["median"])) for c in keep]], dtype=float)
+    G = XX.size
+    DM = np.repeat(base, G, axis=0)
+    ix = keep.index(x_name)
+    iy = keep.index(y_name)
+    DM[:, ix] = XX.ravel()
+    DM[:, iy] = YY.ravel()
+    Z = model.predict(DM).reshape(XX.shape)
+    return {"x_name": x_name, "y_name": y_name, "grid_x": xs.tolist(), "grid_y": ys.tolist(), "Z": Z.tolist()}
+
+
+@app.post("/v1/backbreak/surface/upload")
+def backbreak_surface_upload(
+    file: UploadFile | None = File(default=None),
+    payload_json: str | None = Form(default=None),
+    _token: str = Depends(require_auth),
+):
+    import json
+    import numpy as np
+
+    payload = {}
+    if payload_json:
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            payload = {}
+    x_name = payload.get("x_name")
+    y_name = payload.get("y_name")
+    grid = int(payload.get("grid", 40))
+    inputs_json = payload.get("inputs_json")
+
+    df = _read_upload_df(file, DATASETS["backbreak"])
+    try:
+        bundle = _prepare_backbreak_bundle(df)
+    except Exception as e:
+        return {"error": str(e)}
+
+    model = bundle["model"]
+    keep = bundle["keep"]
+    stats = bundle["stats"]
+
+    if not x_name:
+        x_name = keep[0]
+    if not y_name:
+        y_name = keep[1] if len(keep) > 1 else keep[0]
+    if x_name not in keep or y_name not in keep or x_name == y_name:
+        return {"error": "Invalid x_name/y_name."}
+
+    inputs = None
+    if isinstance(inputs_json, str):
+        try:
+            inputs = json.loads(inputs_json)
+        except Exception:
+            inputs = None
+    elif isinstance(inputs_json, dict):
+        inputs = inputs_json
+    if not isinstance(inputs, dict):
+        inputs = {c: stats[c]["median"] for c in keep}
+
+    x_min, x_max = stats[x_name]["min"], stats[x_name]["max"]
+    y_min, y_max = stats[y_name]["min"], stats[y_name]["max"]
+    xs = np.linspace(x_min, x_max, grid)
+    ys = np.linspace(y_min, y_max, grid)
+    XX, YY = np.meshgrid(xs, ys)
+    base = np.array([[float(inputs.get(c, stats[c]["median"])) for c in keep]], dtype=float)
+    G = XX.size
+    DM = np.repeat(base, G, axis=0)
+    ix = keep.index(x_name)
+    iy = keep.index(y_name)
+    DM[:, ix] = XX.ravel()
+    DM[:, iy] = YY.ravel()
+    Z = model.predict(DM).reshape(XX.shape)
+    return {"x_name": x_name, "y_name": y_name, "grid_x": xs.tolist(), "grid_y": ys.tolist(), "Z": Z.tolist()}
 
 
 @app.post("/v1/slope/predict")
