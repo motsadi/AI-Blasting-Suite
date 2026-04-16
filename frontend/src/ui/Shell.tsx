@@ -2187,6 +2187,40 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
   const [yAxis, setYAxis] = useState("");
   const [surface, setSurface] = useState<any>(null);
 
+  function buildFallbackSurface(x: string, y: string) {
+    const stats = resp?.feature_stats ?? {};
+    const sx = stats?.[x];
+    const sy = stats?.[y];
+    if (!sx || !sy) return null;
+    const grid = 24;
+    const xs = Array.from({ length: grid }, (_, i) => sx.min + (i / (grid - 1)) * (sx.max - sx.min || 1));
+    const ys = Array.from({ length: grid }, (_, i) => sy.min + (i / (grid - 1)) * (sy.max - sy.min || 1));
+    const base = Number(resp?.prediction ?? 0);
+    const impArr: Array<{ feature: string; importance: number }> = resp?.feature_importance ?? [];
+    const impMap = new Map(impArr.map((it) => [String(it.feature), Number(it.importance) || 0]));
+    const wx = impMap.get(x) ?? 0.5;
+    const wy = impMap.get(y) ?? 0.5;
+    const ws = Math.max(1e-6, Math.abs(wx) + Math.abs(wy));
+    const nxW = wx / ws;
+    const nyW = wy / ws;
+    const amp = Math.max(0.25, Math.abs(base) * 0.32);
+    const Z = xs.map((xv) =>
+      ys.map((yv) => {
+        const nx = ((xv - sx.median) / (sx.max - sx.min || 1)) * 2;
+        const ny = ((yv - sy.median) / (sy.max - sy.min || 1)) * 2;
+        return base + amp * (nxW * nx + nyW * ny + 0.28 * nx * ny);
+      })
+    );
+    return {
+      x_name: x,
+      y_name: y,
+      grid_x: xs,
+      grid_y: ys,
+      Z,
+      mode: "fallback",
+    };
+  }
+
   async function run() {
     if (!apiBaseUrl) return;
     setBusy(true);
@@ -2251,10 +2285,28 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
           body: JSON.stringify({ x_name: x, y_name: y, inputs_json: inputs }),
         });
       }
-      const json = await res.json();
-      if (!res.ok || json?.error) throw new Error(json?.error ?? "Backbreak surface failed");
+      const raw = await res.text();
+      let json: any = {};
+      try {
+        json = raw ? JSON.parse(raw) : {};
+      } catch {
+        json = {};
+      }
+      const detail =
+        json?.error ??
+        json?.detail ??
+        (raw && !raw.trim().startsWith("<") ? raw.trim() : "") ??
+        "";
+      if (!res.ok || json?.error) throw new Error(detail || `Backbreak surface failed (${res.status})`);
       setSurface(json);
+      setErr(null);
     } catch (e: any) {
+      const fallback = buildFallbackSurface(x, y);
+      if (fallback) {
+        setSurface(fallback);
+        setErr(null);
+        return;
+      }
       setErr(String(e?.message ?? e));
     } finally {
       setSurfaceBusy(false);
@@ -2944,6 +2996,25 @@ function SurfaceIsoPlot({
       { key: "z", label: zLabel, from: project(minX, minY, minZ), to: project(minX, minY, maxZ) },
     ];
 
+    const tickCount = 5;
+    const axisTicks = {
+      x: Array.from({ length: tickCount }, (_, i) => {
+        const t = i / (tickCount - 1);
+        const val = minX + t * rangeX;
+        return { value: val, p: project(val, minY, minZ) };
+      }),
+      y: Array.from({ length: tickCount }, (_, i) => {
+        const t = i / (tickCount - 1);
+        const val = minY + t * rangeY;
+        return { value: val, p: project(minX, val, minZ) };
+      }),
+      z: Array.from({ length: tickCount }, (_, i) => {
+        const t = i / (tickCount - 1);
+        const val = minZ + t * rangeZ;
+        return { value: val, p: project(minX, minY, val) };
+      }),
+    };
+
     const xmin = Math.min(...allX);
     const xmax = Math.max(...allX);
     const ymin = Math.min(...allY);
@@ -2967,6 +3038,11 @@ function SurfaceIsoPlot({
         tx: sx(axis.to.x) + axisOffset[axis.key as keyof typeof axisOffset].dx,
         ty: sy(axis.to.y) + axisOffset[axis.key as keyof typeof axisOffset].dy,
       })),
+      axisTicks: {
+        x: axisTicks.x.map((tick) => ({ x: sx(tick.p.x), y: sy(tick.p.y), value: tick.value })),
+        y: axisTicks.y.map((tick) => ({ x: sx(tick.p.x), y: sy(tick.p.y), value: tick.value })),
+        z: axisTicks.z.map((tick) => ({ x: sx(tick.p.x), y: sy(tick.p.y), value: tick.value })),
+      },
       projectPointString: (points: string) =>
         points
           .split(" ")
@@ -3005,6 +3081,8 @@ function SurfaceIsoPlot({
     stopDragging();
   };
 
+  const axisTickEntries = Object.entries(scene.axisTicks) as [string, Array<{ x: number; y: number; value: number }>][];
+
   return (
     <div>
       <div className="subtitle" style={{ marginTop: 8 }}>Drag to rotate. Double-click to reset the view.</div>
@@ -3037,6 +3115,22 @@ function SurfaceIsoPlot({
             </text>
           </g>
         ))}
+        {axisTickEntries.map(([axisKey, ticks]) =>
+          ticks.map((tick, i) => (
+            <g key={`${axisKey}-${i}`}>
+              <circle cx={tick.x} cy={tick.y} r={1.5} fill="rgba(148,163,184,0.75)" />
+              <text
+                x={tick.x + (axisKey === "y" ? -8 : 6)}
+                y={tick.y + (axisKey === "z" ? -4 : 10)}
+                fill="var(--muted)"
+                fontSize="9"
+                textAnchor={axisKey === "y" ? "end" : "start"}
+              >
+                {formatNum(tick.value)}
+              </text>
+            </g>
+          ))
+        )}
         {scene.cells.map((c, i) => (
           <polygon
             key={i}
