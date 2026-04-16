@@ -4812,6 +4812,7 @@ function ParamPanel({
   const [target, setTarget] = useState(0);
   const [tolerance, setTolerance] = useState(1e-3);
   const [selectedCell, setSelectedCell] = useState<{ i: number; j: number } | null>(null);
+  const [surfaceReady, setSurfaceReady] = useState(false);
   const resolvedDatasetName = dataset?.file?.name ?? activeDatasetName ?? "(default)";
   const surfaceGrid = 10;
   const surfaceSamples = 2;
@@ -4855,6 +4856,7 @@ function ParamPanel({
         setResp(null);
         setGoal(null);
         setSelectedCell(null);
+        setSurfaceReady(false);
         setErr(null);
         setMsg(
           `Active dataset: ${json?.dataset ?? resolvedDatasetName}\n` +
@@ -4865,6 +4867,18 @@ function ParamPanel({
       }
     })();
   }, [apiBaseUrl, token, dataset?.file, resolvedDatasetName]);
+
+  useEffect(() => {
+    if (!output) return;
+    if (output === "Fragmentation") {
+      setTarget(100);
+      setTolerance(10);
+      setMsg(
+        `Active dataset: ${resolvedDatasetName}\n` +
+          "Fragmentation in this module is mean fragmentation. Recommended target band is 90-110 mm (default set to 100 ± 10)."
+      );
+    }
+  }, [output, resolvedDatasetName]);
 
   useEffect(() => {
     if (!resp?.grid_x?.length || !resp?.grid_y?.length) return;
@@ -4939,6 +4953,7 @@ function ParamPanel({
       }
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Surface failed");
       setResp(json);
+      setSurfaceReady(true);
       setMsg((prev) =>
         prev.startsWith("Optimised surface built with a lightweight retry.")
           ? prev
@@ -4954,6 +4969,15 @@ function ParamPanel({
       setSurfaceBusy(false);
     }
   }
+
+  useEffect(() => {
+    if (!surfaceReady || surfaceBusy || goalBusy) return;
+    if (!output || !x1 || !x2 || x1 === x2) return;
+    const t = window.setTimeout(() => {
+      void runSurface();
+    }, 220);
+    return () => window.clearTimeout(t);
+  }, [output, x1, x2, objective]);
 
   async function runGoal() {
     if (!apiBaseUrl || !output) return;
