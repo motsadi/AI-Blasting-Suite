@@ -1518,13 +1518,13 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
       }
 
       if (!gotBackendResponse) {
-        const msg = String(lastErr?.message ?? lastErr ?? "Slope prediction failed.");
         backendUnavailableRef.current = true;
         setResp(localSlopeEstimate());
-        setErr(
-          `Backend slope prediction failed (${msg}). Showing local estimate.` +
-            (attemptErrors.length ? ` Attempts: ${attemptErrors.join(" | ")}` : "")
-        );
+        // Keep fallback silent in the UI; details remain available in console for debugging.
+        if (attemptErrors.length) {
+          console.warn("Slope backend prediction failed; using local estimate", attemptErrors);
+        }
+        setErr(null);
         modelReadyRef.current = true;
         return;
       }
@@ -1590,7 +1590,7 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
                 : "—"}
             </div>
           </div>
-          {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
+          {err ? <div className="error" style={{ marginTop: 10 }}>{err}</div> : null}
           {probStable != null && (
             <>
               <div className="grid3" style={{ marginTop: 10 }}>
@@ -4507,15 +4507,17 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
   const col = prob == null ? "#64748b" : prob >= 0.5 ? "#1ca04a" : "#c0392b";
   const arcWorldR = 0.1 * Math.min(H, run);
   const arcR = Math.max(10, arcWorldR * scale);
-  const arcCx = sx(toeX);
-  const arcCy = sy(0);
-  const theta1 = Math.PI;
-  const theta2 = Math.PI - betaRad;
-  const arcStartX = arcCx + arcR * Math.cos(theta1);
-  const arcStartY = arcCy + arcR * Math.sin(theta1);
-  const arcEndX = arcCx + arcR * Math.cos(theta2);
-  const arcEndY = arcCy + arcR * Math.sin(theta2);
-  const largeArc = beta > 180 ? 1 : 0;
+  const arcN = 24;
+  const arcPoints = Array.from({ length: arcN }, (_, i) => {
+    const t = i / (arcN - 1);
+    const ang = Math.PI - t * betaRad;
+    const x = toeX + arcWorldR * Math.cos(ang);
+    const y = arcWorldR * Math.sin(ang);
+    return `${sx(x)},${sy(y)}`;
+  }).join(" ");
+  const labelAng = Math.PI - 0.55 * betaRad;
+  const betaLabelX = sx(toeX + arcWorldR * 1.25 * Math.cos(labelAng));
+  const betaLabelY = sy(arcWorldR * 1.25 * Math.sin(labelAng));
   const bannerW = 260;
   const bannerH = 34;
   const bannerX = Math.min(w - pad - bannerW, Math.max(pad, sx(xMin + 0.72 * xSpan)));
@@ -4585,8 +4587,8 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
         </>
       ) : null}
 
-      <path d={`M ${arcStartX} ${arcStartY} A ${arcR} ${arcR} 0 ${largeArc} 1 ${arcEndX} ${arcEndY}`} fill="none" stroke="#0f172a" strokeWidth="1.4" />
-      <text x={arcCx - arcR * 0.9} y={arcCy - arcR * 0.25} fill="#0f172a" fontSize="11">
+      <polyline points={arcPoints} fill="none" stroke="#0f172a" strokeWidth="1.4" />
+      <text x={betaLabelX} y={betaLabelY} fill="#0f172a" fontSize="11" textAnchor="middle">
         β = {beta.toFixed(1)}°
       </text>
 
