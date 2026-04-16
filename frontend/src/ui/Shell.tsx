@@ -4812,7 +4812,6 @@ function ParamPanel({
   const [target, setTarget] = useState(0);
   const [tolerance, setTolerance] = useState(1e-3);
   const [selectedCell, setSelectedCell] = useState<{ i: number; j: number } | null>(null);
-  const [surfaceReady, setSurfaceReady] = useState(false);
   const resolvedDatasetName = dataset?.file?.name ?? activeDatasetName ?? "(default)";
   const surfaceGrid = 10;
   const surfaceSamples = 2;
@@ -4850,7 +4849,6 @@ function ParamPanel({
         setResp(null);
         setGoal(null);
         setSelectedCell(null);
-        setSurfaceReady(false);
         setErr(null);
       } catch (e: any) {
         setErr(String(e?.message ?? e));
@@ -4936,7 +4934,6 @@ function ParamPanel({
       }
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Surface failed");
       setResp(json);
-      setSurfaceReady(true);
     } catch (e: any) {
       if (e?.name === "AbortError") {
         setErr("Surface optimisation timed out. Please try again; the backend is taking too long to respond.");
@@ -4947,15 +4944,6 @@ function ParamPanel({
       setSurfaceBusy(false);
     }
   }
-
-  useEffect(() => {
-    if (!surfaceReady || surfaceBusy || goalBusy) return;
-    if (!output || !x1 || !x2 || x1 === x2) return;
-    const t = window.setTimeout(() => {
-      void runSurface();
-    }, 220);
-    return () => window.clearTimeout(t);
-  }, [output, x1, x2, objective]);
 
   async function runGoal() {
     if (!apiBaseUrl || !output) return;
@@ -5061,7 +5049,16 @@ function ParamPanel({
         <div style={{ marginTop: 0 }} className="grid3">
         <div>
           <label className="label">Output</label>
-          <select className="input" value={output} onChange={(e) => setOutput(e.target.value)}>
+          <select
+            className="input"
+            value={output}
+            onChange={(e) => {
+              setOutput(e.target.value);
+              setResp(null);
+              setGoal(null);
+              setSelectedCell(null);
+            }}
+          >
             {(meta?.outputs ?? []).map((o: string) => (
               <option key={o} value={o}>{o}</option>
             ))}
@@ -5069,7 +5066,16 @@ function ParamPanel({
         </div>
         <div>
           <label className="label">Input 1 (X-axis)</label>
-          <select className="input" value={x1} onChange={(e) => setX1(e.target.value)}>
+          <select
+            className="input"
+            value={x1}
+            onChange={(e) => {
+              setX1(e.target.value);
+              setResp(null);
+              setGoal(null);
+              setSelectedCell(null);
+            }}
+          >
             {(meta?.inputs ?? []).map((o: string) => (
               <option key={o} value={o}>{o}</option>
             ))}
@@ -5077,7 +5083,16 @@ function ParamPanel({
         </div>
         <div>
           <label className="label">Input 2 (Y-axis)</label>
-          <select className="input" value={x2} onChange={(e) => setX2(e.target.value)}>
+          <select
+            className="input"
+            value={x2}
+            onChange={(e) => {
+              setX2(e.target.value);
+              setResp(null);
+              setGoal(null);
+              setSelectedCell(null);
+            }}
+          >
             {(meta?.inputs ?? []).map((o: string) => (
               <option key={o} value={o}>{o}</option>
             ))}
@@ -5086,13 +5101,23 @@ function ParamPanel({
         </div>
 
         <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-          <button className="btn btnPrimary" onClick={runSurface} disabled={surfaceBusy || goalBusy}>
+          <button className="btn btnPrimary" onClick={runSurface} disabled={surfaceBusy || goalBusy || x1 === x2}>
             {surfaceBusy ? "Running..." : "Optimise & Plot Surface"}
           </button>
           <button className="btn" onClick={exportSurface} disabled={!resp?.Z || surfaceBusy}>
             Export surface CSV
           </button>
-          <select className="input" value={objective} onChange={(e) => setObjective(e.target.value as any)} style={{ width: 140 }}>
+          <select
+            className="input"
+            value={objective}
+            onChange={(e) => {
+              setObjective(e.target.value as any);
+              setResp(null);
+              setGoal(null);
+              setSelectedCell(null);
+            }}
+            style={{ width: 140 }}
+          >
             <option value="max">Maximise</option>
             <option value="min">Minimise</option>
           </select>
@@ -5122,7 +5147,15 @@ function ParamPanel({
           <div className="card">
             <div className="sectionTitle">3D surface view</div>
             <div className="subtitle">{resp.note ?? "Optimised surface of the chosen output across the selected axes."}</div>
-            <SurfaceIsoPlot gridX={resp.grid_x} gridY={resp.grid_y} Z={resp.Z} xLabel={resp.x1} yLabel={resp.x2} zLabel={resp.output} />
+            <SurfaceIsoPlot
+              key={`${resp.output}:${resp.x1}:${resp.x2}:${resp.objective}:${resp.dataset}`}
+              gridX={resp.grid_x}
+              gridY={resp.grid_y}
+              Z={resp.Z}
+              xLabel={resp.x1}
+              yLabel={resp.x2}
+              zLabel={resp.output}
+            />
           </div>
         </div>
       )}

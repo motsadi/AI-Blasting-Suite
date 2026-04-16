@@ -2420,9 +2420,7 @@ def _param_predict_output(model_bundle, vec: dict[str, float], output_name: str)
     Ys = mdl.predict(sx.transform(X))
     Y = sy.inverse_transform(Ys)
     raw = float(Y[0, outputs.index(output_name)])
-    if output_name in {"Ground Vibration", "Airblast", "Fragmentation"}:
-        return float(max(0.0, raw))
-    return raw
+    return float(max(0.0, raw))
 
 
 def _param_surface_df(df, payload):
@@ -2471,9 +2469,7 @@ def _param_surface_df(df, payload):
         Ys = mdl.predict(sx.transform(vec.reshape(1, -1)))
         Y = sy.inverse_transform(Ys)
         raw = float(Y[0, output_idx])
-        if output in {"Ground Vibration", "Airblast", "Fragmentation"}:
-            return float(max(0.0, raw))
-        return raw
+        return float(max(0.0, raw))
 
     other_inputs = [c for c in inputs if c not in (x1, x2)]
     other_bounds = [bounds[c] for c in other_inputs]
