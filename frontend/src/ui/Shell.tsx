@@ -1433,14 +1433,11 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   function slopeUrls(): string[] {
     const base = apiBaseUrl.replace(/\/$/, "");
     const sameOrigin = window.location.origin.replace(/\/$/, "");
-    const urls: string[] = [];
-    if (base) urls.push(`${base}/v1/slope/predict`);
-    if (base && base === sameOrigin) urls.push(`${base}/api/v1/slope/predict`);
-    if (base && base !== sameOrigin) {
-      urls.push(`${sameOrigin}/api/v1/slope/predict`);
-      urls.push(`${sameOrigin}/v1/slope/predict`);
-    }
-    return Array.from(new Set(urls));
+    if (!base) return [];
+    // If a backend URL is explicitly configured, trust it and avoid same-origin fallbacks
+    // that can produce hosting-layer NOT_FOUND pages.
+    if (base !== sameOrigin) return [`${base}/v1/slope/predict`];
+    return [`${base}/v1/slope/predict`, `${base}/api/v1/slope/predict`];
   }
 
   async function run(options?: { preserveSliders?: boolean }) {
@@ -1452,8 +1449,9 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     setBusy(true);
     setErr(null);
     try {
-      if (options?.preserveSliders && backendUnavailableRef.current) {
-        setResp(localSlopeEstimate());
+      if (options?.preserveSliders) {
+        const local = localSlopeEstimate();
+        setResp((prev: any) => ({ ...(prev ?? {}), ...local }));
         return;
       }
       const fd = new FormData();
@@ -1462,11 +1460,12 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
       const urls = slopeUrls();
       let lastErr: any = null;
       let gotBackendResponse = false;
+      const attemptErrors: string[] = [];
 
       for (const url of urls) {
         try {
           const controller = new AbortController();
-          const timeoutId = window.setTimeout(() => controller.abort(), 65000);
+          const timeoutId = window.setTimeout(() => controller.abort(), 120000);
           let res: Response;
           try {
             res = await fetch(url, {
@@ -1513,19 +1512,21 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
           break;
         } catch (attemptErr: any) {
           lastErr = attemptErr;
+          const msg = String(attemptErr?.message ?? attemptErr ?? "Unknown error");
+          attemptErrors.push(`${url} -> ${msg}`);
         }
       }
 
       if (!gotBackendResponse) {
-        const msg = String(lastErr?.message ?? lastErr ?? "");
-        if (/(fetch|network|failed|cors|abort|timeout)/i.test(msg)) {
-          backendUnavailableRef.current = true;
-          setResp(localSlopeEstimate());
-          setErr("Could not reach backend ML service. Showing local slope estimate while backend connectivity is restored.");
-          modelReadyRef.current = true;
-          return;
-        }
-        throw lastErr ?? new Error("Slope prediction failed.");
+        const msg = String(lastErr?.message ?? lastErr ?? "Slope prediction failed.");
+        backendUnavailableRef.current = true;
+        setResp(localSlopeEstimate());
+        setErr(
+          `Backend slope prediction failed (${msg}). Showing local estimate.` +
+            (attemptErrors.length ? ` Attempts: ${attemptErrors.join(" | ")}` : "")
+        );
+        modelReadyRef.current = true;
+        return;
       }
 
       modelReadyRef.current = true;
