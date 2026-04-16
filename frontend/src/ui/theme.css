@@ -716,15 +716,94 @@ a{ color:inherit; }
 body[data-theme="dark"]{
   --bg: #0f172a;
   --bg-soft: #111827;
-  --panel: #0b1220;
-  --card: #0b1220;
-  --card2: #0b1220;
-  --border: rgba(148,163,184,0.2);
-  --text: #e5e7eb;
-  --muted: #94a3b8;
-  --muted2: #64748b;
+  --panel: #111b2f;
+  --card: #111b2f;
+  --card2: #111b2f;
+  --border: rgba(148,163,184,0.28);
+  --text: #f1f5f9;
+  --muted: #cbd5e1;
+  --muted2: #94a3b8;
   --shadow: 0 10px 30px rgba(2,6,23,0.45);
   --shadow-soft: 0 8px 18px rgba(2,6,23,0.35);
+}
+
+body[data-theme="dark"]{
+  background:
+    radial-gradient(circle at top left, rgba(56,189,248,0.10), transparent 32%),
+    radial-gradient(circle at top right, rgba(37,99,235,0.10), transparent 32%),
+    linear-gradient(180deg, #0b1220 0%, #0f172a 100%);
+}
+
+body[data-theme="dark"] .header,
+body[data-theme="dark"] .sidebar,
+body[data-theme="dark"] .card,
+body[data-theme="dark"] .homeCard,
+body[data-theme="dark"] .kpi,
+body[data-theme="dark"] .highlightPill{
+  background: linear-gradient(180deg, rgba(17,27,47,0.98), rgba(15,23,42,0.95));
+  border-color: var(--border);
+}
+
+body[data-theme="dark"] .headerControls,
+body[data-theme="dark"] .tableToolbar,
+body[data-theme="dark"] .addRowPanel{
+  background: rgba(15,23,42,0.92);
+  border-color: var(--border);
+}
+
+body[data-theme="dark"] .chip,
+body[data-theme="dark"] .pill{
+  background: rgba(30,41,59,0.8);
+  color: var(--muted);
+  border-color: var(--border);
+}
+
+body[data-theme="dark"] .btn,
+body[data-theme="dark"] .iconBtn,
+body[data-theme="dark"] .select,
+body[data-theme="dark"] .input,
+body[data-theme="dark"] .tabPill,
+body[data-theme="dark"] .navItem,
+body[data-theme="dark"] .sidebarButton{
+  background: rgba(15,23,42,0.96);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+body[data-theme="dark"] .btnPrimary{
+  color: #fff;
+  border-color: rgba(96,165,250,0.6);
+  background: linear-gradient(135deg, rgba(37,99,235,0.95), rgba(56,189,248,0.90));
+}
+
+body[data-theme="dark"] .input::placeholder{
+  color: rgba(203,213,225,0.52);
+}
+
+body[data-theme="dark"] .dataTableWrap{
+  background: rgba(15,23,42,0.96);
+  border-color: var(--border);
+}
+
+body[data-theme="dark"] .dataTableHeader{
+  background: rgba(30,41,59,0.92);
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+
+body[data-theme="dark"] .dataTableCell{
+  color: var(--text);
+  border-bottom: 1px solid rgba(148,163,184,0.16);
+}
+
+body[data-theme="dark"] .sidebarFooter{
+  border-top: 1px solid var(--border);
+}
+
+body[data-theme="dark"] .error{
+  color: #fecaca;
+  background: rgba(153,27,27,0.28);
+  border-color: rgba(248,113,113,0.45);
 }
 
 body[data-theme="dark"] .loginProgressStep{
