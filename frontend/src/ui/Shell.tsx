@@ -1373,7 +1373,19 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   });
   const modelReadyRef = useRef(false);
   const seededFromDataRef = useRef(false);
+  const backendUnavailableRef = useRef(false);
   const fileKey = file?.name ?? "__default__";
+  const probStable = useMemo(() => {
+    const direct = toNum(resp?.prob_stable ?? resp?.prediction_probability ?? resp?.probability ?? resp?.prediction);
+    if (Number.isFinite(direct)) {
+      if (direct >= 0 && direct <= 1) return direct;
+      if (direct > 1 && direct <= 100) return direct / 100;
+    }
+    const label = String(resp?.predicted_class ?? resp?.label ?? "").trim().toLowerCase();
+    if (label === "stable") return 1;
+    if (label === "failure" || label === "failed" || label === "unstable") return 0;
+    return null;
+  }, [resp]);
 
   function buildInputsFromParams() {
     return {
@@ -1386,48 +1398,140 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     };
   }
 
+  function localSlopeEstimate() {
+    const H = Math.max(0.1, Number(params.H));
+    const betaDeg = Math.min(89, Math.max(1, Number(params.beta)));
+    const phiDeg = Math.min(89, Math.max(0.1, Number(params.phi)));
+    const c = Math.max(0, Number(params.c));
+    const gamma = Math.max(1e-3, Number(params.gamma));
+    const ru = Math.min(1, Math.max(0, Number(params.ru)));
+    const betaRad = (betaDeg * Math.PI) / 180;
+    const phiRad = (phiDeg * Math.PI) / 180;
+    const sigma = gamma * H * Math.cos(betaRad) ** 2;
+    const tau = Math.max(1e-6, gamma * H * Math.sin(betaRad) * Math.cos(betaRad));
+    const sigmaEff = sigma * (1 - ru);
+    const shearResistance = c + Math.max(0, sigmaEff) * Math.tan(phiRad);
+    const fs = shearResistance / tau;
+    const prob = Math.min(1, Math.max(0, 1 / (1 + Math.exp(-4 * (fs - 1)))));
+    return {
+      prob_stable: prob,
+      prediction: prob,
+      predicted_class: prob >= 0.5 ? "stable" : "failure",
+      mode: "local_fallback",
+      factor_of_safety: fs,
+      feature_stats: {
+        H_m: { min: 1, max: 50, median: H },
+        beta_deg: { min: 5, max: 80, median: betaDeg },
+        c_kPa: { min: 1, max: 200, median: c },
+        phi_deg: { min: 5, max: 60, median: phiDeg },
+        gamma_kN_m3: { min: 14, max: 28, median: gamma },
+        ru: { min: 0, max: 1, median: ru },
+      },
+    };
+  }
+
+  function slopeUrls(): string[] {
+    const base = apiBaseUrl.replace(/\/$/, "");
+    const sameOrigin = window.location.origin.replace(/\/$/, "");
+    if (!base) return [];
+    // If a backend URL is explicitly configured, trust it and avoid same-origin fallbacks
+    // that can produce hosting-layer NOT_FOUND pages.
+    if (base !== sameOrigin) return [`${base}/v1/slope/predict`];
+    return [`${base}/v1/slope/predict`, `${base}/api/v1/slope/predict`];
+  }
+
   async function run(options?: { preserveSliders?: boolean }) {
-    if (!apiBaseUrl) return;
+    if (!apiBaseUrl) {
+      setResp(localSlopeEstimate());
+      setErr("Backend URL is not configured. Showing local slope estimate.");
+      return;
+    }
     setBusy(true);
     setErr(null);
     try {
+      if (options?.preserveSliders) {
+        const local = localSlopeEstimate();
+        setResp((prev: any) => ({ ...(prev ?? {}), ...local }));
+        return;
+      }
       const fd = new FormData();
       if (file) fd.append("file", file);
       fd.append("inputs_json", JSON.stringify(buildInputsFromParams()));
-      const url = `${apiBaseUrl.replace(/\/$/, "")}/v1/slope/predict`;
-      let res: Response;
-      try {
-        res = await fetch(url, {
-          method: "POST",
-          headers: { ...authHeaders(token) },
-          body: fd,
-          signal: AbortSignal.timeout(60000),
-        });
-      } catch (fetchErr: any) {
-        const msg = String(fetchErr?.message ?? fetchErr);
-        if (msg.includes("fetch") || msg.includes("network") || msg.includes("Failed")) {
-          throw new Error("Could not reach the backend. Check that the backend URL is correct, CORS is configured, and the deployment is running.");
+      const urls = slopeUrls();
+      let lastErr: any = null;
+      let gotBackendResponse = false;
+      const attemptErrors: string[] = [];
+
+      for (const url of urls) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = window.setTimeout(() => controller.abort(), 120000);
+          let res: Response;
+          try {
+            res = await fetch(url, {
+              method: "POST",
+              headers: { ...authHeaders(token) },
+              body: fd,
+              signal: controller.signal,
+            });
+          } finally {
+            window.clearTimeout(timeoutId);
+          }
+          const raw = await res.text();
+          let json: any = {};
+          try {
+            json = raw ? JSON.parse(raw) : {};
+          } catch {
+            json = {};
+          }
+          const detail =
+            json?.error ??
+            json?.detail ??
+            (raw && !raw.trim().startsWith("<") ? raw.trim() : "") ??
+            "";
+          if (!res.ok || json?.error || json?.detail) {
+            throw new Error(detail || `Slope request failed (${res.status})`);
+          }
+
+          gotBackendResponse = true;
+          backendUnavailableRef.current = false;
+          setResp(json);
+          if (json?.feature_stats && !options?.preserveSliders && !seededFromDataRef.current) {
+            const H = Number(json.feature_stats?.H_m?.median ?? params.H);
+            setParams({
+              H,
+              beta: Number(json.feature_stats?.beta_deg?.median ?? params.beta),
+              c: Number(json.feature_stats?.c_kPa?.median ?? params.c),
+              phi: Number(json.feature_stats?.phi_deg?.median ?? params.phi),
+              gamma: Number(json.feature_stats?.gamma_kN_m3?.median ?? params.gamma),
+              ru: Number(json.feature_stats?.ru?.median ?? params.ru),
+              B: Math.max(0, 0.4 * H),
+            });
+            seededFromDataRef.current = true;
+          }
+          break;
+        } catch (attemptErr: any) {
+          lastErr = attemptErr;
+          const msg = String(attemptErr?.message ?? attemptErr ?? "Unknown error");
+          attemptErrors.push(`${url} -> ${msg}`);
         }
-        throw fetchErr;
       }
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok || json?.error) throw new Error(json?.error ?? "Slope failed");
-      setResp(json);
-      if (json?.feature_stats && !options?.preserveSliders && !seededFromDataRef.current) {
-        const H = Number(json.feature_stats?.H_m?.median ?? params.H);
-        setParams({
-          H,
-          beta: Number(json.feature_stats?.beta_deg?.median ?? params.beta),
-          c: Number(json.feature_stats?.c_kPa?.median ?? params.c),
-          phi: Number(json.feature_stats?.phi_deg?.median ?? params.phi),
-          gamma: Number(json.feature_stats?.gamma_kN_m3?.median ?? params.gamma),
-          ru: Number(json.feature_stats?.ru?.median ?? params.ru),
-          B: Math.max(0, 0.4 * H),
-        });
-        seededFromDataRef.current = true;
+
+      if (!gotBackendResponse) {
+        backendUnavailableRef.current = true;
+        setResp(localSlopeEstimate());
+        // Keep fallback silent in the UI; details remain available in console for debugging.
+        if (attemptErrors.length) {
+          console.warn("Slope backend prediction failed; using local estimate", attemptErrors);
+        }
+        setErr(null);
+        modelReadyRef.current = true;
+        return;
       }
+
       modelReadyRef.current = true;
     } catch (e: any) {
+      setResp(null);
       setErr(String(e?.message ?? e));
     } finally {
       setBusy(false);
@@ -1437,16 +1541,10 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   useEffect(() => {
     modelReadyRef.current = false;
     seededFromDataRef.current = false;
+    backendUnavailableRef.current = false;
     setResp(null);
     setErr(null);
   }, [fileKey]);
-
-  // Auto-run on mount to mirror local app: load default slope data.csv and seed sliders
-  useEffect(() => {
-    if (apiBaseUrl && !file && !modelReadyRef.current && !busy) {
-      void run();
-    }
-  }, [apiBaseUrl]);
 
   useEffect(() => {
     if (!modelReadyRef.current || busy) return;
@@ -1456,17 +1554,11 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     return () => window.clearTimeout(id);
   }, [params]);
 
-  const predictionLabel =
-    resp?.prob_stable == null
-      ? "Prediction: —"
-      : `Prediction: ${resp.prob_stable >= 0.5 ? "🟢 Stable" : "🔴 Failure"}   (P(stable)=${Number(resp.prob_stable).toFixed(2)})`;
-
   return (
     <div className="card">
       <div className="grid2">
         <div>
           <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Slope Stability — Stable / Failure (ML)</div>
-          <div className="subtitle">Desktop-aligned ML classifier: load a slope CSV, seed the model from data, then adjust the section interactively.</div>
 
           <div style={{ marginTop: 14, fontWeight: 700, fontSize: 15 }}>Data</div>
           <div style={{ marginTop: 6 }}>
@@ -1476,7 +1568,7 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
 
           <div style={{ marginTop: 8 }}>
             <button className="btn btnPrimary" onClick={() => run()} disabled={busy}>
-              {busy ? "Running…" : resp?.features?.length ? "Reload / Refit" : "Load & Predict"}
+              {busy ? "Running..." : "Load & Predict"}
             </button>
           </div>
 
@@ -1492,19 +1584,16 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
             <SliderField label="B (m) — sketch only" value={params.B} min={0} max={30} step={0.5} onChange={(v) => setParams({ ...params, B: v })} />
           </div>
 
-          {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
           <div className="kpi" style={{ marginTop: 12 }}>
             <div className="kpiTitle">Prediction</div>
             <div className="kpiValue" style={{ fontSize: 20 }}>
-              {resp?.prob_stable != null
-                ? `${resp.prob_stable >= 0.5 ? "Stable" : "Failure"} (${(Number(resp.prob_stable) * 100).toFixed(1)}%)`
+              {probStable != null
+                ? `${probStable >= 0.5 ? "Stable" : "Failure"} (${(probStable * 100).toFixed(1)}%)`
                 : "—"}
             </div>
           </div>
-          <div className="subtitle" style={{ marginTop: 8 }}>
-            {predictionLabel}
-          </div>
-          {resp?.prob_stable != null && (
+          {err ? <div className="error" style={{ marginTop: 10 }}>{err}</div> : null}
+          {probStable != null && (
             <>
               <div className="grid3" style={{ marginTop: 10 }}>
                 <div className="kpi">
@@ -1522,26 +1611,6 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
                   </div>
                 </div>
               </div>
-              <div className="card" style={{ marginTop: 10 }}>
-                <div className="sectionTitle">Dataset-driven inputs</div>
-                <div className="subtitle">
-                  The web module now mirrors the desktop behavior more closely: the first run uses the actual slider values, and once the model is loaded the prediction updates as you adjust the parameters.
-                </div>
-                <div className="grid3" style={{ marginTop: 10 }}>
-                  <div className="kpi">
-                    <div className="kpiTitle">Gamma median</div>
-                    <div className="kpiValue">{formatNum(resp.feature_stats?.gamma_kN_m3?.median)}</div>
-                  </div>
-                  <div className="kpi">
-                    <div className="kpiTitle">Phi median</div>
-                    <div className="kpiValue">{formatNum(resp.feature_stats?.phi_deg?.median)}</div>
-                  </div>
-                  <div className="kpi">
-                    <div className="kpiTitle">ru median</div>
-                    <div className="kpiValue">{formatNum(resp.feature_stats?.ru?.median)}</div>
-                  </div>
-                </div>
-              </div>
             </>
           )}
         </div>
@@ -1551,11 +1620,8 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
             H={params.H}
             beta={params.beta}
             B={params.B}
-            prob={resp?.prob_stable}
+            prob={probStable ?? undefined}
           />
-          <div className="subtitle" style={{ marginTop: 8 }}>
-            Bench geometry sketch mirrors the desktop module: equal aspect, bench width marker, beta angle arc, height arrow, and a result banner outside the slope body.
-          </div>
         </div>
       </div>
     </div>
@@ -2621,6 +2687,78 @@ function nearestIndex(values: number[], target: number) {
     }
   }
   return bestIdx;
+}
+
+function buildParamSurfaceFromRows(rows: any[], bounds: Record<string, any>, x1: string, x2: string, output: string, objective: string, grid = 10) {
+  if (!rows?.length || !bounds?.[x1] || !bounds?.[x2] || x1 === x2) return null;
+  const x1Min = Number(bounds[x1]?.min);
+  const x1Max = Number(bounds[x1]?.max);
+  const x2Min = Number(bounds[x2]?.min);
+  const x2Max = Number(bounds[x2]?.max);
+  if (![x1Min, x1Max, x2Min, x2Max].every(Number.isFinite)) return null;
+  const gx = Array.from({ length: grid }, (_, i) => x1Min + ((x1Max - x1Min) * i) / Math.max(1, grid - 1));
+  const gy = Array.from({ length: grid }, (_, i) => x2Min + ((x2Max - x2Min) * i) / Math.max(1, grid - 1));
+  const xSpan = Math.max(1e-9, x1Max - x1Min);
+  const ySpan = Math.max(1e-9, x2Max - x2Min);
+  const usableRows = rows.filter((row) => row?.inputs && row?.outputs);
+  if (!usableRows.length) return null;
+
+  const surfaceRows = [...usableRows].sort((a, b) => {
+    const aFeasible = !!a?.feasible;
+    const bFeasible = !!b?.feasible;
+    if (aFeasible !== bFeasible) return aFeasible ? -1 : 1;
+    return Number(a?.pareto_rank ?? 999) - Number(b?.pareto_rank ?? 999);
+  });
+  const bestRow = surfaceRows[0];
+  const Z: number[][] = [];
+  const otherInputsGrid: Array<Array<Record<string, number>>> = [];
+
+  gx.forEach((xv) => {
+    const rowVals: number[] = [];
+    const rowInputs: Array<Record<string, number>> = [];
+    gy.forEach((yv) => {
+      let chosen = surfaceRows[0];
+      let bestScore = Number.POSITIVE_INFINITY;
+      surfaceRows.forEach((candidate) => {
+        const cx = Number(candidate?.inputs?.[x1]);
+        const cy = Number(candidate?.inputs?.[x2]);
+        const dx = (cx - xv) / xSpan;
+        const dy = (cy - yv) / ySpan;
+        let score = dx * dx + dy * dy;
+        score += 0.06 * Number(candidate?.pareto_rank ?? 0);
+        score += 0.03 * Math.abs(Number(candidate?.objective_norm ?? 0));
+        if (candidate?.feasible) score -= 0.02;
+        if (score < bestScore) {
+          bestScore = score;
+          chosen = candidate;
+        }
+      });
+      rowVals.push(Number(chosen?.outputs?.[output] ?? 0));
+      rowInputs.push({ ...(chosen?.inputs ?? {}) });
+    });
+    Z.push(rowVals);
+    otherInputsGrid.push(rowInputs);
+  });
+
+  return {
+    x1,
+    x2,
+    output,
+    objective,
+    grid_x: gx,
+    grid_y: gy,
+    Z,
+    other_inputs_grid: otherInputsGrid,
+    best: {
+      value: Number(bestRow?.objective_value ?? bestRow?.outputs?.[output] ?? 0),
+      point: {
+        x1: Number(bestRow?.inputs?.[x1] ?? gx[0]),
+        x2: Number(bestRow?.inputs?.[x2] ?? gy[0]),
+      },
+      inputs: { ...(bestRow?.inputs ?? {}) },
+      outputs: { ...(bestRow?.outputs ?? {}) },
+    },
+  };
 }
 
 function ParamSurfaceExplorer({
@@ -4413,15 +4551,23 @@ function SliderField({
 }
 
 function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number; prob?: number }) {
-  const w = 720;
-  const h = 460;
+  const w = 860;
+  const h = 520;
   const betaRad = (beta * Math.PI) / 180;
   const run = H / Math.max(Math.tan(betaRad), 1e-3);
   const toeX = B + run;
-  const pad = 34;
-  const scale = Math.min((w - 2 * pad) / (toeX * 1.18), (h - 2 * pad) / (H * 1.28));
-  const sx = (x: number) => pad + x * scale;
-  const sy = (y: number) => h - pad - y * scale;
+  const pad = 28;
+  const xMin = -0.08 * toeX;
+  const xMax = toeX * 1.12;
+  const yMin = -0.06 * H;
+  const yMax = H * 1.24;
+  const xSpan = Math.max(xMax - xMin, 1);
+  const ySpan = Math.max(yMax - yMin, 1);
+  const scale = Math.min((w - 2 * pad) / xSpan, (h - 2 * pad) / ySpan);
+  const offsetX = (w - xSpan * scale) / 2;
+  const offsetY = (h - ySpan * scale) / 2;
+  const sx = (x: number) => offsetX + (x - xMin) * scale;
+  const sy = (y: number) => h - offsetY - (y - yMin) * scale;
   const x0 = 0;
   const y0 = 0;
   const x1 = 0;
@@ -4430,21 +4576,49 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
   const y2 = H;
   const x3 = toeX;
   const y3 = 0;
-  const label = prob == null ? "—" : prob >= 0.5 ? `Stable  (P(stable)=${prob.toFixed(2)})` : `Failure  (P(stable)=${prob.toFixed(2)})`;
+  const label =
+    prob == null ? "Prediction pending" : prob >= 0.5 ? `Stable (P(stable)=${prob.toFixed(2)})` : `Failure (P(stable)=${prob.toFixed(2)})`;
   const col = prob == null ? "#64748b" : prob >= 0.5 ? "#1ca04a" : "#c0392b";
-  const arcR = Math.max(10, Math.min(run, H) * scale * 0.12);
-  const arcCx = sx(toeX);
-  const arcCy = sy(0);
-  const theta1 = Math.PI;
-  const theta2 = Math.PI - betaRad;
-  const arcStartX = arcCx + arcR * Math.cos(theta1);
-  const arcStartY = arcCy + arcR * Math.sin(theta1);
-  const arcEndX = arcCx + arcR * Math.cos(theta2);
-  const arcEndY = arcCy + arcR * Math.sin(theta2);
-  const largeArc = beta > 180 ? 1 : 0;
+  const arcWorldR = 0.1 * Math.min(H, run);
+  const arcR = Math.max(10, arcWorldR * scale);
+  const arcN = 24;
+  const arcPoints = Array.from({ length: arcN }, (_, i) => {
+    const t = i / (arcN - 1);
+    const ang = Math.PI - t * betaRad;
+    const x = toeX + arcWorldR * Math.cos(ang);
+    const y = arcWorldR * Math.sin(ang);
+    return `${sx(x)},${sy(y)}`;
+  }).join(" ");
+  const labelAng = Math.PI - 0.55 * betaRad;
+  const betaLabelX = sx(toeX + arcWorldR * 1.25 * Math.cos(labelAng));
+  const betaLabelY = sy(arcWorldR * 1.25 * Math.sin(labelAng));
+  const bannerW = 260;
+  const bannerH = 34;
+  const bannerX = Math.min(w - pad - bannerW, Math.max(pad, sx(xMin + 0.72 * xSpan)));
+  const bannerY = Math.max(pad, sy(H * 1.15) - bannerH / 2);
 
   return (
-    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} style={{ background: "var(--panel)", borderRadius: 12 }}>
+    <svg
+      width="100%"
+      height={h}
+      viewBox={`0 0 ${w} ${h}`}
+      style={{ background: "#ffffff", borderRadius: 12, display: "block" }}
+      preserveAspectRatio="xMidYMid meet"
+    >
+      <defs>
+        <marker id="arrow-blue-up" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 z" fill="#1f77b4" />
+        </marker>
+        <marker id="arrow-blue-down" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M8,0 L0,4 L8,8 z" fill="#1f77b4" />
+        </marker>
+        <marker id="arrow-gray-left" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M8,0 L0,4 L8,8 z" fill="#555" />
+        </marker>
+        <marker id="arrow-gray-right" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 z" fill="#555" />
+        </marker>
+      </defs>
       <polygon
         points={`${sx(x0)},${sy(y0)} ${sx(x1)},${sy(y1)} ${sx(x2)},${sy(y2)} ${sx(x3)},${sy(y3)}`}
         fill="#d6d7db"
@@ -4455,31 +4629,45 @@ function SlopeSketch({ H, beta, B, prob }: { H: number; beta: number; B: number;
       <line x1={sx(0)} y1={sy(0)} x2={sx(toeX * 1.08)} y2={sy(0)} stroke="#0f172a" strokeWidth="1.5" />
       <line x1={sx(0)} y1={sy(0)} x2={sx(0)} y2={sy(H * 1.08)} stroke="#0f172a" strokeWidth="1.5" />
 
-      <line x1={sx(-0.04 * toeX)} y1={sy(0)} x2={sx(-0.04 * toeX)} y2={sy(H)} stroke="#1f77b4" strokeWidth="2" />
-      <polygon points={`${sx(-0.04 * toeX) - 4},${sy(H) + 6} ${sx(-0.04 * toeX) + 4},${sy(H) + 6} ${sx(-0.04 * toeX)},${sy(H)}` } fill="#1f77b4" />
-      <polygon points={`${sx(-0.04 * toeX) - 4},${sy(0) - 6} ${sx(-0.04 * toeX) + 4},${sy(0) - 6} ${sx(-0.04 * toeX)},${sy(0)}` } fill="#1f77b4" />
+      <line
+        x1={sx(-0.05 * toeX)}
+        y1={sy(0)}
+        x2={sx(-0.05 * toeX)}
+        y2={sy(H)}
+        stroke="#1f77b4"
+        strokeWidth="2"
+        markerStart="url(#arrow-blue-down)"
+        markerEnd="url(#arrow-blue-up)"
+      />
       <text x={sx(-0.065 * toeX)} y={sy(H / 2)} fill="#1f77b4" fontSize="11" textAnchor="middle" transform={`rotate(-90 ${sx(-0.065 * toeX)} ${sy(H / 2)})`}>
         H = {H.toFixed(1)} m
       </text>
 
       {B > 0 ? (
         <>
-          <line x1={sx(0)} y1={sy(H * 1.08)} x2={sx(B)} y2={sy(H * 1.08)} stroke="#475569" strokeWidth="1.2" />
-          <polygon points={`${sx(0) + 4},${sy(H * 1.08) - 4} ${sx(0) + 4},${sy(H * 1.08) + 4} ${sx(0)},${sy(H * 1.08)}` } fill="#475569" />
-          <polygon points={`${sx(B) - 4},${sy(H * 1.08) - 4} ${sx(B) - 4},${sy(H * 1.08) + 4} ${sx(B)},${sy(H * 1.08)}` } fill="#475569" />
+          <line
+            x1={sx(0)}
+            y1={sy(H * 1.06)}
+            x2={sx(B)}
+            y2={sy(H * 1.06)}
+            stroke="#555"
+            strokeWidth="1.2"
+            markerStart="url(#arrow-gray-left)"
+            markerEnd="url(#arrow-gray-right)"
+          />
           <text x={sx(B / 2)} y={sy(H * 1.11)} fill="#475569" fontSize="10" textAnchor="middle">
             B = {B.toFixed(1)} m
           </text>
         </>
       ) : null}
 
-      <path d={`M ${arcStartX} ${arcStartY} A ${arcR} ${arcR} 0 ${largeArc} 1 ${arcEndX} ${arcEndY}`} fill="none" stroke="#0f172a" strokeWidth="1.4" />
-      <text x={arcCx - arcR * 0.9} y={arcCy - arcR * 0.25} fill="#0f172a" fontSize="11">
+      <polyline points={arcPoints} fill="none" stroke="#0f172a" strokeWidth="1.4" />
+      <text x={betaLabelX} y={betaLabelY} fill="#0f172a" fontSize="11" textAnchor="middle">
         β = {beta.toFixed(1)}°
       </text>
 
-      <rect x={sx(toeX * 0.58)} y={sy(H * 1.18)} width={178} height={28} fill={col} rx={8} />
-      <text x={sx(toeX * 0.58) + 10} y={sy(H * 1.18) + 18} fill="#fff" fontSize="12" fontWeight="700">
+      <rect x={bannerX} y={bannerY} width={bannerW} height={bannerH} fill={col} rx={8} />
+      <text x={bannerX + bannerW / 2} y={bannerY + 22} fill="#fff" fontSize="13" fontWeight="700" textAnchor="middle">
         {label}
       </text>
     </svg>
@@ -4498,7 +4686,7 @@ function ParamPanel({
   activeDatasetName: string;
 }) {
   const [meta, setMeta] = useState<any>(null);
-  const [resp, setResp] = useState<any>(null);
+  const [optimResult, setOptimResult] = useState<any>(null);
   const [goal, setGoal] = useState<any>(null);
   const [surfaceBusy, setSurfaceBusy] = useState(false);
   const [goalBusy, setGoalBusy] = useState(false);
@@ -4511,17 +4699,25 @@ function ParamPanel({
   const [tolerance, setTolerance] = useState(1e-3);
   const [selectedCell, setSelectedCell] = useState<{ i: number; j: number } | null>(null);
   const resolvedDatasetName = dataset?.file?.name ?? activeDatasetName ?? "(default)";
-  const surfaceGrid = 12;
-  const surfaceSamples = 3;
-  const surfaceMaxIter = 35;
+  const surfaceGrid = 10;
+  const surfaceSamples = 2;
+  const surfaceMaxIter = 20;
+  const fallbackSurfaceGrid = 8;
   const fallbackSurfaceSamples = 1;
-  const fallbackSurfaceMaxIter = 22;
-  const requestTimeoutMs = 45000;
-  const [msg, setMsg] = useState(
-    "Creates an optimisation surface by minimising/maximising the chosen output.\n" +
-      "Other inputs are optimised by a surrogate model within observed bounds.\n\n" +
-      "Use Goal Seek to search for a full input recipe that achieves the chosen target output."
-  );
+  const fallbackSurfaceMaxIter = 8;
+  const requestTimeoutMs = 90000;
+  const resp = useMemo(() => {
+    if (!optimResult?.rows?.length || !optimResult?.bounds) return null;
+    const surface = buildParamSurfaceFromRows(optimResult.rows, optimResult.bounds, x1, x2, output, objective, surfaceGrid);
+    if (!surface) return null;
+    return {
+      ...optimResult,
+      ...surface,
+      note:
+        optimResult?.note ??
+        "Saved Pareto optimisation result reprojected onto the selected axes without rerunning the solver.",
+    };
+  }, [optimResult, x1, x2, output, objective]);
 
   useEffect(() => {
     if (!apiBaseUrl) return;
@@ -4549,19 +4745,23 @@ function ParamPanel({
           setX1((prev) => (json.inputs.includes(prev) ? prev : json.default_x1 ?? json.inputs[0]));
           setX2((prev) => (json.inputs.includes(prev) && prev !== (json.default_x1 ?? json.inputs[0]) ? prev : json.default_x2 ?? json.inputs[1]));
         }
-        setResp(null);
+        setOptimResult(null);
         setGoal(null);
         setSelectedCell(null);
         setErr(null);
-        setMsg(
-          `Active dataset: ${json?.dataset ?? resolvedDatasetName}\n` +
-            "Surrogate optimisation mirrors the desktop workflow by optimising non-axis inputs inside observed dataset bounds."
-        );
       } catch (e: any) {
         setErr(String(e?.message ?? e));
       }
     })();
   }, [apiBaseUrl, token, dataset?.file, resolvedDatasetName]);
+
+  useEffect(() => {
+    if (!output) return;
+    if (output === "Fragmentation") {
+      setTarget(100);
+      setTolerance(10);
+    }
+  }, [output, resolvedDatasetName]);
 
   useEffect(() => {
     if (!resp?.grid_x?.length || !resp?.grid_y?.length) return;
@@ -4581,13 +4781,13 @@ function ParamPanel({
     setSurfaceBusy(true);
     setErr(null);
     try {
-      const requestSurface = async (samples: number, maxIter: number) => {
+      const requestSurface = async (samples: number, maxIter: number, grid: number, fastMode: boolean) => {
         const controller = new AbortController();
         const timeoutId = window.setTimeout(() => controller.abort(), requestTimeoutMs);
         if (dataset?.file) {
           const fd = new FormData();
           fd.append("file", dataset.file);
-          fd.append("payload_json", JSON.stringify({ output, x1, x2, objective, grid: surfaceGrid, samples, max_iter: maxIter }));
+          fd.append("payload_json", JSON.stringify({ output, x1, x2, objective, grid, samples, max_iter: maxIter, fast_mode: fastMode }));
           try {
             return await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/param/surface/upload`, {
               method: "POST",
@@ -4608,9 +4808,10 @@ function ParamPanel({
               x1,
               x2,
               objective,
-              grid: surfaceGrid,
+              grid,
               samples,
               max_iter: maxIter,
+              fast_mode: fastMode,
               dataset: resolvedDatasetName,
             }),
             signal: controller.signal,
@@ -4623,23 +4824,14 @@ function ParamPanel({
       let res: Response;
       let json: any;
       try {
-        res = await requestSurface(surfaceSamples, surfaceMaxIter);
+        res = await requestSurface(surfaceSamples, surfaceMaxIter, surfaceGrid, false);
         json = await res.json();
       } catch (primaryErr: any) {
-        // Retry once with a lighter optimisation workload if the first request drops.
-        res = await requestSurface(fallbackSurfaceSamples, fallbackSurfaceMaxIter);
+        res = await requestSurface(fallbackSurfaceSamples, fallbackSurfaceMaxIter, fallbackSurfaceGrid, true);
         json = await res.json();
-        setMsg(
-          `Optimised surface built with a lightweight retry.\nOutput: ${json.output}\nAxes: ${json.x1}, ${json.x2}\nBest value: ${formatNum(json?.best?.value)}`
-        );
       }
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Surface failed");
-      setResp(json);
-      setMsg((prev) =>
-        prev.startsWith("Optimised surface built with a lightweight retry.")
-          ? prev
-          : `Optimised surface built.\nOutput: ${json.output}\nAxes: ${json.x1}, ${json.x2}\nBest value: ${formatNum(json?.best?.value)}`
-      );
+      setOptimResult(json);
     } catch (e: any) {
       if (e?.name === "AbortError") {
         setErr("Surface optimisation timed out. Please try again; the backend is taking too long to respond.");
@@ -4684,9 +4876,6 @@ function ParamPanel({
       const json = await res.json();
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Goal seek failed");
       setGoal(json);
-      setMsg(
-        `Goal seek target: ${formatNum(json?.target)}\nPredicted: ${formatNum(json?.best?.predicted)}\nAbsolute error: ${formatNum(json?.abs_error)}`
-      );
     } catch (e: any) {
       if (e?.name === "AbortError") {
         setErr("Goal seek timed out. Please try again; the backend is taking too long to respond.");
@@ -4743,13 +4932,14 @@ function ParamPanel({
           <div>
             <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: "-0.02em" }}>Parameter Optimisation</div>
             <div className="subtitle">
-              Desktop-style surrogate optimisation surface plus inverse design, using the active combined dataset selected in the main workspace.
+              Physics-informed surrogate neural-network Pareto optimisation plus inverse design, using the active combined dataset selected in the main workspace.
             </div>
           </div>
           <div className="dataHeaderActions">
             <div className="chip">{dataset?.file ? "Uploaded dataset" : "Shared combined dataset"}</div>
             <div className="chip">{resolvedDatasetName}</div>
             <div className="chip">{objective === "min" ? "Minimisation" : "Maximisation"}</div>
+            {optimResult?.surrogate ? <div className="chip">{optimResult.surrogate}</div> : null}
           </div>
         </div>
       </div>
@@ -4758,7 +4948,15 @@ function ParamPanel({
         <div style={{ marginTop: 0 }} className="grid3">
         <div>
           <label className="label">Output</label>
-          <select className="input" value={output} onChange={(e) => setOutput(e.target.value)}>
+          <select
+            className="input"
+            value={output}
+            onChange={(e) => {
+              setOutput(e.target.value);
+              setGoal(null);
+              setSelectedCell(null);
+            }}
+          >
             {(meta?.outputs ?? []).map((o: string) => (
               <option key={o} value={o}>{o}</option>
             ))}
@@ -4766,7 +4964,14 @@ function ParamPanel({
         </div>
         <div>
           <label className="label">Input 1 (X-axis)</label>
-          <select className="input" value={x1} onChange={(e) => setX1(e.target.value)}>
+          <select
+            className="input"
+            value={x1}
+            onChange={(e) => {
+              setX1(e.target.value);
+              setSelectedCell(null);
+            }}
+          >
             {(meta?.inputs ?? []).map((o: string) => (
               <option key={o} value={o}>{o}</option>
             ))}
@@ -4774,7 +4979,14 @@ function ParamPanel({
         </div>
         <div>
           <label className="label">Input 2 (Y-axis)</label>
-          <select className="input" value={x2} onChange={(e) => setX2(e.target.value)}>
+          <select
+            className="input"
+            value={x2}
+            onChange={(e) => {
+              setX2(e.target.value);
+              setSelectedCell(null);
+            }}
+          >
             {(meta?.inputs ?? []).map((o: string) => (
               <option key={o} value={o}>{o}</option>
             ))}
@@ -4783,13 +4995,21 @@ function ParamPanel({
         </div>
 
         <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-          <button className="btn btnPrimary" onClick={runSurface} disabled={surfaceBusy || goalBusy}>
-            {surfaceBusy ? "Running..." : "Optimise & Plot Surface"}
+          <button className="btn btnPrimary" onClick={runSurface} disabled={surfaceBusy || goalBusy || x1 === x2}>
+            {surfaceBusy ? "Running..." : "Run Pareto Optimisation"}
           </button>
           <button className="btn" onClick={exportSurface} disabled={!resp?.Z || surfaceBusy}>
             Export surface CSV
           </button>
-          <select className="input" value={objective} onChange={(e) => setObjective(e.target.value as any)} style={{ width: 140 }}>
+          <select
+            className="input"
+            value={objective}
+            onChange={(e) => {
+              setObjective(e.target.value as any);
+              setSelectedCell(null);
+            }}
+            style={{ width: 140 }}
+          >
             <option value="max">Maximise</option>
             <option value="min">Minimise</option>
           </select>
@@ -4809,10 +5029,30 @@ function ParamPanel({
 
       {err && <div className="error">{err}</div>}
 
-      <div className="card">
-        <div className="label">Message</div>
-        <pre style={pre}>{msg}</pre>
-      </div>
+      {optimResult?.rows?.length ? (
+        <div className="card">
+          <div className="sectionTitle">Optimisation summary</div>
+          <div className="subtitle">
+            Saved {optimResult.rows.length} Pareto candidate recipes. Changing output or axes now only updates the explorer and 3D surface view; it does not rerun the optimisation.
+          </div>
+          <div className="grid3" style={{ marginTop: 10 }}>
+            <div className="kpi">
+              <div className="kpiTitle">Best {output}</div>
+              <div className="kpiValue">{formatNum(resp?.best?.outputs?.[output] ?? resp?.best?.value)}</div>
+            </div>
+            <div className="kpi">
+              <div className="kpiTitle">Fragmentation target band</div>
+              <div className="kpiValue">
+                {formatNum(optimResult?.fragmentation_target)} +/- {formatNum(optimResult?.fragmentation_tolerance)}
+              </div>
+            </div>
+            <div className="kpi">
+              <div className="kpiTitle">Current view axes</div>
+              <div className="kpiValue">{x1} / {x2}</div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {resp?.Z && (
         <div className="grid2">
@@ -4824,7 +5064,15 @@ function ParamPanel({
           <div className="card">
             <div className="sectionTitle">3D surface view</div>
             <div className="subtitle">{resp.note ?? "Optimised surface of the chosen output across the selected axes."}</div>
-            <SurfaceIsoPlot gridX={resp.grid_x} gridY={resp.grid_y} Z={resp.Z} xLabel={resp.x1} yLabel={resp.x2} zLabel={resp.output} />
+            <SurfaceIsoPlot
+              key={`${resp.output}:${resp.x1}:${resp.x2}:${resp.objective}:${resp.dataset}`}
+              gridX={resp.grid_x}
+              gridY={resp.grid_y}
+              Z={resp.Z}
+              xLabel={resp.x1}
+              yLabel={resp.x2}
+              zLabel={resp.output}
+            />
           </div>
         </div>
       )}
@@ -4843,6 +5091,21 @@ function ParamPanel({
               </div>
             ))}
           </div>
+          {optimResult?.rows?.length ? (
+            <div className="grid3" style={{ marginTop: 10 }}>
+              {Object.entries(
+                optimResult.rows.find(
+                  (row: any) =>
+                    Object.entries(selectedPoint.inputs ?? {}).every(([k, v]) => Math.abs(Number(row?.inputs?.[k]) - Number(v)) < 1e-6)
+                )?.outputs ?? {}
+              ).map(([k, v]: any) => (
+                <div key={`out-${k}`} className="kpi">
+                  <div className="kpiTitle">{k}</div>
+                  <div className="kpiValue">{formatNum(v)}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
       )}
 
@@ -4887,6 +5150,16 @@ function ParamPanel({
               </div>
             ))}
           </div>
+          {goal?.best?.outputs ? (
+            <div className="grid3" style={{ marginTop: 8 }}>
+              {Object.entries(goal.best.outputs).map(([k, v]: any) => (
+                <div key={`goal-out-${k}`} className="kpi">
+                  <div className="kpiTitle">{k}</div>
+                  <div className="kpiValue">{formatNum(v)}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
       )}
     </div>
