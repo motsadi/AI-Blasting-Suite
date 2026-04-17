@@ -621,6 +621,16 @@ a{ color:inherit; }
   background: #f3f4f6;
 }
 
+.activityBar{
+  margin-top: 12px;
+}
+
+.activityMeta{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+}
+
 .homeTitle{
   font-size: 22px;
   font-weight: 800;
@@ -681,6 +691,55 @@ a{ color:inherit; }
 }
 .homeCardActions{
   margin-top: auto;
+}
+
+.guideGrid{
+  display:grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.guideCard{
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: linear-gradient(180deg, #ffffff, #fbfdff);
+  padding: 16px;
+  display:flex;
+  flex-direction:column;
+  gap: 10px;
+  box-shadow: var(--shadow-soft);
+}
+
+.guideHeader{
+  display:flex;
+  align-items:flex-start;
+  gap: 10px;
+}
+
+.guideMeta{
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.guideRow{
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.guideSteps{
+  display:grid;
+  gap: 8px;
+}
+
+.guideStep{
+  border: 1px solid rgba(148,163,184,0.22);
+  background: rgba(248,250,252,0.88);
+  border-radius: 12px;
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .grid2{
@@ -844,6 +903,9 @@ body[data-accent="dark-blue"]{
     grid-template-columns: 1fr;
   }
   .homeHighlights{
+    grid-template-columns: 1fr;
+  }
+  .guideGrid{
     grid-template-columns: 1fr;
   }
   .header{

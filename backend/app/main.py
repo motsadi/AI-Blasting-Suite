@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.auth import require_auth
+from app.auth import require_auth, require_user
 from app.assets import LoadedAssets, assets_status, load_local_assets
 from app.core_imports import add_core_bundle_to_path
 from app.gcs import REQUIRED_DATASET_FILES, sync_assets_from_gcs
@@ -67,6 +70,8 @@ COMBINED_DATASET_CHOICES = [
     "combinedv2Jwaneng.xlsx",
 ]
 
+APP_ACTIVITY_PATH = Path(tempfile.gettempdir()) / "ai-blasting-suite-activity.json"
+
 
 def _dataset_search_candidates(name: str) -> list[Path]:
     return [
@@ -118,6 +123,57 @@ def _asset_search_paths() -> list[Path]:
         Path(core_bundle_path),
         Path("/tmp/ai-blasting-assets"),
     ]
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _read_activity_state() -> dict:
+    default_state = {"last_activity": None, "recent": []}
+    try:
+        if not APP_ACTIVITY_PATH.exists():
+            return default_state
+        raw = json.loads(APP_ACTIVITY_PATH.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return default_state
+        recent = raw.get("recent")
+        return {
+            "last_activity": raw.get("last_activity"),
+            "recent": recent[:12] if isinstance(recent, list) else [],
+        }
+    except Exception:
+        return default_state
+
+
+def _write_activity_state(state: dict) -> dict:
+    safe_state = {
+        "last_activity": state.get("last_activity"),
+        "recent": (state.get("recent") or [])[:12],
+    }
+    try:
+        APP_ACTIVITY_PATH.write_text(json.dumps(safe_state, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    return safe_state
+
+
+def _record_app_activity(email: str, module_key: str, module_title: str) -> dict:
+    state = _read_activity_state()
+    entry = {
+        "email": email or "Unknown",
+        "module_key": module_key or "home",
+        "module_title": module_title or module_key or "Home",
+        "timestamp": _utcnow_iso(),
+    }
+    recent = [entry]
+    for item in state.get("recent", []):
+        if not isinstance(item, dict):
+            continue
+        if item.get("email") == entry["email"] and item.get("module_key") == entry["module_key"]:
+            continue
+        recent.append(item)
+    return _write_activity_state({"last_activity": entry, "recent": recent})
 
 
 def _reload_assets_from_disk() -> LoadedAssets:
@@ -204,6 +260,30 @@ def _startup_sync_assets():
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/v1/activity")
+def get_activity(user: dict = Depends(require_user)):
+    state = _read_activity_state()
+    return {
+        "current_user": {"email": user.get("email", "Unknown")},
+        "last_activity": state.get("last_activity"),
+        "recent": state.get("recent", []),
+        "server_time": _utcnow_iso(),
+    }
+
+
+@app.post("/v1/activity")
+def record_activity(payload: dict = Body(default={}), user: dict = Depends(require_user)):
+    module_key = str(payload.get("module_key") or "home").strip() or "home"
+    module_title = str(payload.get("module_title") or module_key).strip() or module_key
+    state = _record_app_activity(str(user.get("email") or "Unknown"), module_key, module_title)
+    return {
+        "current_user": {"email": user.get("email", "Unknown")},
+        "last_activity": state.get("last_activity"),
+        "recent": state.get("recent", []),
+        "server_time": _utcnow_iso(),
+    }
 
 
 @app.get("/v1/assets/status", response_model=AssetsStatus)
@@ -2649,35 +2729,85 @@ def _param_surface_from_rows(rows: list[dict], bounds: dict, x1: str, x2: str, o
     gy = np.linspace(x2_min, x2_max, grid)
     x_span = max(1e-9, x1_max - x1_min)
     y_span = max(1e-9, x2_max - x2_min)
+    usable_rows = [
+        row for row in rows
+        if isinstance(row.get("inputs"), dict) and isinstance(row.get("outputs"), dict)
+    ]
+    if not usable_rows:
+        return {"error": "No optimisation rows available."}
+
+    input_names = list(usable_rows[0].get("inputs", {}).keys())
+    output_names = list(usable_rows[0].get("outputs", {}).keys())
+    out_values = [float(row.get("outputs", {}).get(output, 0.0)) for row in usable_rows]
+    out_min = min(out_values) if out_values else 0.0
+    out_span = max(1e-9, (max(out_values) - out_min) if out_values else 1.0)
+
+    def _view_score(row: dict) -> float:
+        outputs = row.get("outputs", {})
+        value = float(outputs.get(output, 0.0))
+        if output == "Fragmentation":
+            primary = abs(value - FRAGMENTATION_TARGET_MM) / max(FRAGMENTATION_TOLERANCE_MM, 1.0)
+        else:
+            norm = (value - out_min) / out_span
+            primary = norm if objective == "min" else -norm
+        return float(
+            primary
+            + 4.0 * float(row.get("fragmentation_band_error", 0.0)) / max(FRAGMENTATION_TOLERANCE_MM, 1.0)
+            + 8.0 * float(row.get("positive_error_norm", 0.0))
+            + (0.0 if row.get("feasible") else 1.0)
+            + 0.08 * float(row.get("pareto_rank", 0.0))
+        )
+
+    ranked_rows = sorted(usable_rows, key=_view_score)
+
+    def _blend_at_point(xv: float, yv: float) -> tuple[float, dict[str, float], dict[str, float]]:
+        local = []
+        for row in ranked_rows:
+            cand_inputs = row.get("inputs", {})
+            dx = (float(cand_inputs.get(x1, xv)) - float(xv)) / x_span
+            dy = (float(cand_inputs.get(x2, yv)) - float(yv)) / y_span
+            dist = dx * dx + dy * dy
+            local.append((dist, row))
+        local.sort(key=lambda item: item[0])
+        neighbours = local[: min(8, len(local))]
+        weights = []
+        for dist, row in neighbours:
+            rank_bias = 1.0 / (1.0 + 0.15 * float(row.get("pareto_rank", 0.0)))
+            weights.append(rank_bias / max(1e-6, dist + 0.015))
+        total = max(1e-9, sum(weights))
+        blend_inputs = {}
+        blend_outputs = {}
+        for name in input_names:
+            blend_inputs[name] = float(
+                sum(weight * float(row.get("inputs", {}).get(name, 0.0)) for weight, (_, row) in zip(weights, neighbours)) / total
+            )
+        for name in output_names:
+            blend_outputs[name] = float(
+                sum(weight * float(row.get("outputs", {}).get(name, 0.0)) for weight, (_, row) in zip(weights, neighbours)) / total
+            )
+        return float(blend_outputs.get(output, 0.0)), blend_inputs, blend_outputs
 
     Z = []
     other_grid = []
+    outputs_grid = []
     for xv in gx:
         row_vals = []
         row_inputs = []
+        row_outputs = []
         for yv in gy:
-            chosen = None
-            best_score = None
-            for cand in rows:
-                cand_inputs = cand.get("inputs", {})
-                dx = (float(cand_inputs.get(x1, xv)) - float(xv)) / x_span
-                dy = (float(cand_inputs.get(x2, yv)) - float(yv)) / y_span
-                dist = dx * dx + dy * dy
-                score = dist + 0.06 * float(cand.get("pareto_rank", 0)) + 0.03 * float(abs(cand.get("objective_norm", 0.0)))
-                if cand.get("feasible"):
-                    score -= 0.02
-                if best_score is None or score < best_score:
-                    best_score = score
-                    chosen = cand
-            chosen = chosen or rows[0]
-            row_vals.append(float(chosen.get("outputs", {}).get(output, 0.0)))
-            row_inputs.append({k: float(v) for k, v in chosen.get("inputs", {}).items()})
+            z_val, blend_inputs, blend_outputs = _blend_at_point(float(xv), float(yv))
+            row_vals.append(z_val)
+            row_inputs.append(blend_inputs)
+            row_outputs.append(blend_outputs)
         Z.append(row_vals)
         other_grid.append(row_inputs)
+        outputs_grid.append(row_outputs)
 
-    best_point = None
-    if best_inputs:
-        best_point = {"x1": float(best_inputs.get(x1, gx[0])), "x2": float(best_inputs.get(x2, gy[0]))}
+    best_row = ranked_rows[0]
+    best_point = {
+        "x1": float(best_row.get("inputs", {}).get(x1, best_inputs.get(x1, gx[0]) if best_inputs else gx[0])),
+        "x2": float(best_row.get("inputs", {}).get(x2, best_inputs.get(x2, gy[0]) if best_inputs else gy[0])),
+    }
 
     return {
         "x1": x1,
@@ -2688,6 +2818,7 @@ def _param_surface_from_rows(rows: list[dict], bounds: dict, x1: str, x2: str, o
         "grid_y": gy.tolist(),
         "Z": Z,
         "other_inputs_grid": other_grid,
+        "outputs_grid": outputs_grid,
         "best_point": best_point,
     }
 
@@ -2820,6 +2951,7 @@ def _param_surface_df(df, payload):
         "grid_y": surface["grid_y"],
         "Z": surface["Z"],
         "other_inputs_grid": surface["other_inputs_grid"],
+        "outputs_grid": surface.get("outputs_grid"),
         "best": {
             "value": float(best_row.get("objective_value")) if best_row else None,
             "point": surface.get("best_point"),

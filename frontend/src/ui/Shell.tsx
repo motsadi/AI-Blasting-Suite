@@ -7,6 +7,20 @@ type Props = {
   onLogout: () => void;
 };
 
+type ActivityEntry = {
+  email: string;
+  module_key: string;
+  module_title: string;
+  timestamp: string;
+};
+
+type ActivityState = {
+  current_user?: { email?: string };
+  last_activity?: ActivityEntry | null;
+  recent?: ActivityEntry[];
+  server_time?: string;
+};
+
 type TabKey =
   | "home"
   | "data"
@@ -18,6 +32,14 @@ type TabKey =
   | "flyrock"
   | "slope"
   | "delay";
+
+type ModuleGuide = {
+  tab: TabKey;
+  when: string;
+  helps: string;
+  tasks: string;
+  instructions: string[];
+};
 
 const TAB_META: Record<TabKey, { title: string; desc: string; icon: string }> = {
   home: { title: "Welcome", desc: "Overview and quick access cards", icon: "🏠" },
@@ -39,12 +61,115 @@ const NAV_GROUPS: Array<{ title: string; items: TabKey[] }> = [
   { title: "Admin", items: ["data"] },
 ];
 
+const MODULE_GUIDES: ModuleGuide[] = [
+  {
+    tab: "data",
+    when: "Use this first to load, inspect, filter, and export site datasets.",
+    helps: "It establishes the data quality and active dataset that all downstream modules depend on.",
+    tasks: "Dataset QA, filtering, calibration checks, and export preparation.",
+    instructions: [
+      "Load or append a dataset, then inspect the table and summary tabs.",
+      "Use filters and visuals to confirm valid numeric ranges before modelling.",
+      "Export a cleaned dataset before sharing or using it in optimisation studies.",
+    ],
+  },
+  {
+    tab: "predict",
+    when: "Use when you need blast outcome estimates for a single design option.",
+    helps: "It supports go/no-go decisions by comparing empirical baselines with ML predictions.",
+    tasks: "Checking fragmentation, vibration, airblast, and Rosin-Rammler responses.",
+    instructions: [
+      "Enter the blast parameters or use a prepared dataset row.",
+      "Review empirical versus ML outputs together, not in isolation.",
+      "Use the output cards to identify whether a design is likely to exceed operational limits.",
+    ],
+  },
+  {
+    tab: "feature",
+    when: "Use after prediction to understand what drives the outputs.",
+    helps: "It supports explainability and variable prioritisation for design changes.",
+    tasks: "Feature ranking, PCA review, and directional sensitivity analysis.",
+    instructions: [
+      "Start with feature importance to see the strongest drivers.",
+      "Use PCA and correlations to detect redundancy between inputs.",
+      "Apply the insights when selecting optimisation axes or simplifying the design space.",
+    ],
+  },
+  {
+    tab: "param",
+    when: "Use when you want one optimisation run and then compare multiple input views of it.",
+    helps: "It supports decision-making by showing trade-offs across axes without rerunning the optimiser.",
+    tasks: "Pareto optimisation, goal seek, surface exploration, and recipe selection.",
+    instructions: [
+      "Run Pareto optimisation once for the current dataset and objective.",
+      "After the run, switch output or axis selections to inspect the same saved optimisation from different views.",
+      "Use the surface explorer and selected recipe panel to compare alternative operating points.",
+    ],
+  },
+  {
+    tab: "cost",
+    when: "Use when blast quality, compliance, and cost must be balanced together.",
+    helps: "It supports budget and compliance decisions by exposing Pareto trade-offs instead of one metric only.",
+    tasks: "KPI computation, constrained optimisation, and Pareto frontier export.",
+    instructions: [
+      "Set constraints and weights to reflect the business objective.",
+      "Compare frontier solutions rather than relying on a single best point.",
+      "Export the frontier rows for management review or site planning.",
+    ],
+  },
+  {
+    tab: "delay",
+    when: "Use for sequence timing analysis and plan-view interpretation.",
+    helps: "It supports blasting sequence decisions by exposing likely delay timing behaviour and spatial firing order.",
+    tasks: "Delay prediction, playback review, and sequence diagnostics.",
+    instructions: [
+      "Load a sequence-ready dataset and run the delay prediction.",
+      "Inspect the plan view to verify spatial logic and firing order.",
+      "Use the exported outputs when coordinating implementation with operations teams.",
+    ],
+  },
+  {
+    tab: "slope",
+    when: "Use when you need a quick stability screening.",
+    helps: "It supports risk decisions by classifying likely stable versus failure-prone conditions.",
+    tasks: "Slope condition screening and safety-oriented review.",
+    instructions: [
+      "Provide the required geotechnical inputs.",
+      "Review the predicted class together with the operating context.",
+      "Escalate high-risk cases for deeper engineering assessment.",
+    ],
+  },
+  {
+    tab: "backbreak",
+    when: "Use to estimate wall-control outcomes from available historical data.",
+    helps: "It supports perimeter control decisions and identifies designs that may damage final walls.",
+    tasks: "Back break prediction and scenario review.",
+    instructions: [
+      "Train on a relevant historical dataset.",
+      "Compare predicted back break across candidate designs.",
+      "Use the result with slope and flyrock checks for overall safety review.",
+    ],
+  },
+  {
+    tab: "flyrock",
+    when: "Use when exclusion zones and throw risk must be checked.",
+    helps: "It supports safety decisions by combining ML estimates with empirical sanity checks.",
+    tasks: "Flyrock estimation, surface review, and safe-distance interpretation.",
+    instructions: [
+      "Run the base prediction first.",
+      "Use the surface tools to understand which inputs most influence throw distance.",
+      "Confirm the predicted throw against site limits before approving the design.",
+    ],
+  },
+];
+
 const authHeaders = (token: string) => ({ authorization: `Bearer ${token}` });
 
 export function Shell({ apiBaseUrl, session, onLogout }: Props) {
   const [tab, setTab] = useState<TabKey>("home");
   const [meta, setMeta] = useState<any>(null);
   const [metaErr, setMetaErr] = useState<string | null>(null);
+  const [activity, setActivity] = useState<ActivityState | null>(null);
   const [dataset, setDataset] = useState<{
     file?: File | null;
     rows: Array<Record<string, any>>;
@@ -53,6 +178,29 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [theme, setTheme] = useState<"System" | "Light" | "Dark">("System");
   const [accent, setAccent] = useState<"blue" | "green" | "dark-blue">("blue");
+
+  async function refreshActivity() {
+    if (!apiBaseUrl) return;
+    const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/activity`, {
+      headers: { ...authHeaders(session.token) },
+    });
+    const body = await readJsonOrText(res);
+    if (!res.ok) throw new Error(errorFromBody(res, body));
+    setActivity(body as ActivityState);
+  }
+
+  async function recordActivity(moduleKey: TabKey) {
+    if (!apiBaseUrl) return;
+    const moduleMeta = TAB_META[moduleKey];
+    const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/activity`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders(session.token) },
+      body: JSON.stringify({ module_key: moduleKey, module_title: moduleMeta?.title ?? moduleKey }),
+    });
+    const body = await readJsonOrText(res);
+    if (!res.ok) throw new Error(errorFromBody(res, body));
+    setActivity(body as ActivityState);
+  }
 
   const headerRight = useMemo(() => {
     return (
@@ -119,11 +267,27 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
     (async () => {
       try {
         await refreshMeta();
+        await refreshActivity();
       } catch (e: any) {
         setMetaErr(String(e?.message ?? e));
       }
     })();
-  }, [apiBaseUrl]);
+  }, [apiBaseUrl, session.token]);
+
+  useEffect(() => {
+    if (!apiBaseUrl) return;
+    let ignore = false;
+    (async () => {
+      try {
+        await recordActivity(tab);
+      } catch (e: any) {
+        if (!ignore) setMetaErr(String(e?.message ?? e));
+      }
+    })();
+    return () => {
+      ignore = true;
+    };
+  }, [apiBaseUrl, session.token, tab]);
 
   async function setCombinedDataset(name: string) {
     if (!apiBaseUrl) return;
@@ -214,6 +378,18 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
         <div className="headerRight">{headerRight}</div>
       </div>
 
+      <div className="activityBar">
+        <div className="activityMeta">
+          <span className="pill">Current user: {activity?.current_user?.email ?? session.email}</span>
+          <span className="pill">
+            Last activity:{" "}
+            {activity?.last_activity
+              ? `${activity.last_activity.email} • ${activity.last_activity.module_title} • ${formatDateTime(activity.last_activity.timestamp)}`
+              : "No activity recorded yet"}
+          </span>
+        </div>
+      </div>
+
       <div className={`layout ${sidebarOpen ? "" : "layoutCollapsed"}`}>
         {sidebarOpen && (
           <aside className="sidebar">
@@ -249,7 +425,7 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
         <main className="mainContent">
           {metaErr && <div className="error">{metaErr}</div>}
           {tab === "home" ? (
-            <HomePanel onOpen={setTab} />
+            <HomePanel onOpen={setTab} activity={activity} datasetName={activeCombinedDataset} />
           ) : tab === "predict" ? (
             <PredictPanel apiBaseUrl={apiBaseUrl} token={session.token} meta={meta} dataset={dataset} />
           ) : tab === "data" ? (
@@ -267,9 +443,10 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
               token={session.token}
               dataset={dataset}
               activeDatasetName={activeCombinedDataset}
+              currentUserEmail={activity?.current_user?.email ?? session.email}
             />
           ) : tab === "cost" ? (
-            <CostPanel apiBaseUrl={apiBaseUrl} token={session.token} />
+            <CostPanel apiBaseUrl={apiBaseUrl} token={session.token} currentUserEmail={activity?.current_user?.email ?? session.email} />
           ) : tab === "backbreak" ? (
             <BackbreakPanel apiBaseUrl={apiBaseUrl} token={session.token} />
           ) : tab === "flyrock" ? (
@@ -287,53 +464,194 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
   );
 }
 
-function HomePanel({ onOpen }: { onOpen: (t: TabKey) => void }) {
+function HomePanel({
+  onOpen,
+  activity,
+  datasetName,
+}: {
+  onOpen: (t: TabKey) => void;
+  activity: ActivityState | null;
+  datasetName: string;
+}) {
+  const latest = activity?.last_activity ?? null;
+  const recent = activity?.recent ?? [];
+
+  function exportExecutiveReport() {
+    const reportTitle = "AI Blasting Suite Report";
+    const activityText = latest
+      ? `Last activity: ${latest.email} in ${latest.module_title} on ${formatDateTime(latest.timestamp)}`
+      : "Last activity: not yet recorded";
+    const sections = MODULE_GUIDES.map(
+      (guide) => `
+        <section class="report-section">
+          <h2>${TAB_META[guide.tab].icon} ${TAB_META[guide.tab].title}</h2>
+          <p><strong>Purpose:</strong> ${guide.when}</p>
+          <p><strong>Decision support:</strong> ${guide.helps}</p>
+          <p><strong>Typical tasks:</strong> ${guide.tasks}</p>
+          <ul>${guide.instructions.map((step) => `<li>${step}</li>`).join("")}</ul>
+        </section>
+      `
+    ).join("");
+    const recentRows = recent
+      .map(
+        (entry) =>
+          `<tr><td>${entry.email}</td><td>${entry.module_title}</td><td>${formatDateTime(entry.timestamp)}</td></tr>`
+      )
+      .join("");
+    const html = `
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>${reportTitle}</title>
+          <style>
+            body { font-family: Arial, Helvetica, sans-serif; margin: 32px; color: #111827; }
+            h1 { margin: 0 0 8px; font-size: 28px; }
+            h2 { margin: 0 0 8px; font-size: 18px; }
+            p, li, td, th { font-size: 13px; line-height: 1.55; }
+            .meta { margin-bottom: 22px; padding: 14px 16px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 12px; }
+            .report-section { margin-top: 18px; padding: 16px; border: 1px solid #e5e7eb; border-radius: 12px; page-break-inside: avoid; }
+            table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+            th, td { border: 1px solid #e5e7eb; padding: 8px 10px; text-align: left; }
+            th { background: #f3f4f6; }
+            @media print { body { margin: 18px; } }
+          </style>
+        </head>
+        <body>
+          <h1>${reportTitle}</h1>
+          <div class="meta">
+            <p><strong>Generated:</strong> ${formatDateTime(new Date().toISOString())}</p>
+            <p><strong>Active dataset:</strong> ${datasetName || "(default)"}</p>
+            <p><strong>${activityText}</strong></p>
+            <p><strong>Generated by:</strong> ${activity?.current_user?.email ?? "Unknown"}</p>
+          </div>
+          ${sections}
+          <section class="report-section">
+            <h2>Recent app activity</h2>
+            <table>
+              <thead><tr><th>User</th><th>Module</th><th>Timestamp</th></tr></thead>
+              <tbody>${recentRows || '<tr><td colspan="3">No recent activity recorded.</td></tr>'}</tbody>
+            </table>
+          </section>
+        </body>
+      </html>
+    `;
+    const w = window.open("", "_blank", "noopener,noreferrer,width=980,height=860");
+    if (!w) return;
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+    window.setTimeout(() => {
+      w.focus();
+      w.print();
+    }, 250);
+  }
+
   return (
-    <div className="card">
-      <div className="homeTitle">Welcome 👋</div>
-      <div className="homeSubtitle">
-        AI-driven blast design • Cost &amp; constraint-aware optimisation • USBM + Kuz–Ram empirical baselines
-      </div>
-      <div className="homeHighlights">
-        <div className="highlightPill">Prediction: empirical + ML outputs + RR</div>
-        <div className="highlightPill">Cost Optimisation: KPI, Pareto and penalties</div>
-        <div className="highlightPill">Flyrock: ML estimator + empirical checks</div>
-      </div>
-      <div className="homeGrid">
-        <div className="homeCard">
-          <div className="homeCardIcon">{TAB_META.predict.icon}</div>
-          <div className="homeCardTitle">{TAB_META.predict.title}</div>
-          <div className="homeCardDesc">
-            Run ML &amp; empirical predictions (USBM PPV/Air, Kuz–Ram Xm + RR curve).
+    <div style={{ display: "grid", gap: 14 }}>
+      <div className="card">
+        <div className="homeTitle">Welcome</div>
+        <div className="homeSubtitle">
+          AI-driven blast design • Cost &amp; constraint-aware optimisation • USBM + Kuz–Ram empirical baselines
+        </div>
+        <div className="homeHighlights">
+          <div className="highlightPill">Prediction: empirical + ML outputs + RR</div>
+          <div className="highlightPill">Cost Optimisation: KPI, Pareto and penalties</div>
+          <div className="highlightPill">Flyrock: ML estimator + empirical checks</div>
+        </div>
+        <div className="grid3" style={{ marginTop: 16 }}>
+          <div className="kpi">
+            <div className="kpiTitle">Current user</div>
+            <div className="kpiValue">{activity?.current_user?.email ?? "Unknown"}</div>
           </div>
-          <div className="homeCardActions">
-            <button className="btn btnPrimary" onClick={() => onOpen("predict")}>
-              Open
-            </button>
+          <div className="kpi">
+            <div className="kpiTitle">Last app use</div>
+            <div className="kpiValue">{latest ? formatDateTime(latest.timestamp) : "Not yet recorded"}</div>
+          </div>
+          <div className="kpi">
+            <div className="kpiTitle">Last module used</div>
+            <div className="kpiValue">{latest?.module_title ?? "Home"}</div>
           </div>
         </div>
-        <div className="homeCard">
-          <div className="homeCardIcon">{TAB_META.cost.icon}</div>
-          <div className="homeCardTitle">{TAB_META.cost.title}</div>
-          <div className="homeCardDesc">
-            Minimise cost with penalties for PPV, airblast, fragmentation (Xm→RR X50).
-          </div>
-          <div className="homeCardActions">
-            <button className="btn btnPrimary" onClick={() => onOpen("cost")}>
-              Open
-            </button>
-          </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+          <button className="btn btnPrimary" onClick={exportExecutiveReport}>
+            Export professional report
+          </button>
+          <span className="pill">Printable PDF layout</span>
         </div>
-        <div className="homeCard">
-          <div className="homeCardIcon">{TAB_META.flyrock.icon}</div>
-          <div className="homeCardTitle">{TAB_META.flyrock.title}</div>
-          <div className="homeCardDesc">
-            Predict flyrock (ML + empirical lines); check limits and distances.
+      </div>
+
+      <div className="card">
+        <div className="sectionTitle">Module guide</div>
+        <div className="homeSubtitle">
+          Read how each module is used, what decision it supports, and the kinds of tasks it is best suited for.
+        </div>
+        <div className="guideGrid" style={{ marginTop: 14 }}>
+          {MODULE_GUIDES.map((guide) => (
+            <div key={guide.tab} className="guideCard">
+              <div className="guideHeader">
+                <div className="homeCardIcon">{TAB_META[guide.tab].icon}</div>
+                <div>
+                  <div className="homeCardTitle">{TAB_META[guide.tab].title}</div>
+                  <div className="guideMeta">{TAB_META[guide.tab].desc}</div>
+                </div>
+              </div>
+              <div className="guideRow"><strong>When to use:</strong> {guide.when}</div>
+              <div className="guideRow"><strong>How it helps:</strong> {guide.helps}</div>
+              <div className="guideRow"><strong>Best for:</strong> {guide.tasks}</div>
+              <div className="guideSteps">
+                {guide.instructions.map((step) => (
+                  <div key={step} className="guideStep">{step}</div>
+                ))}
+              </div>
+              <div className="homeCardActions">
+                <button className="btn btnPrimary" onClick={() => onOpen(guide.tab)}>
+                  Open module
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="sectionTitle">Quick access</div>
+        <div className="homeGrid">
+          <div className="homeCard">
+            <div className="homeCardIcon">{TAB_META.predict.icon}</div>
+            <div className="homeCardTitle">{TAB_META.predict.title}</div>
+            <div className="homeCardDesc">
+              Run ML &amp; empirical predictions (USBM PPV/Air, Kuz–Ram Xm + RR curve).
+            </div>
+            <div className="homeCardActions">
+              <button className="btn btnPrimary" onClick={() => onOpen("predict")}>
+                Open
+              </button>
+            </div>
           </div>
-          <div className="homeCardActions">
-            <button className="btn btnPrimary" onClick={() => onOpen("flyrock")}>
-              Open
-            </button>
+          <div className="homeCard">
+            <div className="homeCardIcon">{TAB_META.cost.icon}</div>
+            <div className="homeCardTitle">{TAB_META.cost.title}</div>
+            <div className="homeCardDesc">
+              Minimise cost with penalties for PPV, airblast, fragmentation (Xm→RR X50).
+            </div>
+            <div className="homeCardActions">
+              <button className="btn btnPrimary" onClick={() => onOpen("cost")}>
+                Open
+              </button>
+            </div>
+          </div>
+          <div className="homeCard">
+            <div className="homeCardIcon">{TAB_META.flyrock.icon}</div>
+            <div className="homeCardTitle">{TAB_META.flyrock.title}</div>
+            <div className="homeCardDesc">
+              Predict flyrock (ML + empirical lines); check limits and distances.
+            </div>
+            <div className="homeCardActions">
+              <button className="btn btnPrimary" onClick={() => onOpen("flyrock")}>
+                Open
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -2757,6 +3075,19 @@ function formatNum(v: any) {
   return Math.abs(n) >= 1000 ? n.toFixed(0) : n.toFixed(2);
 }
 
+function formatDateTime(value: string | number | Date | null | undefined) {
+  if (!value) return "—";
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(d);
+}
+
 function SurfaceHeatmap({
   gridX,
   gridY,
@@ -2843,42 +3174,82 @@ function buildParamSurfaceFromRows(rows: any[], bounds: Record<string, any>, x1:
   const ySpan = Math.max(1e-9, x2Max - x2Min);
   const usableRows = rows.filter((row) => row?.inputs && row?.outputs);
   if (!usableRows.length) return null;
-
-  const surfaceRows = [...usableRows].sort((a, b) => {
-    const aFeasible = !!a?.feasible;
-    const bFeasible = !!b?.feasible;
-    if (aFeasible !== bFeasible) return aFeasible ? -1 : 1;
-    return Number(a?.pareto_rank ?? 999) - Number(b?.pareto_rank ?? 999);
-  });
+  const outputValues = usableRows
+    .map((row) => Number(row?.outputs?.[output]))
+    .filter((v) => Number.isFinite(v));
+  const outMin = Math.min(...outputValues);
+  const outSpan = Math.max(1e-9, Math.max(...outputValues) - outMin);
+  const scoreRow = (row: any) => {
+    const value = Number(row?.outputs?.[output] ?? 0);
+    const objectiveScore =
+      output === "Fragmentation"
+        ? Math.abs(value - 100) / 10
+        : objective === "min"
+          ? (value - outMin) / outSpan
+          : -((value - outMin) / outSpan);
+    return (
+      objectiveScore +
+      4 * Number(row?.fragmentation_band_error ?? 0) / 10 +
+      8 * Number(row?.positive_error_norm ?? 0) +
+      (row?.feasible ? 0 : 1) +
+      0.08 * Number(row?.pareto_rank ?? 0)
+    );
+  };
+  const surfaceRows = [...usableRows].sort((a, b) => scoreRow(a) - scoreRow(b));
   const bestRow = surfaceRows[0];
   const Z: number[][] = [];
   const otherInputsGrid: Array<Array<Record<string, number>>> = [];
+  const outputsGrid: Array<Array<Record<string, number>>> = [];
 
-  gx.forEach((xv) => {
-    const rowVals: number[] = [];
-    const rowInputs: Array<Record<string, number>> = [];
-    gy.forEach((yv) => {
-      let chosen = surfaceRows[0];
-      let bestScore = Number.POSITIVE_INFINITY;
-      surfaceRows.forEach((candidate) => {
+  const inputNames = Object.keys(bestRow?.inputs ?? {});
+  const outputNames = Object.keys(bestRow?.outputs ?? {});
+
+  function blendAtPoint(xv: number, yv: number) {
+    const nearest = surfaceRows
+      .map((candidate) => {
         const cx = Number(candidate?.inputs?.[x1]);
         const cy = Number(candidate?.inputs?.[x2]);
         const dx = (cx - xv) / xSpan;
         const dy = (cy - yv) / ySpan;
-        let score = dx * dx + dy * dy;
-        score += 0.06 * Number(candidate?.pareto_rank ?? 0);
-        score += 0.03 * Math.abs(Number(candidate?.objective_norm ?? 0));
-        if (candidate?.feasible) score -= 0.02;
-        if (score < bestScore) {
-          bestScore = score;
-          chosen = candidate;
-        }
-      });
-      rowVals.push(Number(chosen?.outputs?.[output] ?? 0));
-      rowInputs.push({ ...(chosen?.inputs ?? {}) });
+        return { candidate, dist: dx * dx + dy * dy };
+      })
+      .sort((a, b) => a.dist - b.dist)
+      .slice(0, Math.min(8, surfaceRows.length));
+    const weights = nearest.map(({ candidate, dist }) => {
+      const rankBias = 1 / (1 + 0.15 * Number(candidate?.pareto_rank ?? 0));
+      return rankBias / Math.max(1e-6, dist + 0.015);
+    });
+    const total = weights.reduce((sum, w) => sum + w, 0) || 1;
+    const blendedInputs: Record<string, number> = {};
+    const blendedOutputs: Record<string, number> = {};
+    inputNames.forEach((name) => {
+      blendedInputs[name] = nearest.reduce(
+        (sum, item, idx) => sum + weights[idx] * Number(item.candidate?.inputs?.[name] ?? 0),
+        0
+      ) / total;
+    });
+    outputNames.forEach((name) => {
+      blendedOutputs[name] = nearest.reduce(
+        (sum, item, idx) => sum + weights[idx] * Number(item.candidate?.outputs?.[name] ?? 0),
+        0
+      ) / total;
+    });
+    return { inputs: blendedInputs, outputs: blendedOutputs };
+  }
+
+  gx.forEach((xv) => {
+    const rowVals: number[] = [];
+    const rowInputs: Array<Record<string, number>> = [];
+    const rowOutputs: Array<Record<string, number>> = [];
+    gy.forEach((yv) => {
+      const blended = blendAtPoint(xv, yv);
+      rowVals.push(Number(blended.outputs?.[output] ?? 0));
+      rowInputs.push({ ...(blended.inputs ?? {}) });
+      rowOutputs.push({ ...(blended.outputs ?? {}) });
     });
     Z.push(rowVals);
     otherInputsGrid.push(rowInputs);
+    outputsGrid.push(rowOutputs);
   });
 
   return {
@@ -2890,6 +3261,7 @@ function buildParamSurfaceFromRows(rows: any[], bounds: Record<string, any>, x1:
     grid_y: gy,
     Z,
     other_inputs_grid: otherInputsGrid,
+    outputs_grid: outputsGrid,
     best: {
       value: Number(bestRow?.objective_value ?? bestRow?.outputs?.[output] ?? 0),
       point: {
@@ -4865,15 +5237,18 @@ function ParamPanel({
   token,
   dataset,
   activeDatasetName,
+  currentUserEmail,
 }: {
   apiBaseUrl: string;
   token: string;
   dataset: { file?: File | null; rows: Array<Record<string, any>>; columns: string[] };
   activeDatasetName: string;
+  currentUserEmail: string;
 }) {
   const [meta, setMeta] = useState<any>(null);
   const [optimResult, setOptimResult] = useState<any>(null);
   const [goal, setGoal] = useState<any>(null);
+  const [runStamp, setRunStamp] = useState<string | null>(null);
   const [surfaceBusy, setSurfaceBusy] = useState(false);
   const [goalBusy, setGoalBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -4895,6 +5270,10 @@ function ParamPanel({
   const emergencySurfaceSamples = 1;
   const emergencySurfaceMaxIter = 4;
   const requestTimeoutMs = 90000;
+  const surfaceExplorerRef = useRef<HTMLDivElement | null>(null);
+  const surface3dRef = useRef<HTMLDivElement | null>(null);
+  const xProfileRef = useRef<HTMLDivElement | null>(null);
+  const yProfileRef = useRef<HTMLDivElement | null>(null);
   const resp = useMemo(() => {
     if (!optimResult?.rows?.length || !optimResult?.bounds) return null;
     const surface = buildParamSurfaceFromRows(optimResult.rows, optimResult.bounds, x1, x2, output, objective, surfaceGrid);
@@ -5023,6 +5402,7 @@ function ParamPanel({
       if (!json?.rows?.length) throw new Error("No optimisation candidates were returned from production.");
       if (!json?.bounds || typeof json.bounds !== "object") throw new Error("Optimisation response was missing bounds.");
       setOptimResult(json);
+      setRunStamp(new Date().toISOString());
     } catch (e: any) {
       if (e?.name === "AbortError") {
         setErr("Surface optimisation timed out. Please try again; the backend is taking too long to respond.");
@@ -5086,6 +5466,7 @@ function ParamPanel({
       y: resp.grid_y?.[j],
       z: resp.Z?.[i]?.[j],
       inputs: resp.other_inputs_grid?.[i]?.[j] ?? null,
+      outputs: resp.outputs_grid?.[i]?.[j] ?? null,
     };
   }, [resp, selectedCell]);
 
@@ -5114,6 +5495,149 @@ function ParamPanel({
     });
     const cols = Object.keys(rows[0] ?? {});
     downloadCsv(rows, cols, "param_surface.csv");
+  }
+
+  function exportOptimisationReport() {
+    if (!resp || !optimResult?.rows?.length) return;
+    const extractSvg = (host: HTMLDivElement | null, title: string) => {
+      const svg = host?.querySelector("svg");
+      if (!svg) return "";
+      return `
+        <section class="section">
+          <h2>${title}</h2>
+          <div class="chartWrap">${svg.outerHTML}</div>
+        </section>
+      `;
+    };
+    const bestInputs = Object.entries(resp?.best?.inputs ?? {})
+      .map(([k, v]) => `<li><strong>${k}:</strong> ${formatNum(v)}</li>`)
+      .join("");
+    const bestOutputs = Object.entries(resp?.best?.outputs ?? {})
+      .map(([k, v]) => `<li><strong>${k}:</strong> ${formatNum(v)}</li>`)
+      .join("");
+    const selectedInputs = Object.entries(selectedPoint?.inputs ?? {})
+      .map(([k, v]) => `<li><strong>${k}:</strong> ${formatNum(v)}</li>`)
+      .join("");
+    const selectedOutputs = Object.entries(selectedPoint?.outputs ?? {})
+      .map(([k, v]) => `<li><strong>${k}:</strong> ${formatNum(v)}</li>`)
+      .join("");
+    const goalInputs = Object.entries(goal?.best?.inputs ?? {})
+      .map(([k, v]) => `<li><strong>${k}:</strong> ${formatNum(v)}</li>`)
+      .join("");
+    const goalOutputs = Object.entries(goal?.best?.outputs ?? {})
+      .map(([k, v]) => `<li><strong>${k}:</strong> ${formatNum(v)}</li>`)
+      .join("");
+    const surfaceExplorerSvg = extractSvg(surfaceExplorerRef.current, "Surface explorer");
+    const surface3dSvg = extractSvg(surface3dRef.current, "3D surface view");
+    const xProfileSvg = extractSvg(xProfileRef.current, `${resp?.x1} profile`);
+    const yProfileSvg = extractSvg(yProfileRef.current, `${resp?.x2} profile`);
+    const html = `
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>Parameter Optimisation Report</title>
+          <style>
+            body { font-family: Arial, Helvetica, sans-serif; margin: 28px; color: #111827; }
+            h1 { margin: 0 0 6px; font-size: 28px; }
+            h2 { margin: 0 0 10px; font-size: 18px; }
+            p, li, td, th { font-size: 13px; line-height: 1.55; }
+            .meta, .section { border: 1px solid #dbe4ee; border-radius: 12px; padding: 16px; margin-top: 14px; background: #fff; }
+            .meta { background: #f8fafc; }
+            .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+            .chartGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+            .chartWrap { margin-top: 10px; border: 1px solid #e5e7eb; border-radius: 12px; padding: 10px; background: #ffffff; }
+            .chartWrap svg { width: 100%; height: auto; display: block; }
+            ul { margin: 8px 0 0 18px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            th, td { border: 1px solid #e5e7eb; padding: 8px 10px; text-align: left; }
+            th { background: #f3f4f6; }
+            @media print { body { margin: 18px; } .chartGrid, .grid { grid-template-columns: 1fr; } }
+          </style>
+        </head>
+        <body>
+          <h1>Parameter Optimisation Report</h1>
+          <div class="meta">
+            <p><strong>Run by:</strong> ${currentUserEmail || "Unknown"}</p>
+            <p><strong>Run timestamp:</strong> ${formatDateTime(runStamp)}</p>
+            <p><strong>Dataset:</strong> ${resolvedDatasetName}</p>
+            <p><strong>Objective:</strong> ${objective === "min" ? "Minimise" : "Maximise"} ${output}</p>
+            <p><strong>Current surface view:</strong> ${x1} vs ${x2}</p>
+            <p><strong>Saved optimisation candidates:</strong> ${optimResult.rows.length}</p>
+            <p><strong>Surrogate:</strong> ${optimResult?.surrogate ?? "Not reported"}</p>
+          </div>
+          <div class="grid">
+            <section class="section">
+              <h2>Best optimisation recipe</h2>
+              <p><strong>Best ${output}:</strong> ${formatNum(resp?.best?.outputs?.[output] ?? resp?.best?.value)}</p>
+              <ul>${bestInputs || "<li>No input recipe available.</li>"}</ul>
+              <h2 style="margin-top:14px;">Predicted outputs</h2>
+              <ul>${bestOutputs || "<li>No output summary available.</li>"}</ul>
+            </section>
+            <section class="section">
+              <h2>Current selected surface point</h2>
+              <p><strong>${resp?.x1}:</strong> ${formatNum(selectedPoint?.x)} <strong>${resp?.x2}:</strong> ${formatNum(selectedPoint?.y)} <strong>${resp?.output}:</strong> ${formatNum(selectedPoint?.z)}</p>
+              <ul>${selectedInputs || "<li>No selected point inputs yet.</li>"}</ul>
+              <h2 style="margin-top:14px;">Selected point outputs</h2>
+              <ul>${selectedOutputs || "<li>No selected point outputs yet.</li>"}</ul>
+            </section>
+          </div>
+          <section class="section">
+            <h2>Run summary</h2>
+            <table>
+              <thead>
+                <tr>
+                  <th>Metric</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td>Fragmentation target</td><td>${formatNum(optimResult?.fragmentation_target)} +/- ${formatNum(optimResult?.fragmentation_tolerance)}</td></tr>
+                <tr><td>Rows used</td><td>${optimResult?.rows_used ?? "—"}</td></tr>
+                <tr><td>Train R²</td><td>${formatNum(optimResult?.train_r2)}</td></tr>
+                <tr><td>Test R²</td><td>${formatNum(optimResult?.test_r2)}</td></tr>
+                <tr><td>Run note</td><td>${resp?.note ?? ""}</td></tr>
+              </tbody>
+            </table>
+          </section>
+          <section class="section">
+            <h2>Goal seek result</h2>
+            <p><strong>Status:</strong> ${goal?.best?.inputs ? (goal?.within_tolerance ? "Within tolerance" : "Outside tolerance") : "Not run"}</p>
+            <p><strong>Target:</strong> ${formatNum(goal?.target)} <strong>Predicted:</strong> ${formatNum(goal?.best?.predicted)} <strong>Absolute error:</strong> ${formatNum(goal?.abs_error)}</p>
+            <div class="grid">
+              <div>
+                <h2>Goal seek inputs</h2>
+                <ul>${goalInputs || "<li>No goal seek inputs available.</li>"}</ul>
+              </div>
+              <div>
+                <h2>Goal seek outputs</h2>
+                <ul>${goalOutputs || "<li>No goal seek outputs available.</li>"}</ul>
+              </div>
+            </div>
+          </section>
+          ${surfaceExplorerSvg || surface3dSvg || xProfileSvg || yProfileSvg ? `
+            <section class="section">
+              <h2>Current visual views</h2>
+              <div class="chartGrid">
+                ${surfaceExplorerSvg}
+                ${surface3dSvg}
+                ${xProfileSvg}
+                ${yProfileSvg}
+              </div>
+            </section>
+          ` : ""}
+        </body>
+      </html>
+    `;
+    const w = window.open("", "_blank", "noopener,noreferrer,width=980,height=860");
+    if (!w) return;
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+    window.setTimeout(() => {
+      w.focus();
+      w.print();
+    }, 250);
   }
 
   return (
@@ -5192,6 +5716,9 @@ function ParamPanel({
           <button className="btn" onClick={exportSurface} disabled={!resp?.Z || surfaceBusy}>
             Export surface CSV
           </button>
+          <button className="btn" onClick={exportOptimisationReport} disabled={!optimResult?.rows?.length || surfaceBusy}>
+            Export optimisation report
+          </button>
           <select
             className="input"
             value={objective}
@@ -5241,18 +5768,30 @@ function ParamPanel({
               <div className="kpiTitle">Current view axes</div>
               <div className="kpiValue">{x1} / {x2}</div>
             </div>
+            <div className="kpi">
+              <div className="kpiTitle">Run timestamp</div>
+              <div className="kpiValue">{formatDateTime(runStamp)}</div>
+            </div>
+            <div className="kpi">
+              <div className="kpiTitle">Run by</div>
+              <div className="kpiValue">{currentUserEmail}</div>
+            </div>
+            <div className="kpi">
+              <div className="kpiTitle">Dataset</div>
+              <div className="kpiValue">{resolvedDatasetName}</div>
+            </div>
           </div>
         </div>
       ) : null}
 
       {resp?.Z && (
         <div className="grid2">
-          <div className="card">
+          <div className="card" ref={surfaceExplorerRef}>
             <div className="sectionTitle">Surface explorer</div>
             <div className="subtitle">Hover or click cells to inspect the optimised non-axis inputs at that surface point.</div>
             <ParamSurfaceExplorer surface={resp} selectedCell={selectedCell} onSelect={setSelectedCell} />
           </div>
-          <div className="card">
+          <div className="card" ref={surface3dRef}>
             <div className="sectionTitle">3D surface view</div>
             <div className="subtitle">{resp.note ?? "Optimised surface of the chosen output across the selected axes."}</div>
             <SurfaceIsoPlot
@@ -5284,12 +5823,7 @@ function ParamPanel({
           </div>
           {optimResult?.rows?.length ? (
             <div className="grid3" style={{ marginTop: 10 }}>
-              {Object.entries(
-                optimResult.rows.find(
-                  (row: any) =>
-                    Object.entries(selectedPoint.inputs ?? {}).every(([k, v]) => Math.abs(Number(row?.inputs?.[k]) - Number(v)) < 1e-6)
-                )?.outputs ?? {}
-              ).map(([k, v]: any) => (
+              {Object.entries(selectedPoint.outputs ?? {}).map(([k, v]: any) => (
                 <div key={`out-${k}`} className="kpi">
                   <div className="kpiTitle">{k}</div>
                   <div className="kpiValue">{formatNum(v)}</div>
@@ -5302,7 +5836,7 @@ function ParamPanel({
 
       {resp?.Z && selectedCell && (
         <div className="grid2">
-          <div className="card">
+          <div className="card" ref={xProfileRef}>
             <div className="sectionTitle">{resp.x1} profile</div>
             <PolylinePlot
               points={xProfile}
@@ -5313,7 +5847,7 @@ function ParamPanel({
               yLabel={resp.output}
             />
           </div>
-          <div className="card">
+          <div className="card" ref={yProfileRef}>
             <div className="sectionTitle">{resp.x2} profile</div>
             <PolylinePlot
               points={yProfile}
@@ -5357,7 +5891,7 @@ function ParamPanel({
   );
 }
 
-function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }) {
+function CostPanel({ apiBaseUrl, token, currentUserEmail }: { apiBaseUrl: string; token: string; currentUserEmail: string }) {
   const [defaults, setDefaults] = useState<Record<string, number>>({});
   const [computeBusy, setComputeBusy] = useState(false);
   const [optBusy, setOptBusy] = useState(false);
@@ -5376,6 +5910,12 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
   const [solverMessage, setSolverMessage] = useState<string | null>(null);
   const autoComputedRef = useRef(false);
   const requestTimeoutMs = 45000;
+  const [lastComputeStamp, setLastComputeStamp] = useState<string | null>(null);
+  const [lastOptimizeStamp, setLastOptimizeStamp] = useState<string | null>(null);
+  const [lastParetoStamp, setLastParetoStamp] = useState<string | null>(null);
+  const costBreakRef = useRef<HTMLDivElement | null>(null);
+  const penaltiesRef = useRef<HTMLDivElement | null>(null);
+  const paretoScatterRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!apiBaseUrl) return;
@@ -5431,6 +5971,7 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     try {
       const json = await postCost("/v1/cost/compute", requestBody);
       setResp(json);
+      setLastComputeStamp(new Date().toISOString());
     } catch (e: any) {
       setErr(e?.name === "AbortError" ? "KPI computation timed out. Please try again." : String(e?.message ?? e));
     } finally {
@@ -5459,6 +6000,7 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
           ? `${json?.success ? "Optimisation completed." : "Optimisation finished with solver warning."} ${json.message}`
           : "Optimisation completed."
       );
+      setLastOptimizeStamp(new Date().toISOString());
     } catch (e: any) {
       setErr(e?.name === "AbortError" ? "Cost optimisation timed out. Please try SLSQP or adjust inputs." : String(e?.message ?? e));
     } finally {
@@ -5476,6 +6018,7 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
       setFrontier(json?.frontier ?? json?.rows ?? []);
       setSelectedParetoIdx(0);
       setSolverMessage(`Pareto frontier built with ${json?.frontier?.length ?? json?.rows?.length ?? 0} candidate solutions.`);
+      setLastParetoStamp(new Date().toISOString());
     } catch (e: any) {
       setErr(e?.name === "AbortError" ? "Pareto exploration timed out. Please try SLSQP or narrower constraints." : String(e?.message ?? e));
     } finally {
@@ -5524,6 +6067,153 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     () => frontierByCost.slice(0, 10).map((row, idx) => ({ x: idx + 1, y: Number(row.X50 ?? 0) })),
     [frontierByCost]
   );
+
+  function exportCostReport() {
+    if (!resp) return;
+    const extractSvg = (host: HTMLDivElement | null, title: string) => {
+      const svg = host?.querySelector("svg");
+      if (!svg) return "";
+      return `
+        <section class="section">
+          <h2>${title}</h2>
+          <div class="chartWrap">${svg.outerHTML}</div>
+        </section>
+      `;
+    };
+    const settingsRows = [
+      ["Method", method],
+      ["Objective mode", objectiveMode],
+      ["Use fragmentation", String(useFrag)],
+      ["Constrain PPV", String(usePpv)],
+      ["Constrain Airblast", String(useAir)],
+      ["Weight frag", formatNum(weights.frag)],
+      ["Weight PPV", formatNum(weights.ppv)],
+      ["Weight air", formatNum(weights.air)],
+    ]
+      .map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`)
+      .join("");
+    const inputRows = Object.entries(resp?.inputs ?? {})
+      .map(([k, v]) => `<tr><td>${k}</td><td>${formatNum(v)}</td></tr>`)
+      .join("");
+    const derivedRows = Object.entries(resp?.derived ?? {})
+      .map(([k, v]) => `<tr><td>${k}</td><td>${formatNum(v)}</td></tr>`)
+      .join("");
+    const constraintRows = Object.entries(resp?.constraint_checks ?? {})
+      .filter(([, v]) => typeof v === "boolean")
+      .map(([k, v]) => `<tr><td>${k.replace(/_/g, " ")}</td><td>${v ? "Pass" : "Check"}</td></tr>`)
+      .join("");
+    const paretoPreviewRows = frontierRows
+      .slice(0, 12)
+      .map(
+        (row) =>
+          `<tr>${frontierColumns.map((col) => `<td>${formatNum(row?.[col])}</td>`).join("")}</tr>`
+      )
+      .join("");
+    const costBreakSvg = extractSvg(costBreakRef.current, "Cost breakdown");
+    const penaltiesSvg = extractSvg(penaltiesRef.current, "Penalty breakdown");
+    const paretoSvg = extractSvg(paretoScatterRef.current, "Pareto frontier");
+    const html = `
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>Cost Optimisation Report</title>
+          <style>
+            body { font-family: Arial, Helvetica, sans-serif; margin: 28px; color: #111827; }
+            h1 { margin: 0 0 6px; font-size: 28px; }
+            h2 { margin: 0 0 10px; font-size: 18px; }
+            p, li, td, th { font-size: 13px; line-height: 1.55; }
+            .meta, .section { border: 1px solid #dbe4ee; border-radius: 12px; padding: 16px; margin-top: 14px; background: #fff; }
+            .meta { background: #f8fafc; }
+            .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+            .chartGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+            .chartWrap { margin-top: 10px; border: 1px solid #e5e7eb; border-radius: 12px; padding: 10px; background: #ffffff; }
+            .chartWrap svg { width: 100%; height: auto; display: block; }
+            pre { white-space: pre-wrap; background: #f8fafc; border-radius: 12px; padding: 14px; border: 1px solid #e5e7eb; }
+            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            th, td { border: 1px solid #e5e7eb; padding: 8px 10px; text-align: left; }
+            th { background: #f3f4f6; }
+            @media print { body { margin: 18px; } .grid, .chartGrid { grid-template-columns: 1fr; } }
+          </style>
+        </head>
+        <body>
+          <h1>Cost Optimisation Report</h1>
+          <div class="meta">
+            <p><strong>Generated by:</strong> ${currentUserEmail || "Unknown"}</p>
+            <p><strong>Generated:</strong> ${formatDateTime(new Date().toISOString())}</p>
+            <p><strong>Last KPI compute:</strong> ${formatDateTime(lastComputeStamp)}</p>
+            <p><strong>Last optimisation:</strong> ${formatDateTime(lastOptimizeStamp)}</p>
+            <p><strong>Last Pareto run:</strong> ${formatDateTime(lastParetoStamp)}</p>
+          </div>
+          <section class="section">
+            <h2>Optimisation settings</h2>
+            <table><tbody>${settingsRows}</tbody></table>
+          </section>
+          <div class="grid">
+            <section class="section">
+              <h2>Current KPI summary</h2>
+              <table>
+                <tbody>
+                  <tr><td>Cost</td><td>${formatNum(resp?.cost)}</td></tr>
+                  <tr><td>PPV</td><td>${formatNum(resp?.PPV)}</td></tr>
+                  <tr><td>Airblast</td><td>${formatNum(resp?.L)}</td></tr>
+                  <tr><td>X50</td><td>${formatNum(resp?.X50)}</td></tr>
+                  <tr><td>Oversize %</td><td>${formatNum((resp?.oversize ?? 0) * 100)}</td></tr>
+                  <tr><td>PF</td><td>${formatNum(resp?.derived?.PF)}</td></tr>
+                </tbody>
+              </table>
+            </section>
+            <section class="section">
+              <h2>Engineering report</h2>
+              <pre>${report}</pre>
+            </section>
+          </div>
+          <div class="grid">
+            <section class="section">
+              <h2>Inputs used</h2>
+              <table><tbody>${inputRows || "<tr><td colspan='2'>No input snapshot available.</td></tr>"}</tbody></table>
+            </section>
+            <section class="section">
+              <h2>Derived values</h2>
+              <table><tbody>${derivedRows || "<tr><td colspan='2'>No derived values available.</td></tr>"}</tbody></table>
+            </section>
+          </div>
+          <section class="section">
+            <h2>Constraint checks</h2>
+            <table><tbody>${constraintRows || "<tr><td colspan='2'>No constraint checks available.</td></tr>"}</tbody></table>
+          </section>
+          ${costBreakSvg || penaltiesSvg || paretoSvg ? `
+            <section class="section">
+              <h2>Current visual views</h2>
+              <div class="chartGrid">
+                ${costBreakSvg}
+                ${penaltiesSvg}
+                ${paretoSvg}
+              </div>
+            </section>
+          ` : ""}
+          ${frontierRows.length ? `
+            <section class="section">
+              <h2>Pareto frontier preview</h2>
+              <table>
+                <thead><tr>${frontierColumns.map((col) => `<th>${col}</th>`).join("")}</tr></thead>
+                <tbody>${paretoPreviewRows}</tbody>
+              </table>
+            </section>
+          ` : ""}
+        </body>
+      </html>
+    `;
+    const w = window.open("", "_blank", "noopener,noreferrer,width=980,height=860");
+    if (!w) return;
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+    window.setTimeout(() => {
+      w.focus();
+      w.print();
+    }, 250);
+  }
 
   const groups = [
     {
@@ -5663,6 +6353,9 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
         <button className="btn" onClick={method === "Pareto" ? runPareto : runOptimize} disabled={busy}>
           {method === "Pareto" ? (paretoBusy ? "Running Pareto…" : "Optimise") : optBusy ? "Optimising…" : "Optimise"}
         </button>
+        <button className="btn" onClick={exportCostReport} disabled={!resp}>
+          Export cost report
+        </button>
       </div>
       {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
       {solverMessage && <div className="card" style={{ marginTop: 10, padding: 12 }}>{solverMessage}</div>}
@@ -5699,7 +6392,7 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
             </div>
           </div>
           {resp.cost_break && (
-            <div className="card">
+            <div className="card" ref={costBreakRef}>
               <div className="label">Cost Breakdown</div>
               <BarChart
                 labels={["Initiation", "Explosive", "Drilling"]}
@@ -5708,7 +6401,7 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
             </div>
           )}
           {resp.penalties && (
-            <div className="card">
+            <div className="card" ref={penaltiesRef}>
               <div className="label">Penalty Breakdown</div>
               <BarChart
                 labels={["Fragmentation", "PPV", "Airblast"]}
@@ -5761,7 +6454,9 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
               Export Frontier CSV
             </button>
           </div>
-          <ParetoScatter rows={frontierRows} />
+          <div ref={paretoScatterRef}>
+            <ParetoScatter rows={frontierRows} />
+          </div>
           {selectedParetoRow && (
             <div style={{ display: "grid", gap: 12, marginTop: 12 }}>
               <div className="grid3">
