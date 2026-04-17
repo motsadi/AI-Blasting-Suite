@@ -2724,16 +2724,14 @@ def _param_surface_df(df, payload):
     med_vec = np.array([medians[c] for c in inputs], dtype=float)
     var_bounds = [bounds[c] for c in inputs]
     rng = np.random.default_rng(42)
-    random_count = 240 if fast_mode else 720
+    random_count = 64 if fast_mode else 120
     scalar_weights = [
         {"gv": 0.20, "air": 0.20, "frag": 0.55},
         {"gv": 0.40, "air": 0.25, "frag": 0.45},
         {"gv": 0.25, "air": 0.40, "frag": 0.45},
-        {"gv": 0.55, "air": 0.25, "frag": 0.25},
-        {"gv": 0.25, "air": 0.55, "frag": 0.25},
         {"gv": 0.35, "air": 0.35, "frag": 0.35},
     ]
-    for _ in range(3 if fast_mode else 8):
+    for _ in range(2 if fast_mode else 3):
         w = rng.dirichlet(np.array([1.0, 1.0, 1.0], dtype=float))
         scalar_weights.append({"gv": float(w[0]), "air": float(w[1]), "frag": float(w[2])})
 
@@ -2762,13 +2760,13 @@ def _param_surface_df(df, payload):
         _add_candidate(guess)
 
     seed_rows = list(rows)
-    local_iter = max(24, min(120, int(max_iter * 4)))
+    local_iter = max(8, min(20, int(max_iter * 2)))
 
     def _scalar_objective(xvec: np.ndarray, weights: dict[str, float]) -> float:
         row = _param_make_candidate(bundle, _vec_to_dict(xvec), output, objective)
         return _param_scalarized_score(row, weights)
 
-    seeds_per_weight = 1 if fast_mode else max(1, samples)
+    seeds_per_weight = 1
     for weights in scalar_weights:
         ranked = sorted(seed_rows, key=lambda row: _param_scalarized_score(row, weights))
         for seed in ranked[:seeds_per_weight]:
@@ -2796,7 +2794,7 @@ def _param_surface_df(df, payload):
             float(row.get("fragmentation_target_error", 0.0)),
         )
     )
-    rows = rows[: (120 if fast_mode else 260)]
+    rows = rows[: (72 if fast_mode else 120)]
 
     best_row = rows[0] if rows else None
     surface = _param_surface_from_rows(
@@ -2836,7 +2834,7 @@ def _param_surface_df(df, payload):
         "surrogate": bundle.get("surrogate_label"),
         "fragmentation_target": FRAGMENTATION_TARGET_MM,
         "fragmentation_tolerance": FRAGMENTATION_TOLERANCE_MM,
-        "note": "Physics-informed surrogate MLP with Pareto candidate search. The saved optimisation rows can be reprojected across different input axes without rerunning the solver.",
+        "note": "Physics-informed surrogate MLP with a production-safe Pareto candidate search. Saved optimisation rows can be reprojected across different input axes without rerunning the solver.",
     }
 
 
