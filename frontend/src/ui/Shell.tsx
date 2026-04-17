@@ -5367,10 +5367,11 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
   const [useFrag, setUseFrag] = useState(true);
   const [usePpv, setUsePpv] = useState(true);
   const [useAir, setUseAir] = useState(true);
-  const [method, setMethod] = useState("SLSQP");
+  const [method, setMethod] = useState<"SLSQP" | "Pareto">("SLSQP");
   const [pareto, setPareto] = useState<any[] | null>(null);
   const [frontier, setFrontier] = useState<any[] | null>(null);
   const [paretoBusy, setParetoBusy] = useState(false);
+  const [selectedParetoIdx, setSelectedParetoIdx] = useState(0);
   const [objectiveMode, setObjectiveMode] = useState("Min Cost + Frag + PPV/Air");
   const [solverMessage, setSolverMessage] = useState<string | null>(null);
   const autoComputedRef = useRef(false);
@@ -5399,9 +5400,10 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     void runCompute();
   }, [apiBaseUrl, defaults]);
 
+  const solverMethod = method === "Pareto" ? "SLSQP" : method;
   const requestBody = useMemo(
-    () => ({ ...defaults, weights, use_frag: useFrag, use_ppv: usePpv, use_air: useAir, method }),
-    [defaults, method, useAir, useFrag, usePpv, weights]
+    () => ({ ...defaults, weights, use_frag: useFrag, use_ppv: usePpv, use_air: useAir, method: solverMethod }),
+    [defaults, solverMethod, useAir, useFrag, usePpv, weights]
   );
 
   async function postCost(path: string, body: Record<string, any>) {
@@ -5441,17 +5443,7 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
     setErr(null);
     setSolverMessage(null);
     try {
-      let json: any;
-      let retryNote = "";
-      try {
-        json = await postCost("/v1/cost/optimize", requestBody);
-      } catch (e: any) {
-        if (method !== "trust-constr" || (e?.name !== "AbortError" && !String(e?.message ?? "").toLowerCase().includes("fetch"))) {
-          throw e;
-        }
-        json = await postCost("/v1/cost/optimize", { ...requestBody, method: "SLSQP" });
-        retryNote = "Primary trust-constr request dropped, so the web app retried with SLSQP. ";
-      }
+      const json = await postCost("/v1/cost/optimize", requestBody);
       const result = json?.result ?? json;
       setResp(result);
       if (result?.inputs) {
@@ -5463,10 +5455,9 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
         }));
       }
       setSolverMessage(
-        retryNote +
-          (json?.message
-            ? `${json?.success ? "Optimisation completed." : "Optimisation finished with solver warning."} ${json.message}`
-            : "Optimisation completed.")
+        json?.message
+          ? `${json?.success ? "Optimisation completed." : "Optimisation finished with solver warning."} ${json.message}`
+          : "Optimisation completed."
       );
     } catch (e: any) {
       setErr(e?.name === "AbortError" ? "Cost optimisation timed out. Please try SLSQP or adjust inputs." : String(e?.message ?? e));
@@ -5478,10 +5469,13 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
   async function runPareto() {
     setParetoBusy(true);
     setErr(null);
+    setSolverMessage(null);
     try {
       const json = await postCost("/v1/cost/pareto", requestBody);
       setPareto(json?.rows ?? []);
       setFrontier(json?.frontier ?? json?.rows ?? []);
+      setSelectedParetoIdx(0);
+      setSolverMessage(`Pareto frontier built with ${json?.frontier?.length ?? json?.rows?.length ?? 0} candidate solutions.`);
     } catch (e: any) {
       setErr(e?.name === "AbortError" ? "Pareto exploration timed out. Please try SLSQP or narrower constraints." : String(e?.message ?? e));
     } finally {
@@ -5509,6 +5503,27 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
   const report = useMemo(() => formatCostReport(resp), [resp]);
   const frontierRows = frontier ?? pareto ?? [];
   const frontierColumns = ["wf", "wp", "wa", "B", "S", "sub", "PF", "Qdelay", "cost", "PPV", "Air", "Oversize%", "X50", "Xm", "R"];
+  const selectedParetoRow = frontierRows.length ? frontierRows[Math.max(0, Math.min(selectedParetoIdx, frontierRows.length - 1))] : null;
+  const frontierByCost = useMemo(
+    () => [...frontierRows].sort((a, b) => Number(a.cost ?? 0) - Number(b.cost ?? 0)),
+    [frontierRows]
+  );
+  const frontierCostProfile = useMemo(
+    () => frontierByCost.slice(0, 10).map((row, idx) => ({ x: idx + 1, y: Number(row.cost ?? 0) })),
+    [frontierByCost]
+  );
+  const frontierPpvProfile = useMemo(
+    () => frontierByCost.slice(0, 10).map((row, idx) => ({ x: idx + 1, y: Number(row.PPV ?? 0) })),
+    [frontierByCost]
+  );
+  const frontierAirProfile = useMemo(
+    () => frontierByCost.slice(0, 10).map((row, idx) => ({ x: idx + 1, y: Number(row.Air ?? 0) })),
+    [frontierByCost]
+  );
+  const frontierFragProfile = useMemo(
+    () => frontierByCost.slice(0, 10).map((row, idx) => ({ x: idx + 1, y: Number(row.X50 ?? 0) })),
+    [frontierByCost]
+  );
 
   const groups = [
     {
@@ -5609,9 +5624,9 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
           <div className="grid3" style={{ marginTop: 8 }}>
             <div>
               <label className="label">Method</label>
-              <select className="input" value={method} onChange={(e) => setMethod(e.target.value)}>
+              <select className="input" value={method} onChange={(e) => setMethod(e.target.value as "SLSQP" | "Pareto")}>
                 <option value="SLSQP">SLSQP</option>
-                <option value="trust-constr">trust-constr</option>
+                <option value="Pareto">Pareto</option>
               </select>
             </div>
             <div>
@@ -5645,11 +5660,8 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
         <button className="btn btnPrimary" onClick={runCompute} disabled={busy}>
           {computeBusy ? "Working…" : "Compute KPIs"}
         </button>
-        <button className="btn" onClick={runOptimize} disabled={busy}>
-          {optBusy ? "Optimising…" : "Optimise"}
-        </button>
-        <button className="btn" onClick={runPareto} disabled={busy}>
-          {paretoBusy ? "Running…" : "Pareto"}
+        <button className="btn" onClick={method === "Pareto" ? runPareto : runOptimize} disabled={busy}>
+          {method === "Pareto" ? (paretoBusy ? "Running Pareto…" : "Optimise") : optBusy ? "Optimising…" : "Optimise"}
         </button>
       </div>
       {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
@@ -5725,11 +5737,11 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
           )}
         </div>
       )}
-      {pareto && (
+      {method === "Pareto" && pareto && (
         <div className="card" style={{ marginTop: 12 }}>
           <div className="label">Pareto Frontier</div>
           <div className="subtitle" style={{ marginTop: 6 }}>
-            Mirrors the desktop sweep over weight combinations and keeps non-dominated solutions on cost, PPV, airblast, and oversize.
+            Mirrors the desktop sweep over weight combinations and keeps non-dominated solutions on cost, PPV, airblast, and oversize. Select a frontier row to inspect the recommended parameters.
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
             <button
@@ -5750,6 +5762,119 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
             </button>
           </div>
           <ParetoScatter rows={frontierRows} />
+          {selectedParetoRow && (
+            <div style={{ display: "grid", gap: 12, marginTop: 12 }}>
+              <div className="grid3">
+                <div className="kpi">
+                  <div className="kpiTitle">Selected Cost</div>
+                  <div className="kpiValue">{formatNum(selectedParetoRow.cost)}</div>
+                </div>
+                <div className="kpi">
+                  <div className="kpiTitle">Selected PPV</div>
+                  <div className="kpiValue">{formatNum(selectedParetoRow.PPV)}</div>
+                </div>
+                <div className="kpi">
+                  <div className="kpiTitle">Selected Airblast</div>
+                  <div className="kpiValue">{formatNum(selectedParetoRow.Air)}</div>
+                </div>
+              </div>
+              <div className="grid3">
+                <div className="card">
+                  <div className="label">Optimised parameters</div>
+                  <div className="grid3" style={{ marginTop: 10 }}>
+                    {[
+                      ["Burden (B)", selectedParetoRow.B],
+                      ["Spacing (S)", selectedParetoRow.S],
+                      ["Subdrill", selectedParetoRow.sub],
+                      ["PF", selectedParetoRow.PF],
+                      ["Qdelay", selectedParetoRow.Qdelay],
+                      ["Distance (R)", selectedParetoRow.R],
+                    ].map(([label, value]) => (
+                      <div key={String(label)} className="kpi">
+                        <div className="kpiTitle">{label}</div>
+                        <div className="kpiValue">{formatNum(value)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="card">
+                  <div className="label">Selected frontier metrics</div>
+                  <BarChart
+                    labels={["Cost", "PPV", "Air", "Oversize%", "X50"]}
+                    values={[
+                      Number(selectedParetoRow.cost ?? 0),
+                      Number(selectedParetoRow.PPV ?? 0),
+                      Number(selectedParetoRow.Air ?? 0),
+                      Number(selectedParetoRow["Oversize%"] ?? 0),
+                      Number(selectedParetoRow.X50 ?? 0),
+                    ]}
+                  />
+                </div>
+                <div className="card">
+                  <div className="label">Selected parameter profile</div>
+                  <BarChart
+                    labels={["B", "S", "sub", "PF", "Qdelay", "Xm"]}
+                    values={[
+                      Number(selectedParetoRow.B ?? 0),
+                      Number(selectedParetoRow.S ?? 0),
+                      Number(selectedParetoRow.sub ?? 0),
+                      Number(selectedParetoRow.PF ?? 0),
+                      Number(selectedParetoRow.Qdelay ?? 0),
+                      Number(selectedParetoRow.Xm ?? 0),
+                    ]}
+                  />
+                </div>
+              </div>
+              <div className="grid2">
+                <div className="card">
+                  <div className="label">Frontier cost profile</div>
+                  <PolylinePlot
+                    points={frontierCostProfile}
+                    width={620}
+                    height={240}
+                    title="Cost along lowest-cost frontier rows"
+                    xLabel="Frontier rank"
+                    yLabel="Cost"
+                  />
+                </div>
+                <div className="card">
+                  <div className="label">Frontier PPV profile</div>
+                  <PolylinePlot
+                    points={frontierPpvProfile}
+                    width={620}
+                    height={240}
+                    title="PPV along lowest-cost frontier rows"
+                    xLabel="Frontier rank"
+                    yLabel="PPV"
+                  />
+                </div>
+              </div>
+              <div className="grid2">
+                <div className="card">
+                  <div className="label">Frontier airblast profile</div>
+                  <PolylinePlot
+                    points={frontierAirProfile}
+                    width={620}
+                    height={240}
+                    title="Airblast along lowest-cost frontier rows"
+                    xLabel="Frontier rank"
+                    yLabel="Airblast"
+                  />
+                </div>
+                <div className="card">
+                  <div className="label">Frontier fragmentation profile</div>
+                  <PolylinePlot
+                    points={frontierFragProfile}
+                    width={620}
+                    height={240}
+                    title="X50 along lowest-cost frontier rows"
+                    xLabel="Frontier rank"
+                    yLabel="X50"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
           <div className="card" style={{ marginTop: 10 }}>
             <div className="label">Frontier Preview</div>
             <div style={{ overflow: "auto", marginTop: 8 }}>
@@ -5763,7 +5888,14 @@ function CostPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string })
                 </thead>
                 <tbody>
                   {frontierRows.slice(0, 12).map((row, idx) => (
-                    <tr key={`${row.wf}-${row.wp}-${row.wa}-${idx}`}>
+                    <tr
+                      key={`${row.wf}-${row.wp}-${row.wa}-${idx}`}
+                      onClick={() => setSelectedParetoIdx(idx)}
+                      style={{
+                        background: idx === selectedParetoIdx ? "rgba(37,99,235,0.08)" : "transparent",
+                        cursor: "pointer",
+                      }}
+                    >
                       {frontierColumns.map((col) => (
                         <td key={col} style={{ padding: "8px 10px", borderBottom: "1px solid rgba(148,163,184,0.12)" }}>
                           {formatNum(row[col])}
