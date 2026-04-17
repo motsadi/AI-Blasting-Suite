@@ -4891,6 +4891,9 @@ function ParamPanel({
   const fallbackSurfaceGrid = 8;
   const fallbackSurfaceSamples = 1;
   const fallbackSurfaceMaxIter = 8;
+  const emergencySurfaceGrid = 6;
+  const emergencySurfaceSamples = 1;
+  const emergencySurfaceMaxIter = 4;
   const requestTimeoutMs = 90000;
   const resp = useMemo(() => {
     if (!optimResult?.rows?.length || !optimResult?.bounds) return null;
@@ -5009,14 +5012,16 @@ function ParamPanel({
       let res: Response;
       let json: any;
       try {
-        res = await requestSurface(surfaceSamples, surfaceMaxIter, surfaceGrid, false);
+        res = await requestSurface(fallbackSurfaceSamples, fallbackSurfaceMaxIter, fallbackSurfaceGrid, true);
         json = await res.json();
       } catch (primaryErr: any) {
-        // Retry once with a lighter optimisation workload if the first request drops.
-        res = await requestSurface(fallbackSurfaceSamples, fallbackSurfaceMaxIter, fallbackSurfaceGrid, true);
+        // Retry once with an even lighter workload if production still struggles.
+        res = await requestSurface(emergencySurfaceSamples, emergencySurfaceMaxIter, emergencySurfaceGrid, true);
         json = await res.json();
       }
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Surface failed");
+      if (!json?.rows?.length) throw new Error("No optimisation candidates were returned from production.");
+      if (!json?.bounds || typeof json.bounds !== "object") throw new Error("Optimisation response was missing bounds.");
       setOptimResult(json);
     } catch (e: any) {
       if (e?.name === "AbortError") {

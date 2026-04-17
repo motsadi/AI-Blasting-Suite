@@ -2430,15 +2430,15 @@ def _fit_param_surrogate(df, cache_key: str | None = None):
         Xtr, Xte, ytr, yte, ytr_raw, yte_raw, base_tr, base_te = Xs, Xs, Ys, Ys, Y, Y, empirical_base, empirical_base
 
     mdl = MLPRegressor(
-        hidden_layer_sizes=(96, 48, 24),
+        hidden_layer_sizes=(48, 24),
         activation="relu",
         solver="adam",
-        learning_rate_init=0.006,
-        max_iter=320,
+        learning_rate_init=0.005,
+        max_iter=140,
         random_state=42,
         early_stopping=len(Xtr) >= 120,
         validation_fraction=0.15,
-        n_iter_no_change=16,
+        n_iter_no_change=10,
         alpha=1e-4,
     )
     mdl.fit(Xtr, ytr)
