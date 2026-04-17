@@ -6,9 +6,18 @@ steps:
         "-f",
         "backend/Dockerfile",
         "-t",
-        "gcr.io/$PROJECT_ID/ai-blasting-backend:$SHORT_SHA",
+        "gcr.io/$PROJECT_ID/ai-blasting-backend:${_IMAGE_TAG}",
         ".",
       ]
+    id: "build-backend-image"
+
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      [
+        "push",
+        "gcr.io/$PROJECT_ID/ai-blasting-backend:${_IMAGE_TAG}",
+      ]
+    id: "push-backend-image"
 
   # Deploy to Cloud Run (requires Cloud Build SA to have run.admin + iam.serviceAccountUser)
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
@@ -19,7 +28,7 @@ steps:
         "deploy",
         "ai-blasting-backend",
         "--image",
-        "gcr.io/$PROJECT_ID/ai-blasting-backend:$SHORT_SHA",
+        "gcr.io/$PROJECT_ID/ai-blasting-backend:${_IMAGE_TAG}",
         "--region",
         "us-central1",
         "--platform",
@@ -28,4 +37,7 @@ steps:
       ]
 
 images:
-  - "gcr.io/$PROJECT_ID/ai-blasting-backend:$SHORT_SHA"
+  - "gcr.io/$PROJECT_ID/ai-blasting-backend:${_IMAGE_TAG}"
+
+substitutions:
+  _IMAGE_TAG: "${SHORT_SHA}"
