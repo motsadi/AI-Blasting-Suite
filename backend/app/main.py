@@ -904,10 +904,21 @@ _ml_rollout_cache_key: str | None = None
 _param_cache_key: str | None = None
 _param_cache_bundle: dict | None = None
 
+PHYSICAL_OUTPUT_FLOORS = {
+    "Ground Vibration": 1e-3,
+    "Airblast": 1e-3,
+    "Fragmentation": 1e-3,
+}
+FRAGMENTATION_TARGET_MM = 100.0
+FRAGMENTATION_TOLERANCE_MM = 10.0
+
 
 def _clamp_physical_output(name: str, value: float) -> float:
-    if name in {"Ground Vibration", "Airblast", "Fragmentation"}:
-        return float(max(0.0, value))
+    low = str(name).strip().lower()
+    for label, floor in PHYSICAL_OUTPUT_FLOORS.items():
+        label_low = label.lower()
+        if low == label_low or label_low in low or low in label_low:
+            return float(max(floor, value))
     return float(value)
 
 
@@ -2341,6 +2352,36 @@ def _fit_param_surrogate(df, cache_key: str | None = None):
     X = Xdf.values.astype(float)
     Y = Ydf.values.astype(float)
 
+    syn = _feature_map_synonyms()
+    input_res = _resolve_map(Xdf.columns, INPUT_LABELS, syn["inputs"])
+    canonical_outputs = ["Fragmentation", "Ground Vibration", "Airblast"]
+    output_res = _resolve_map(Ydf.columns, canonical_outputs, syn["outputs"])
+    empirical_input_map = {
+        actual: canonical
+        for canonical, actual in zip(INPUT_LABELS, input_res)
+        if actual is not None and actual in Xdf.columns
+    }
+    empirical_output_map = {
+        actual: canonical
+        for canonical, actual in zip(canonical_outputs, output_res)
+        if actual is not None and actual in Ydf.columns
+    }
+    physics_ready = len(empirical_input_map) == len(INPUT_LABELS) and len(empirical_output_map) >= 1
+
+    output_stats = {}
+    for c in outputs:
+        s = Ydf[c]
+        lo = float(s.quantile(0.02))
+        hi = float(s.quantile(0.98))
+        md = float(s.median())
+        if not np.isfinite(lo) or not np.isfinite(hi) or lo == hi:
+            lo = float(s.min())
+            hi = float(s.max())
+        if not np.isfinite(lo) or not np.isfinite(hi) or lo == hi:
+            lo = md - 0.5
+            hi = md + 0.5
+        output_stats[c] = {"min": float(lo), "max": float(hi), "median": float(md)}
+
     bounds = {}
     medians = {}
     for c in inputs:
@@ -2357,36 +2398,63 @@ def _fit_param_surrogate(df, cache_key: str | None = None):
         bounds[c] = (float(lo), float(hi))
         medians[c] = md
 
+    empirical_base = np.zeros_like(Y, dtype=float)
+    if physics_ready:
+        empirical_frame = pd.DataFrame(index=work.index)
+        for actual_name, canonical_name in empirical_input_map.items():
+            empirical_frame[canonical_name] = pd.to_numeric(work[actual_name], errors="coerce")
+        empirical_frame = empirical_frame[INPUT_LABELS].copy()
+        for i, out_name in enumerate(outputs):
+            canonical_name = empirical_output_map.get(out_name)
+            if canonical_name is None:
+                continue
+            empirical_base[:, i] = _empirical_series_for_frame(empirical_frame, canonical_name)
+
+    target_matrix = Y - empirical_base if physics_ready else Y
+
     sx = MinMaxScaler().fit(X)
-    sy = MinMaxScaler().fit(Y)
+    sy = MinMaxScaler().fit(target_matrix)
     Xs = sx.transform(X)
-    Ys = sy.transform(Y)
+    Ys = sy.transform(target_matrix)
 
     if len(Xs) >= 80:
-        Xtr, Xte, ytr, yte = train_test_split(Xs, Ys, test_size=0.2, random_state=42)
+        Xtr, Xte, ytr, yte, ytr_raw, yte_raw, base_tr, base_te = train_test_split(
+            Xs,
+            Ys,
+            Y,
+            empirical_base,
+            test_size=0.2,
+            random_state=42,
+        )
     else:
-        Xtr, Xte, ytr, yte = Xs, Xs, Ys, Ys
+        Xtr, Xte, ytr, yte, ytr_raw, yte_raw, base_tr, base_te = Xs, Xs, Ys, Ys, Y, Y, empirical_base, empirical_base
 
     mdl = MLPRegressor(
-        hidden_layer_sizes=(64, 32),
+        hidden_layer_sizes=(96, 48, 24),
         activation="relu",
         solver="adam",
-        learning_rate_init=0.008,
-        max_iter=220,
+        learning_rate_init=0.006,
+        max_iter=320,
         random_state=42,
         early_stopping=len(Xtr) >= 120,
         validation_fraction=0.15,
-        n_iter_no_change=12,
+        n_iter_no_change=16,
+        alpha=1e-4,
     )
     mdl.fit(Xtr, ytr)
 
-    ytr_hat = mdl.predict(Xtr)
-    yte_hat = mdl.predict(Xte)
+    ytr_hat_target = sy.inverse_transform(mdl.predict(Xtr))
+    yte_hat_target = sy.inverse_transform(mdl.predict(Xte))
+    ytr_hat = ytr_hat_target + base_tr if physics_ready else ytr_hat_target
+    yte_hat = yte_hat_target + base_te if physics_ready else yte_hat_target
     train_r2 = {}
     test_r2 = {}
     for i, out_name in enumerate(outputs):
-        train_r2[out_name] = _score_r2(ytr[:, i], ytr_hat[:, i])
-        test_r2[out_name] = _score_r2(yte[:, i], yte_hat[:, i])
+        canonical_name = empirical_output_map.get(out_name, out_name)
+        ytr_col = np.array([_clamp_physical_output(canonical_name, float(v)) for v in ytr_hat[:, i]], dtype=float)
+        yte_col = np.array([_clamp_physical_output(canonical_name, float(v)) for v in yte_hat[:, i]], dtype=float)
+        train_r2[out_name] = _score_r2(ytr_raw[:, i], ytr_col)
+        test_r2[out_name] = _score_r2(yte_raw[:, i], yte_col)
 
     bundle = {
         "num": work,
@@ -2400,6 +2468,11 @@ def _fit_param_surrogate(df, cache_key: str | None = None):
         "train_r2": train_r2,
         "test_r2": test_r2,
         "rows_used": int(len(work)),
+        "output_stats": output_stats,
+        "physics_ready": bool(physics_ready),
+        "empirical_input_map": empirical_input_map,
+        "empirical_output_map": empirical_output_map,
+        "surrogate_label": "physics-informed residual MLP" if physics_ready else "MLP",
     }
     if cache_key:
         _param_cache_key = cache_key
@@ -2407,7 +2480,7 @@ def _fit_param_surrogate(df, cache_key: str | None = None):
     return bundle
 
 
-def _param_predict_output(model_bundle, vec: dict[str, float], output_name: str) -> float:
+def _param_predict_outputs(model_bundle, vec: dict[str, float]) -> dict[str, float]:
     import numpy as np
 
     inputs = model_bundle["inputs"]
@@ -2415,12 +2488,208 @@ def _param_predict_output(model_bundle, vec: dict[str, float], output_name: str)
     sx = model_bundle["sx"]
     sy = model_bundle["sy"]
     mdl = model_bundle["model"]
+    empirical_input_map = model_bundle.get("empirical_input_map", {})
+    empirical_output_map = model_bundle.get("empirical_output_map", {})
 
     X = np.array([[float(vec[c]) for c in inputs]], dtype=float)
     Ys = mdl.predict(sx.transform(X))
-    Y = sy.inverse_transform(Ys)
-    raw = float(Y[0, outputs.index(output_name)])
-    return float(max(0.0, raw))
+    Y = sy.inverse_transform(Ys)[0]
+
+    empirical_outputs = {name: 0.0 for name in outputs}
+    if model_bundle.get("physics_ready") and empirical_input_map:
+        empirical_vec = {}
+        for actual_name, canonical_name in empirical_input_map.items():
+            empirical_vec[canonical_name] = float(vec.get(actual_name, 0.0))
+        empirical_vec["HPD_override"] = 1.0
+        for out_name in outputs:
+            canonical_name = empirical_output_map.get(out_name)
+            if canonical_name is None:
+                continue
+            try:
+                empirical_outputs[out_name] = _empirical_value_for_output(empirical_vec, canonical_name)
+            except Exception:
+                empirical_outputs[out_name] = 0.0
+
+    out = {}
+    for i, out_name in enumerate(outputs):
+        canonical_name = empirical_output_map.get(out_name, out_name)
+        raw = float(empirical_outputs.get(out_name, 0.0) + Y[i]) if model_bundle.get("physics_ready") else float(Y[i])
+        out[out_name] = _clamp_physical_output(canonical_name, raw)
+    return out
+
+
+def _param_predict_output(model_bundle, vec: dict[str, float], output_name: str) -> float:
+    preds = _param_predict_outputs(model_bundle, vec)
+    return float(preds.get(output_name, _clamp_physical_output(output_name, 0.0)))
+
+
+def _param_normalize_output(bundle, output_name: str, value: float) -> float:
+    import math
+
+    stats = (bundle.get("output_stats") or {}).get(output_name) or {}
+    lo = float(stats.get("min", 0.0))
+    hi = float(stats.get("max", lo + 1.0))
+    span = hi - lo
+    if not math.isfinite(span) or span <= 1e-9:
+        span = max(1.0, abs(float(stats.get("median", 1.0))))
+    return float((float(value) - lo) / span)
+
+
+def _param_fragmentation_errors(preds: dict[str, float]) -> tuple[float, float]:
+    frag = float(preds.get("Fragmentation", FRAGMENTATION_TARGET_MM))
+    dev = abs(frag - FRAGMENTATION_TARGET_MM)
+    band_error = max(0.0, dev - FRAGMENTATION_TOLERANCE_MM)
+    return float(dev), float(band_error)
+
+
+def _param_positive_error(preds: dict[str, float]) -> float:
+    total = 0.0
+    for name, floor in PHYSICAL_OUTPUT_FLOORS.items():
+        total += max(0.0, float(floor) - float(preds.get(name, 0.0)))
+    return float(total)
+
+
+def _param_make_candidate(bundle, vec: dict[str, float], output: str, objective: str) -> dict:
+    preds = _param_predict_outputs(bundle, vec)
+    frag_dev, frag_band_error = _param_fragmentation_errors(preds)
+    positive_error = _param_positive_error(preds)
+    gv_norm = _param_normalize_output(bundle, "Ground Vibration", preds.get("Ground Vibration", 0.0))
+    air_norm = _param_normalize_output(bundle, "Airblast", preds.get("Airblast", 0.0))
+    if output == "Fragmentation":
+        objective_value = float(preds.get(output, FRAGMENTATION_TARGET_MM))
+        objective_norm = float(frag_dev / max(FRAGMENTATION_TOLERANCE_MM, 1.0))
+    else:
+        objective_value = float(preds.get(output, 0.0))
+        base_norm = _param_normalize_output(bundle, output, objective_value)
+        objective_norm = float(base_norm if objective == "min" else -base_norm)
+    feasible = frag_band_error <= 1e-9 and positive_error <= 1e-9
+    return {
+        "inputs": {k: float(v) for k, v in vec.items()},
+        "outputs": {k: float(v) for k, v in preds.items()},
+        "objective_value": objective_value,
+        "objective_norm": float(objective_norm),
+        "fragmentation_target_error": float(frag_dev),
+        "fragmentation_band_error": float(frag_band_error),
+        "positive_error": float(positive_error),
+        "positive_error_norm": float(positive_error / max(1e-6, sum(PHYSICAL_OUTPUT_FLOORS.values()))),
+        "gv_norm": float(gv_norm),
+        "air_norm": float(air_norm),
+        "frag_norm": float(frag_dev / max(FRAGMENTATION_TOLERANCE_MM, 1.0)),
+        "feasible": bool(feasible),
+    }
+
+
+def _param_scalarized_score(row: dict, weights: dict[str, float]) -> float:
+    return float(
+        row["objective_norm"]
+        + float(weights.get("gv", 0.35)) * row["gv_norm"]
+        + float(weights.get("air", 0.35)) * row["air_norm"]
+        + float(weights.get("frag", 0.45)) * row["frag_norm"]
+        + 4.0 * row["fragmentation_band_error"] / max(FRAGMENTATION_TOLERANCE_MM, 1.0)
+        + 8.0 * row["positive_error_norm"]
+    )
+
+
+def _param_objective_vector(row: dict) -> tuple[float, float, float, float, float, float]:
+    return (
+        float(row["fragmentation_band_error"] / max(FRAGMENTATION_TOLERANCE_MM, 1.0)),
+        float(row["positive_error_norm"]),
+        float(row["objective_norm"]),
+        float(row["gv_norm"]),
+        float(row["air_norm"]),
+        float(row["frag_norm"]),
+    )
+
+
+def _param_dominates(left: dict, right: dict, eps: float = 1e-9) -> bool:
+    lv = _param_objective_vector(left)
+    rv = _param_objective_vector(right)
+    return all(a <= b + eps for a, b in zip(lv, rv)) and any(a < b - eps for a, b in zip(lv, rv))
+
+
+def _param_assign_pareto_ranks(rows: list[dict]) -> list[dict]:
+    remaining = set(range(len(rows)))
+    rank = 0
+    while remaining:
+        front = []
+        for idx in list(remaining):
+            dominated = False
+            for other_idx in remaining:
+                if other_idx == idx:
+                    continue
+                if _param_dominates(rows[other_idx], rows[idx]):
+                    dominated = True
+                    break
+            if not dominated:
+                front.append(idx)
+        if not front:
+            break
+        for idx in front:
+            rows[idx]["pareto_rank"] = int(rank)
+            rows[idx]["is_frontier"] = bool(rank == 0)
+        remaining.difference_update(front)
+        rank += 1
+    for idx in remaining:
+        rows[idx]["pareto_rank"] = int(rank)
+        rows[idx]["is_frontier"] = False
+    return rows
+
+
+def _param_surface_from_rows(rows: list[dict], bounds: dict, x1: str, x2: str, output: str, objective: str, grid: int, best_inputs: dict | None):
+    import numpy as np
+
+    if x1 not in bounds or x2 not in bounds or x1 == x2:
+        return {"error": "Invalid output/x1/x2 selection."}
+    if not rows:
+        return {"error": "No optimisation rows available."}
+
+    x1_min, x1_max = bounds[x1]
+    x2_min, x2_max = bounds[x2]
+    gx = np.linspace(x1_min, x1_max, grid)
+    gy = np.linspace(x2_min, x2_max, grid)
+    x_span = max(1e-9, x1_max - x1_min)
+    y_span = max(1e-9, x2_max - x2_min)
+
+    Z = []
+    other_grid = []
+    for xv in gx:
+        row_vals = []
+        row_inputs = []
+        for yv in gy:
+            chosen = None
+            best_score = None
+            for cand in rows:
+                cand_inputs = cand.get("inputs", {})
+                dx = (float(cand_inputs.get(x1, xv)) - float(xv)) / x_span
+                dy = (float(cand_inputs.get(x2, yv)) - float(yv)) / y_span
+                dist = dx * dx + dy * dy
+                score = dist + 0.06 * float(cand.get("pareto_rank", 0)) + 0.03 * float(abs(cand.get("objective_norm", 0.0)))
+                if cand.get("feasible"):
+                    score -= 0.02
+                if best_score is None or score < best_score:
+                    best_score = score
+                    chosen = cand
+            chosen = chosen or rows[0]
+            row_vals.append(float(chosen.get("outputs", {}).get(output, 0.0)))
+            row_inputs.append({k: float(v) for k, v in chosen.get("inputs", {}).items()})
+        Z.append(row_vals)
+        other_grid.append(row_inputs)
+
+    best_point = None
+    if best_inputs:
+        best_point = {"x1": float(best_inputs.get(x1, gx[0])), "x2": float(best_inputs.get(x2, gy[0]))}
+
+    return {
+        "x1": x1,
+        "x2": x2,
+        "output": output,
+        "objective": objective,
+        "grid_x": gx.tolist(),
+        "grid_y": gy.tolist(),
+        "Z": Z,
+        "other_inputs_grid": other_grid,
+        "best_point": best_point,
+    }
 
 
 def _param_surface_df(df, payload):
@@ -2452,114 +2721,122 @@ def _param_surface_df(df, payload):
     if output not in outputs or x1 not in inputs or x2 not in inputs or x1 == x2:
         return {"error": "Invalid output/x1/x2 selection."}
 
-    x1_min, x1_max = bounds[x1]
-    x2_min, x2_max = bounds[x2]
-    gx = np.linspace(x1_min, x1_max, grid)
-    gy = np.linspace(x2_min, x2_max, grid)
-
-    sx = bundle["sx"]
-    sy = bundle["sy"]
-    mdl = bundle["model"]
-    output_idx = outputs.index(output)
-    x1_idx = inputs.index(x1)
-    x2_idx = inputs.index(x2)
     med_vec = np.array([medians[c] for c in inputs], dtype=float)
+    var_bounds = [bounds[c] for c in inputs]
+    rng = np.random.default_rng(42)
+    random_count = 240 if fast_mode else 720
+    scalar_weights = [
+        {"gv": 0.20, "air": 0.20, "frag": 0.55},
+        {"gv": 0.40, "air": 0.25, "frag": 0.45},
+        {"gv": 0.25, "air": 0.40, "frag": 0.45},
+        {"gv": 0.55, "air": 0.25, "frag": 0.25},
+        {"gv": 0.25, "air": 0.55, "frag": 0.25},
+        {"gv": 0.35, "air": 0.35, "frag": 0.35},
+    ]
+    for _ in range(3 if fast_mode else 8):
+        w = rng.dirichlet(np.array([1.0, 1.0, 1.0], dtype=float))
+        scalar_weights.append({"gv": float(w[0]), "air": float(w[1]), "frag": float(w[2])})
 
-    def _predict_vec(vec: np.ndarray) -> float:
-        Ys = mdl.predict(sx.transform(vec.reshape(1, -1)))
-        Y = sy.inverse_transform(Ys)
-        raw = float(Y[0, output_idx])
-        return float(max(0.0, raw))
+    rows = []
+    seen = set()
 
-    other_inputs = [c for c in inputs if c not in (x1, x2)]
-    other_bounds = [bounds[c] for c in other_inputs]
-    other_medians = np.array([medians[c] for c in other_inputs], dtype=float) if other_inputs else np.array([], dtype=float)
-    other_indices = [inputs.index(c) for c in other_inputs]
+    def _vec_to_dict(arr: np.ndarray) -> dict[str, float]:
+        return {name: float(arr[i]) for i, name in enumerate(inputs)}
 
-    def _optimise_fixed_axes(xv: float, yv: float, start: np.ndarray):
-        if not other_inputs:
-            vec = med_vec.copy()
-            vec[x1_idx] = float(xv)
-            vec[x2_idx] = float(yv)
-            pred = _predict_vec(vec)
-            solved_inputs = {name: float(val) for name, val in zip(inputs, vec)}
-            return pred, solved_inputs, np.array([], dtype=float)
+    def _add_candidate(arr: np.ndarray):
+        clipped = np.array(
+            [np.clip(float(arr[i]), float(var_bounds[i][0]), float(var_bounds[i][1])) for i in range(len(inputs))],
+            dtype=float,
+        )
+        key = tuple(round(float(v), 6) for v in clipped.tolist())
+        if key in seen:
+            return None
+        seen.add(key)
+        row = _param_make_candidate(bundle, _vec_to_dict(clipped), output, objective)
+        rows.append(row)
+        return row
 
-        def _objective(other_vec):
-            vec = med_vec.copy()
-            vec[x1_idx] = float(xv)
-            vec[x2_idx] = float(yv)
-            for idx, inp_idx in enumerate(other_indices):
-                vec[inp_idx] = float(other_vec[idx])
-            pred = _predict_vec(vec)
-            return pred if objective == "min" else -pred
+    _add_candidate(med_vec)
+    for _ in range(max(0, random_count - 1)):
+        guess = np.array([rng.uniform(lo, hi) for lo, hi in var_bounds], dtype=float)
+        _add_candidate(guess)
 
-        starts = [np.array(start, dtype=float)]
-        for _ in range(max(0, samples - 1)):
-            starts.append(np.array([np.random.uniform(lo, hi) for lo, hi in other_bounds], dtype=float))
+    seed_rows = list(rows)
+    local_iter = max(24, min(120, int(max_iter * 4)))
 
-        best_vec = np.array(start, dtype=float)
-        best_score = None
-        for guess in starts:
-            res = minimize(
-                _objective,
-                guess,
-                method="L-BFGS-B",
-                bounds=other_bounds,
-                options={"maxiter": max_iter},
-            )
-            cand = np.clip(res.x if getattr(res, "x", None) is not None else guess, [b[0] for b in other_bounds], [b[1] for b in other_bounds])
-            score = float(_objective(cand))
-            if best_score is None or score < best_score:
-                best_score = score
-                best_vec = cand
+    def _scalar_objective(xvec: np.ndarray, weights: dict[str, float]) -> float:
+        row = _param_make_candidate(bundle, _vec_to_dict(xvec), output, objective)
+        return _param_scalarized_score(row, weights)
 
-        vec = med_vec.copy()
-        vec[x1_idx] = float(xv)
-        vec[x2_idx] = float(yv)
-        for idx, inp_idx in enumerate(other_indices):
-            vec[inp_idx] = float(best_vec[idx])
-        pred = _predict_vec(vec)
-        best_inputs = {name: float(val) for name, val in zip(inputs, vec)}
-        return pred, best_inputs, best_vec
+    seeds_per_weight = 1 if fast_mode else max(1, samples)
+    for weights in scalar_weights:
+        ranked = sorted(seed_rows, key=lambda row: _param_scalarized_score(row, weights))
+        for seed in ranked[:seeds_per_weight]:
+            x0 = np.array([float(seed["inputs"][name]) for name in inputs], dtype=float)
+            try:
+                res = minimize(
+                    lambda x, w=weights: _scalar_objective(x, w),
+                    x0,
+                    method="L-BFGS-B",
+                    bounds=var_bounds,
+                    options={"maxiter": local_iter},
+                )
+                cand = res.x if getattr(res, "x", None) is not None else x0
+            except Exception:
+                cand = x0
+            _add_candidate(np.array(cand, dtype=float))
 
-    Z = []
-    other_grid = []
-    best_overall = None
-    best_inputs = None
-    best_point = None
+    rows = _param_assign_pareto_ranks(rows)
+    default_weights = {"gv": 0.35, "air": 0.35, "frag": 0.45}
+    rows.sort(
+        key=lambda row: (
+            not bool(row.get("feasible")),
+            int(row.get("pareto_rank", 999)),
+            _param_scalarized_score(row, default_weights),
+            float(row.get("fragmentation_target_error", 0.0)),
+        )
+    )
+    rows = rows[: (120 if fast_mode else 260)]
 
-    for xv in gx:
-        row = []
-        row_inputs = []
-        warm = other_medians.copy()
-        for yv in gy:
-            pred, solved_inputs, warm = _optimise_fixed_axes(float(xv), float(yv), warm)
-            row.append(float(pred))
-            row_inputs.append(solved_inputs)
-            if best_overall is None or (objective == "min" and pred < best_overall) or (objective != "min" and pred > best_overall):
-                best_overall = float(pred)
-                best_inputs = solved_inputs
-                best_point = {"x1": float(xv), "x2": float(yv)}
-        Z.append(row)
-        other_grid.append(row_inputs)
+    best_row = rows[0] if rows else None
+    surface = _param_surface_from_rows(
+        rows,
+        bounds,
+        x1,
+        x2,
+        output,
+        objective,
+        grid,
+        best_row.get("inputs") if best_row else None,
+    )
+    if surface.get("error"):
+        return surface
 
     return {
         "dataset": payload.get("dataset") or DATASETS["combined"],
-        "x1": x1,
-        "x2": x2,
-        "output": output,
-        "objective": objective,
-        "grid_x": gx.tolist(),
-        "grid_y": gy.tolist(),
-        "Z": Z,
-        "other_inputs_grid": other_grid,
-        "best": {"value": best_overall, "point": best_point, "inputs": best_inputs},
+        "x1": surface["x1"],
+        "x2": surface["x2"],
+        "output": surface["output"],
+        "objective": surface["objective"],
+        "grid_x": surface["grid_x"],
+        "grid_y": surface["grid_y"],
+        "Z": surface["Z"],
+        "other_inputs_grid": surface["other_inputs_grid"],
+        "best": {
+            "value": float(best_row.get("objective_value")) if best_row else None,
+            "point": surface.get("best_point"),
+            "inputs": best_row.get("inputs") if best_row else None,
+            "outputs": best_row.get("outputs") if best_row else None,
+        },
         "train_r2": bundle["train_r2"].get(output),
         "test_r2": bundle["test_r2"].get(output),
         "rows_used": bundle["rows_used"],
         "bounds": {k: {"min": float(v[0]), "max": float(v[1]), "median": float(medians[k])} for k, v in bounds.items()},
-        "note": "MLP surrogate trained on the active combined dataset; non-axis inputs optimised under observed bounds.",
+        "rows": rows,
+        "surrogate": bundle.get("surrogate_label"),
+        "fragmentation_target": FRAGMENTATION_TARGET_MM,
+        "fragmentation_tolerance": FRAGMENTATION_TOLERANCE_MM,
+        "note": "Physics-informed surrogate MLP with Pareto candidate search. The saved optimisation rows can be reprojected across different input axes without rerunning the solver.",
     }
 
 
@@ -2588,8 +2865,17 @@ def _param_goal_seek_df(df, payload):
 
     def _goal_objective(xvec):
         probe = {c: float(v) for c, v in zip(inputs, xvec)}
-        pred = _param_predict_output(bundle, probe, output)
-        return float((pred - target) ** 2)
+        preds = _param_predict_outputs(bundle, probe)
+        pred = float(preds.get(output, 0.0))
+        frag_dev, frag_band_error = _param_fragmentation_errors(preds)
+        positive_error = _param_positive_error(preds)
+        base_err = float((pred - target) ** 2)
+        return float(
+            base_err
+            + 25.0 * (frag_band_error ** 2)
+            + 10.0 * (positive_error ** 2)
+            + (0.05 * frag_dev if output != "Fragmentation" else 0.0)
+        )
 
     starts = [median_start]
     for _ in range(max(0, samples - 1)):
@@ -2607,11 +2893,12 @@ def _param_goal_seek_df(df, payload):
         )
         cand = np.clip(res.x if getattr(res, "x", None) is not None else guess, [b[0] for b in var_bounds], [b[1] for b in var_bounds])
         probe = {c: float(v) for c, v in zip(inputs, cand)}
-        pred = _param_predict_output(bundle, probe, output)
+        preds = _param_predict_outputs(bundle, probe)
+        pred = float(preds.get(output, 0.0))
         err = abs(pred - target)
         if best is None or err < best:
             best = err
-            best_in = {"predicted": pred, "inputs": probe}
+            best_in = {"predicted": pred, "inputs": probe, "outputs": preds}
 
     return {
         "dataset": payload.get("dataset") or DATASETS["combined"],
@@ -2625,7 +2912,10 @@ def _param_goal_seek_df(df, payload):
         "test_r2": bundle["test_r2"].get(output),
         "rows_used": bundle["rows_used"],
         "bounds": {k: {"min": float(v[0]), "max": float(v[1]), "median": float(medians[k])} for k, v in bounds.items()},
-        "note": "Goal seek uses the same MLP surrogate as the optimisation surface and searches all inputs within observed dataset bounds.",
+        "surrogate": bundle.get("surrogate_label"),
+        "fragmentation_target": FRAGMENTATION_TARGET_MM,
+        "fragmentation_tolerance": FRAGMENTATION_TOLERANCE_MM,
+        "note": "Goal seek uses the same physics-informed surrogate as the Pareto optimisation search and keeps fragmentation inside the 90-110 mm band where possible.",
     }
 
 

@@ -2830,6 +2830,78 @@ function nearestIndex(values: number[], target: number) {
   return bestIdx;
 }
 
+function buildParamSurfaceFromRows(rows: any[], bounds: Record<string, any>, x1: string, x2: string, output: string, objective: string, grid = 10) {
+  if (!rows?.length || !bounds?.[x1] || !bounds?.[x2] || x1 === x2) return null;
+  const x1Min = Number(bounds[x1]?.min);
+  const x1Max = Number(bounds[x1]?.max);
+  const x2Min = Number(bounds[x2]?.min);
+  const x2Max = Number(bounds[x2]?.max);
+  if (![x1Min, x1Max, x2Min, x2Max].every(Number.isFinite)) return null;
+  const gx = Array.from({ length: grid }, (_, i) => x1Min + ((x1Max - x1Min) * i) / Math.max(1, grid - 1));
+  const gy = Array.from({ length: grid }, (_, i) => x2Min + ((x2Max - x2Min) * i) / Math.max(1, grid - 1));
+  const xSpan = Math.max(1e-9, x1Max - x1Min);
+  const ySpan = Math.max(1e-9, x2Max - x2Min);
+  const usableRows = rows.filter((row) => row?.inputs && row?.outputs);
+  if (!usableRows.length) return null;
+
+  const surfaceRows = [...usableRows].sort((a, b) => {
+    const aFeasible = !!a?.feasible;
+    const bFeasible = !!b?.feasible;
+    if (aFeasible !== bFeasible) return aFeasible ? -1 : 1;
+    return Number(a?.pareto_rank ?? 999) - Number(b?.pareto_rank ?? 999);
+  });
+  const bestRow = surfaceRows[0];
+  const Z: number[][] = [];
+  const otherInputsGrid: Array<Array<Record<string, number>>> = [];
+
+  gx.forEach((xv) => {
+    const rowVals: number[] = [];
+    const rowInputs: Array<Record<string, number>> = [];
+    gy.forEach((yv) => {
+      let chosen = surfaceRows[0];
+      let bestScore = Number.POSITIVE_INFINITY;
+      surfaceRows.forEach((candidate) => {
+        const cx = Number(candidate?.inputs?.[x1]);
+        const cy = Number(candidate?.inputs?.[x2]);
+        const dx = (cx - xv) / xSpan;
+        const dy = (cy - yv) / ySpan;
+        let score = dx * dx + dy * dy;
+        score += 0.06 * Number(candidate?.pareto_rank ?? 0);
+        score += 0.03 * Math.abs(Number(candidate?.objective_norm ?? 0));
+        if (candidate?.feasible) score -= 0.02;
+        if (score < bestScore) {
+          bestScore = score;
+          chosen = candidate;
+        }
+      });
+      rowVals.push(Number(chosen?.outputs?.[output] ?? 0));
+      rowInputs.push({ ...(chosen?.inputs ?? {}) });
+    });
+    Z.push(rowVals);
+    otherInputsGrid.push(rowInputs);
+  });
+
+  return {
+    x1,
+    x2,
+    output,
+    objective,
+    grid_x: gx,
+    grid_y: gy,
+    Z,
+    other_inputs_grid: otherInputsGrid,
+    best: {
+      value: Number(bestRow?.objective_value ?? bestRow?.outputs?.[output] ?? 0),
+      point: {
+        x1: Number(bestRow?.inputs?.[x1] ?? gx[0]),
+        x2: Number(bestRow?.inputs?.[x2] ?? gy[0]),
+      },
+      inputs: { ...(bestRow?.inputs ?? {}) },
+      outputs: { ...(bestRow?.outputs ?? {}) },
+    },
+  };
+}
+
 function ParamSurfaceExplorer({
   surface,
   selectedCell,
@@ -4800,7 +4872,7 @@ function ParamPanel({
   activeDatasetName: string;
 }) {
   const [meta, setMeta] = useState<any>(null);
-  const [resp, setResp] = useState<any>(null);
+  const [optimResult, setOptimResult] = useState<any>(null);
   const [goal, setGoal] = useState<any>(null);
   const [surfaceBusy, setSurfaceBusy] = useState(false);
   const [goalBusy, setGoalBusy] = useState(false);
@@ -4820,6 +4892,18 @@ function ParamPanel({
   const fallbackSurfaceSamples = 1;
   const fallbackSurfaceMaxIter = 8;
   const requestTimeoutMs = 90000;
+  const resp = useMemo(() => {
+    if (!optimResult?.rows?.length || !optimResult?.bounds) return null;
+    const surface = buildParamSurfaceFromRows(optimResult.rows, optimResult.bounds, x1, x2, output, objective, surfaceGrid);
+    if (!surface) return null;
+    return {
+      ...optimResult,
+      ...surface,
+      note:
+        optimResult?.note ??
+        "Saved Pareto optimisation result reprojected onto the selected axes without rerunning the solver.",
+    };
+  }, [optimResult, x1, x2, output, objective]);
   useEffect(() => {
     if (!apiBaseUrl) return;
     (async () => {
@@ -4846,7 +4930,7 @@ function ParamPanel({
           setX1((prev) => (json.inputs.includes(prev) ? prev : json.default_x1 ?? json.inputs[0]));
           setX2((prev) => (json.inputs.includes(prev) && prev !== (json.default_x1 ?? json.inputs[0]) ? prev : json.default_x2 ?? json.inputs[1]));
         }
-        setResp(null);
+        setOptimResult(null);
         setGoal(null);
         setSelectedCell(null);
         setErr(null);
@@ -4933,7 +5017,7 @@ function ParamPanel({
         json = await res.json();
       }
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Surface failed");
-      setResp(json);
+      setOptimResult(json);
     } catch (e: any) {
       if (e?.name === "AbortError") {
         setErr("Surface optimisation timed out. Please try again; the backend is taking too long to respond.");
@@ -5034,13 +5118,14 @@ function ParamPanel({
           <div>
             <div style={{ fontSize: 20, fontWeight: 900, letterSpacing: "-0.02em" }}>Parameter Optimisation</div>
             <div className="subtitle">
-              Desktop-style surrogate optimisation surface plus inverse design, using the active combined dataset selected in the main workspace.
+              Physics-informed surrogate neural-network Pareto optimisation plus inverse design, using the active combined dataset selected in the main workspace.
             </div>
           </div>
           <div className="dataHeaderActions">
             <div className="chip">{dataset?.file ? "Uploaded dataset" : "Shared combined dataset"}</div>
             <div className="chip">{resolvedDatasetName}</div>
             <div className="chip">{objective === "min" ? "Minimisation" : "Maximisation"}</div>
+            {optimResult?.surrogate ? <div className="chip">{optimResult.surrogate}</div> : null}
           </div>
         </div>
       </div>
@@ -5054,7 +5139,6 @@ function ParamPanel({
             value={output}
             onChange={(e) => {
               setOutput(e.target.value);
-              setResp(null);
               setGoal(null);
               setSelectedCell(null);
             }}
@@ -5071,8 +5155,6 @@ function ParamPanel({
             value={x1}
             onChange={(e) => {
               setX1(e.target.value);
-              setResp(null);
-              setGoal(null);
               setSelectedCell(null);
             }}
           >
@@ -5088,8 +5170,6 @@ function ParamPanel({
             value={x2}
             onChange={(e) => {
               setX2(e.target.value);
-              setResp(null);
-              setGoal(null);
               setSelectedCell(null);
             }}
           >
@@ -5102,7 +5182,7 @@ function ParamPanel({
 
         <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
           <button className="btn btnPrimary" onClick={runSurface} disabled={surfaceBusy || goalBusy || x1 === x2}>
-            {surfaceBusy ? "Running..." : "Optimise & Plot Surface"}
+            {surfaceBusy ? "Running..." : "Run Pareto Optimisation"}
           </button>
           <button className="btn" onClick={exportSurface} disabled={!resp?.Z || surfaceBusy}>
             Export surface CSV
@@ -5112,8 +5192,6 @@ function ParamPanel({
             value={objective}
             onChange={(e) => {
               setObjective(e.target.value as any);
-              setResp(null);
-              setGoal(null);
               setSelectedCell(null);
             }}
             style={{ width: 140 }}
@@ -5136,6 +5214,31 @@ function ParamPanel({
       </div>
 
       {err && <div className="error">{err}</div>}
+
+      {optimResult?.rows?.length ? (
+        <div className="card">
+          <div className="sectionTitle">Optimisation summary</div>
+          <div className="subtitle">
+            Saved {optimResult.rows.length} Pareto candidate recipes. Changing output or axes now only updates the explorer and 3D surface view; it does not rerun the optimisation.
+          </div>
+          <div className="grid3" style={{ marginTop: 10 }}>
+            <div className="kpi">
+              <div className="kpiTitle">Best {output}</div>
+              <div className="kpiValue">{formatNum(resp?.best?.outputs?.[output] ?? resp?.best?.value)}</div>
+            </div>
+            <div className="kpi">
+              <div className="kpiTitle">Fragmentation target band</div>
+              <div className="kpiValue">
+                {formatNum(optimResult?.fragmentation_target)} +/- {formatNum(optimResult?.fragmentation_tolerance)}
+              </div>
+            </div>
+            <div className="kpi">
+              <div className="kpiTitle">Current view axes</div>
+              <div className="kpiValue">{x1} / {x2}</div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {resp?.Z && (
         <div className="grid2">
@@ -5174,6 +5277,21 @@ function ParamPanel({
               </div>
             ))}
           </div>
+          {optimResult?.rows?.length ? (
+            <div className="grid3" style={{ marginTop: 10 }}>
+              {Object.entries(
+                optimResult.rows.find(
+                  (row: any) =>
+                    Object.entries(selectedPoint.inputs ?? {}).every(([k, v]) => Math.abs(Number(row?.inputs?.[k]) - Number(v)) < 1e-6)
+                )?.outputs ?? {}
+              ).map(([k, v]: any) => (
+                <div key={`out-${k}`} className="kpi">
+                  <div className="kpiTitle">{k}</div>
+                  <div className="kpiValue">{formatNum(v)}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
       )}
 
@@ -5218,6 +5336,16 @@ function ParamPanel({
               </div>
             ))}
           </div>
+          {goal?.best?.outputs ? (
+            <div className="grid3" style={{ marginTop: 8 }}>
+              {Object.entries(goal.best.outputs).map(([k, v]: any) => (
+                <div key={`goal-out-${k}`} className="kpi">
+                  <div className="kpiTitle">{k}</div>
+                  <div className="kpiValue">{formatNum(v)}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
       )}
     </div>
