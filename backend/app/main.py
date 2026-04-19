@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.auth import require_auth
+from app.auth import require_auth, require_user
 from app.assets import LoadedAssets, assets_status, load_local_assets
 from app.core_imports import add_core_bundle_to_path
 from app.gcs import REQUIRED_DATASET_FILES, sync_assets_from_gcs
@@ -66,6 +69,59 @@ COMBINED_DATASET_CHOICES = [
     "combinedv2Jwaneng.csv",
     "combinedv2Jwaneng.xlsx",
 ]
+
+APP_ACTIVITY_PATH = Path(tempfile.gettempdir()) / "ai-blasting-suite-activity.json"
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _read_activity_state() -> dict:
+    default_state = {"last_activity": None, "recent": []}
+    try:
+        if not APP_ACTIVITY_PATH.exists():
+            return default_state
+        raw = json.loads(APP_ACTIVITY_PATH.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return default_state
+        recent = raw.get("recent")
+        return {
+            "last_activity": raw.get("last_activity"),
+            "recent": recent[:12] if isinstance(recent, list) else [],
+        }
+    except Exception:
+        return default_state
+
+
+def _write_activity_state(state: dict) -> dict:
+    safe_state = {
+        "last_activity": state.get("last_activity"),
+        "recent": (state.get("recent") or [])[:12],
+    }
+    try:
+        APP_ACTIVITY_PATH.write_text(json.dumps(safe_state, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    return safe_state
+
+
+def _record_app_activity(email: str, module_key: str, module_title: str) -> dict:
+    state = _read_activity_state()
+    entry = {
+        "email": email or "Unknown",
+        "module_key": module_key or "home",
+        "module_title": module_title or module_key or "Home",
+        "timestamp": _utcnow_iso(),
+    }
+    recent = [entry]
+    for item in state.get("recent", []):
+        if not isinstance(item, dict):
+            continue
+        if item.get("email") == entry["email"] and item.get("module_key") == entry["module_key"]:
+            continue
+        recent.append(item)
+    return _write_activity_state({"last_activity": entry, "recent": recent})
 
 
 def _dataset_search_candidates(name: str) -> list[Path]:
@@ -204,6 +260,30 @@ def _startup_sync_assets():
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/v1/activity")
+def get_activity(user: dict = Depends(require_user)):
+    state = _read_activity_state()
+    return {
+        "current_user": {"email": user.get("email", "Unknown")},
+        "last_activity": state.get("last_activity"),
+        "recent": state.get("recent", []),
+        "server_time": _utcnow_iso(),
+    }
+
+
+@app.post("/v1/activity")
+def record_activity(payload: dict = Body(default={}), user: dict = Depends(require_user)):
+    module_key = str(payload.get("module_key") or "home").strip() or "home"
+    module_title = str(payload.get("module_title") or module_key).strip() or module_key
+    state = _record_app_activity(str(user.get("email") or "Unknown"), module_key, module_title)
+    return {
+        "current_user": {"email": user.get("email", "Unknown")},
+        "last_activity": state.get("last_activity"),
+        "recent": state.get("recent", []),
+        "server_time": _utcnow_iso(),
+    }
 
 
 @app.get("/v1/assets/status", response_model=AssetsStatus)
