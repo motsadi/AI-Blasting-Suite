@@ -165,6 +165,94 @@ const MODULE_GUIDES: ModuleGuide[] = [
 
 const authHeaders = (token: string) => ({ authorization: `Bearer ${token}` });
 
+const LOCAL_ACTIVITY_STORAGE_KEY = "ai_blasting_suite_activity_v1";
+
+function readLocalActivitySnapshot(): { last_activity: ActivityEntry | null; recent: ActivityEntry[] } {
+  try {
+    const raw = localStorage.getItem(LOCAL_ACTIVITY_STORAGE_KEY);
+    if (!raw) return { last_activity: null, recent: [] };
+    const j = JSON.parse(raw);
+    const last = j?.last_activity;
+    const recent = Array.isArray(j?.recent) ? j.recent : [];
+    return {
+      last_activity:
+        last && typeof last === "object" && typeof last.email === "string" && typeof last.timestamp === "string"
+          ? (last as ActivityEntry)
+          : null,
+      recent: recent
+        .filter((x: any) => x && typeof x.email === "string" && typeof x.timestamp === "string")
+        .slice(0, 12) as ActivityEntry[],
+    };
+  } catch {
+    return { last_activity: null, recent: [] };
+  }
+}
+
+function writeLocalActivitySnapshot(last: ActivityEntry | null, recent: ActivityEntry[]) {
+  try {
+    localStorage.setItem(
+      LOCAL_ACTIVITY_STORAGE_KEY,
+      JSON.stringify({ last_activity: last, recent: recent.slice(0, 12) })
+    );
+  } catch {
+    /* storage full or disabled */
+  }
+}
+
+function persistServerActivity(body: ActivityState) {
+  writeLocalActivitySnapshot(body.last_activity ?? null, body.recent ?? []);
+}
+
+/** Open HTML for print/PDF; uses a blob URL so pop-up blockers are less likely to block it. */
+function openHtmlReport(html: string, downloadBaseName: string) {
+  try {
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const w = window.open(url, "_blank", "noopener,noreferrer");
+    if (w) {
+      const revokeLater = () => {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          /* ignore */
+        }
+      };
+      window.setTimeout(() => {
+        try {
+          w.focus();
+          w.print();
+        } catch {
+          /* ignore */
+        }
+        window.setTimeout(revokeLater, 60_000);
+      }, 400);
+      return;
+    }
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${downloadBaseName.replace(/[^a-z0-9-_]+/gi, "-")}.html`;
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch {
+    const w = window.open("", "_blank", "noopener,noreferrer");
+    if (!w) return;
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+    window.setTimeout(() => {
+      try {
+        w.focus();
+        w.print();
+      } catch {
+        /* ignore */
+      }
+    }, 250);
+  }
+}
+
 export function Shell({ apiBaseUrl, session, onLogout }: Props) {
   const [tab, setTab] = useState<TabKey>("home");
   const [meta, setMeta] = useState<any>(null);
@@ -181,25 +269,59 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
 
   async function refreshActivity() {
     if (!apiBaseUrl) return;
-    const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/activity`, {
-      headers: { ...authHeaders(session.token) },
-    });
-    const body = await readJsonOrText(res);
-    if (!res.ok) throw new Error(errorFromBody(res, body));
-    setActivity(body as ActivityState);
+    try {
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/activity`, {
+        headers: { ...authHeaders(session.token) },
+      });
+      const body = await readJsonOrText(res);
+      if (!res.ok) throw new Error(errorFromBody(res, body));
+      const next = body as ActivityState;
+      setActivity(next);
+      persistServerActivity(next);
+    } catch {
+      const snap = readLocalActivitySnapshot();
+      setActivity({
+        current_user: { email: session.email },
+        last_activity: snap.last_activity,
+        recent: snap.recent,
+      });
+    }
   }
 
   async function recordActivity(moduleKey: TabKey) {
     if (!apiBaseUrl) return;
     const moduleMeta = TAB_META[moduleKey];
-    const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/activity`, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...authHeaders(session.token) },
-      body: JSON.stringify({ module_key: moduleKey, module_title: moduleMeta?.title ?? moduleKey }),
-    });
-    const body = await readJsonOrText(res);
-    if (!res.ok) throw new Error(errorFromBody(res, body));
-    setActivity(body as ActivityState);
+    const title = moduleMeta?.title ?? moduleKey;
+    try {
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/activity`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...authHeaders(session.token) },
+        body: JSON.stringify({ module_key: moduleKey, module_title: title }),
+      });
+      const body = await readJsonOrText(res);
+      if (!res.ok) throw new Error(errorFromBody(res, body));
+      const next = body as ActivityState;
+      setActivity(next);
+      persistServerActivity(next);
+    } catch {
+      const entry: ActivityEntry = {
+        email: session.email,
+        module_key: moduleKey,
+        module_title: title,
+        timestamp: new Date().toISOString(),
+      };
+      const prev = readLocalActivitySnapshot();
+      const recent = [
+        entry,
+        ...prev.recent.filter((r) => !(r.email === entry.email && r.module_key === entry.module_key)),
+      ].slice(0, 12);
+      writeLocalActivitySnapshot(entry, recent);
+      setActivity({
+        current_user: { email: session.email },
+        last_activity: entry,
+        recent,
+      });
+    }
   }
 
   const headerRight = useMemo(() => {
@@ -267,7 +389,6 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
     (async () => {
       try {
         await refreshMeta();
-        await refreshActivity();
       } catch (e: any) {
         setMetaErr(String(e?.message ?? e));
       }
@@ -276,17 +397,12 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
 
   useEffect(() => {
     if (!apiBaseUrl) return;
-    let ignore = false;
-    (async () => {
-      try {
-        await recordActivity(tab);
-      } catch (e: any) {
-        if (!ignore) setMetaErr(String(e?.message ?? e));
-      }
-    })();
-    return () => {
-      ignore = true;
-    };
+    void refreshActivity();
+  }, [apiBaseUrl, session.token]);
+
+  useEffect(() => {
+    if (!apiBaseUrl) return;
+    void recordActivity(tab);
   }, [apiBaseUrl, session.token, tab]);
 
   async function setCombinedDataset(name: string) {
@@ -425,9 +541,20 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
         <main className="mainContent">
           {metaErr && <div className="error">{metaErr}</div>}
           {tab === "home" ? (
-            <HomePanel onOpen={setTab} activity={activity} datasetName={activeCombinedDataset} />
+            <HomePanel
+              onOpen={setTab}
+              activity={activity}
+              datasetName={activeCombinedDataset}
+              sessionEmail={session.email}
+            />
           ) : tab === "predict" ? (
-            <PredictPanel apiBaseUrl={apiBaseUrl} token={session.token} meta={meta} dataset={dataset} />
+            <PredictPanel
+              apiBaseUrl={apiBaseUrl}
+              token={session.token}
+              meta={meta}
+              dataset={dataset}
+              currentUserEmail={activity?.current_user?.email ?? session.email}
+            />
           ) : tab === "data" ? (
             <DataPanel apiBaseUrl={apiBaseUrl} token={session.token} dataset={dataset} onDatasetChange={setDataset} />
           ) : tab === "feature" ? (
@@ -468,11 +595,14 @@ function HomePanel({
   onOpen,
   activity,
   datasetName,
+  sessionEmail,
 }: {
   onOpen: (t: TabKey) => void;
   activity: ActivityState | null;
   datasetName: string;
+  sessionEmail: string;
 }) {
+  const viewerEmail = activity?.current_user?.email ?? sessionEmail;
   const latest = activity?.last_activity ?? null;
   const recent = activity?.recent ?? [];
 
@@ -523,7 +653,7 @@ function HomePanel({
             <p><strong>Generated:</strong> ${formatDateTime(new Date().toISOString())}</p>
             <p><strong>Active dataset:</strong> ${datasetName || "(default)"}</p>
             <p><strong>${activityText}</strong></p>
-            <p><strong>Generated by:</strong> ${activity?.current_user?.email ?? "Unknown"}</p>
+            <p><strong>Generated by:</strong> ${viewerEmail}</p>
           </div>
           ${sections}
           <section class="report-section">
@@ -536,15 +666,7 @@ function HomePanel({
         </body>
       </html>
     `;
-    const w = window.open("", "_blank", "noopener,noreferrer,width=980,height=860");
-    if (!w) return;
-    w.document.open();
-    w.document.write(html);
-    w.document.close();
-    window.setTimeout(() => {
-      w.focus();
-      w.print();
-    }, 250);
+    openHtmlReport(html, "ai-blasting-suite-report");
   }
 
   return (
@@ -562,7 +684,7 @@ function HomePanel({
         <div className="grid3" style={{ marginTop: 16 }}>
           <div className="kpi">
             <div className="kpiTitle">Current user</div>
-            <div className="kpiValue">{activity?.current_user?.email ?? "Unknown"}</div>
+            <div className="kpiValue">{viewerEmail}</div>
           </div>
           <div className="kpi">
             <div className="kpiTitle">Last app use</div>
@@ -1124,12 +1246,16 @@ function PredictPanel({
   token,
   meta,
   dataset,
+  currentUserEmail,
 }: {
   apiBaseUrl: string;
   token: string;
   meta: any;
   dataset: { file?: File | null; rows: Array<Record<string, any>>; columns: string[] };
+  currentUserEmail: string;
 }) {
+  const compareWrapRef = useRef<HTMLDivElement | null>(null);
+  const rrWrapRef = useRef<HTMLDivElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [out, setOut] = useState<any>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -1291,6 +1417,104 @@ function PredictPanel({
     downloadCsv([row], Object.keys(row), "prediction_result.csv");
   }
 
+  function exportPredictionReport() {
+    if (!out?.json) return;
+    const extractSvg = (host: HTMLDivElement | null, title: string) => {
+      const svg = host?.querySelector("svg");
+      if (!svg) return "";
+      return `
+        <section class="section">
+          <h2>${title}</h2>
+          <div class="chartWrap">${svg.outerHTML}</div>
+        </section>
+      `;
+    };
+    const inputRows = Object.entries(inputs)
+      .map(([k, v]) => `<tr><td>${k}</td><td>${formatNum(v)}</td></tr>`)
+      .join("");
+    const empRows = Object.entries(empirical)
+      .map(([k, v]) => `<tr><td>${k}</td><td>${formatNum(v)}</td></tr>`)
+      .join("");
+    const outputRows = outputs
+      .map(
+        (o) =>
+          `<tr><td>${o}</td><td>${formatNum(out.json.ml?.[o])}</td><td>${formatNum(out.json.empirical?.[o])}</td></tr>`
+      )
+      .join("");
+    const rr = out.json.rr;
+    const rrSummary = rr
+      ? `<p><strong>Rosin–Rammler:</strong> n=${formatNum(rr.n)} · Xm=${formatNum(rr.xm)} mm · X50=${formatNum(rr.x50)} mm</p>`
+      : "<p><strong>Rosin–Rammler:</strong> not available for this run.</p>";
+    const barSvg = extractSvg(compareWrapRef.current, "ML vs empirical comparison");
+    const rrSvg = extractSvg(rrWrapRef.current, "Fragmentation (RR curve)");
+    const html = `
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>Prediction Report</title>
+          <style>
+            body { font-family: Arial, Helvetica, sans-serif; margin: 28px; color: #111827; }
+            h1 { margin: 0 0 6px; font-size: 28px; }
+            h2 { margin: 0 0 10px; font-size: 18px; }
+            p, li, td, th { font-size: 13px; line-height: 1.55; }
+            .meta, .section { border: 1px solid #dbe4ee; border-radius: 12px; padding: 16px; margin-top: 14px; background: #fff; }
+            .meta { background: #f8fafc; }
+            .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+            .chartGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+            .chartWrap { margin-top: 10px; border: 1px solid #e5e7eb; border-radius: 12px; padding: 10px; background: #ffffff; }
+            .chartWrap svg { width: 100%; height: auto; display: block; }
+            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+            th, td { border: 1px solid #e5e7eb; padding: 8px 10px; text-align: left; }
+            th { background: #f3f4f6; }
+            pre { white-space: pre-wrap; background: #f8fafc; border-radius: 12px; padding: 14px; border: 1px solid #e5e7eb; font-size: 12px; }
+            @media print { body { margin: 18px; } .grid, .chartGrid { grid-template-columns: 1fr; } }
+          </style>
+        </head>
+        <body>
+          <h1>Prediction module report</h1>
+          <div class="meta">
+            <p><strong>Generated by:</strong> ${currentUserEmail || "Unknown"}</p>
+            <p><strong>Generated:</strong> ${formatDateTime(new Date().toISOString())}</p>
+            <p><strong>Dataset:</strong> ${activeDatasetName}</p>
+            <p><strong>Source:</strong> ${datasetSource}</p>
+            <p><strong>ML enabled:</strong> ${wantMl ? "Yes" : "No"} · <strong>HPD:</strong> ${formatNum(hpdOverride)}</p>
+            ${rrSummary}
+          </div>
+          <div class="grid">
+            <section class="section">
+              <h2>Blast inputs</h2>
+              <table><thead><tr><th>Input</th><th>Value</th></tr></thead><tbody>${inputRows}</tbody></table>
+            </section>
+            <section class="section">
+              <h2>Empirical calibration</h2>
+              <table><thead><tr><th>Parameter</th><th>Value</th></tr></thead><tbody>${empRows}</tbody></table>
+            </section>
+          </div>
+          <section class="section">
+            <h2>Predicted outputs</h2>
+            <table>
+              <thead><tr><th>Output</th><th>ML</th><th>Empirical</th></tr></thead>
+              <tbody>${outputRows}</tbody>
+            </table>
+          </section>
+          <section class="section">
+            <h2>Threshold log</h2>
+            <pre>${logText || "No threshold alerts."}</pre>
+          </section>
+          ${barSvg || rrSvg ? `
+            <section class="section">
+              <h2>Charts (current tab views)</h2>
+              <p class="subtitle" style="margin:0 0 8px;">Open the Outputs and RR tabs before exporting if you want both charts included.</p>
+              <div class="chartGrid">${barSvg}${rrSvg}</div>
+            </section>
+          ` : ""}
+        </body>
+      </html>
+    `;
+    openHtmlReport(html, "prediction-report");
+  }
+
   if (!meta?.input_labels?.length) {
     return (
       <div className="card">
@@ -1426,6 +1650,9 @@ function PredictPanel({
               <button className="btn" onClick={exportResult} disabled={!out?.json}>
                 Export Result CSV
               </button>
+              <button className="btn" onClick={exportPredictionReport} disabled={!out?.json}>
+                Export professional report
+              </button>
             </div>
           </div>
 
@@ -1439,12 +1666,12 @@ function PredictPanel({
           </div>
 
           {tab === "outputs" && (
-            <div style={{ marginTop: 12 }}>
+            <div style={{ marginTop: 12 }} ref={compareWrapRef}>
               <BarCompareChart outputs={outputs} empirical={out?.json?.empirical} ml={out?.json?.ml} thresholds={thresholds} />
             </div>
           )}
           {tab === "rr" && (
-            <div style={{ marginTop: 12 }}>
+            <div style={{ marginTop: 12 }} ref={rrWrapRef}>
               {out?.json?.rr ? <RRChart rr={out.json.rr} /> : <div className="subtitle">Run prediction to see RR curve.</div>}
             </div>
           )}
@@ -5629,15 +5856,7 @@ function ParamPanel({
         </body>
       </html>
     `;
-    const w = window.open("", "_blank", "noopener,noreferrer,width=980,height=860");
-    if (!w) return;
-    w.document.open();
-    w.document.write(html);
-    w.document.close();
-    window.setTimeout(() => {
-      w.focus();
-      w.print();
-    }, 250);
+    openHtmlReport(html, "parameter-optimisation-report");
   }
 
   return (
@@ -6204,15 +6423,7 @@ function CostPanel({ apiBaseUrl, token, currentUserEmail }: { apiBaseUrl: string
         </body>
       </html>
     `;
-    const w = window.open("", "_blank", "noopener,noreferrer,width=980,height=860");
-    if (!w) return;
-    w.document.open();
-    w.document.write(html);
-    w.document.close();
-    window.setTimeout(() => {
-      w.focus();
-      w.print();
-    }, 250);
+    openHtmlReport(html, "cost-optimisation-report");
   }
 
   const groups = [
