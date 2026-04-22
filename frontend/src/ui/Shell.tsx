@@ -2343,6 +2343,18 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
             <div className="kpiTitle">Flyrock risk holes</div>
             <div className="kpiValue">{flyrockRiskCount}</div>
           </div>
+          <div className="kpi">
+            <div className="kpiTitle">Frag mean (mm)</div>
+            <div className="kpiValue">{formatNum(resp?.blast_quality?.means?.fragmentation)}</div>
+          </div>
+          <div className="kpi">
+            <div className="kpiTitle">GV mean (mm/s)</div>
+            <div className="kpiValue">{formatNum(resp?.blast_quality?.means?.ground_vibration)}</div>
+          </div>
+          <div className="kpi">
+            <div className="kpiTitle">Airblast mean</div>
+            <div className="kpiValue">{formatNum(resp?.blast_quality?.means?.airblast)}</div>
+          </div>
         </div>
       ) : null}
       {resp?.points?.length ? (
@@ -2353,6 +2365,7 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
               Dataset: {resp.dataset_used ?? "default"} · target source: {resp.target_source ?? "observed_delay"} · features: {(resp.features_used ?? []).join(", ")}
               <br />
               Pattern: {resp.initiation_pattern ?? "—"} · Blast face: {resp.blast_face_axis ?? "—"}-{resp.blast_face_side ?? "—"} · Uniqueness: {formatNum((resp?.physics_benchmark?.delay_uniqueness_ratio ?? 0) * 100)}%
+              {resp?.blast_quality?.available ? <><br />Combined benchmark rows: {resp?.blast_quality?.combined_rows_used ?? "—"} · PPV(BME): {formatNum(resp?.blast_quality?.means?.ppv_bme)} mm/s</> : null}
             </div>
             <div className="grid3" style={{ marginTop: 10 }}>
               <div>
@@ -2483,6 +2496,22 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
                       <div className="kpi">
                         <div className="kpiTitle">Sequence rank</div>
                         <div className="kpiValue">{Number.isFinite(Number(selectedPoint.SequenceRank)) ? Number(selectedPoint.SequenceRank) : "—"}</div>
+                      </div>
+                      <div className="kpi">
+                        <div className="kpiTitle">Fragmentation</div>
+                        <div className="kpiValue">{Number.isFinite(Number(selectedPoint.Fragmentation)) ? `${formatNum(selectedPoint.Fragmentation)} mm` : "—"}</div>
+                      </div>
+                      <div className="kpi">
+                        <div className="kpiTitle">Ground vibration</div>
+                        <div className="kpiValue">{Number.isFinite(Number(selectedPoint.GroundVibration)) ? `${formatNum(selectedPoint.GroundVibration)} mm/s` : "—"}</div>
+                      </div>
+                      <div className="kpi">
+                        <div className="kpiTitle">Airblast</div>
+                        <div className="kpiValue">{formatNum(selectedPoint.Airblast)}</div>
+                      </div>
+                      <div className="kpi">
+                        <div className="kpiTitle">PPV (BME)</div>
+                        <div className="kpiValue">{Number.isFinite(Number(selectedPoint.PPV_BME)) ? `${formatNum(selectedPoint.PPV_BME)} mm/s` : "—"}</div>
                       </div>
                     </div>
                     {selectedActualGap != null ? (
@@ -3222,12 +3251,7 @@ function PlanView({
       })
     : [];
   const flyrockRiskPoints = pts.filter((p) => String(p.FlyrockRisk).toLowerCase() === "true" || Number(p.FlyrockRisk) === 1);
-  const flyrockOverlayPoints =
-    flyrockRiskPoints.length > 0
-      ? flyrockRiskPoints
-      : [...pts]
-          .sort((a, b) => Number(b.FlyrockDistance || 0) - Number(a.FlyrockDistance || 0))
-          .slice(0, Math.max(1, Math.floor(pts.length * 0.12)));
+  const flyrockOverlayPoints = flyrockRiskPoints;
   const xLabel = "X coordinate (m)";
   const yLabel = "Y coordinate (m)";
 

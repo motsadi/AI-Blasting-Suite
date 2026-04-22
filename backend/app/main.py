@@ -2364,8 +2364,8 @@ def delay_predict(
                     return "chevron"
                 if "line" in raw or "row" in raw:
                     return "line"
-        aspect = min(span_x, span_y) / max(1e-9, max(span_x, span_y))
-        return "diamond" if aspect >= 0.72 else "chevron"
+        # Default to line initiation for production sequencing unless explicitly overridden.
+        return "line"
 
     def _build_physics_sequence(df_in, ml_delay, observed_step_ms):
         x = pd.to_numeric(df_in["X"], errors="coerce").to_numpy(dtype=float)
@@ -2442,23 +2442,76 @@ def delay_predict(
                     out.append(left[i])
             return out
 
+        def _line_order_from_hole_ids():
+            import re
+
+            if "HoleID" not in df_in.columns:
+                return None
+            vals = df_in["HoleID"].astype(str).tolist()
+            parsed = []
+            for i, v in enumerate(vals):
+                m = re.match(r"^\s*([A-Za-z]+)\s*[-_/]?\s*(\d+)\s*$", v)
+                if not m:
+                    continue
+                letter = m.group(1).upper()
+                number = int(m.group(2))
+                letter_rank = 0
+                for ch in letter:
+                    letter_rank = (letter_rank * 26) + (ord(ch) - ord("A") + 1)
+                parsed.append((i, number, letter_rank))
+            if len(parsed) < max(8, int(0.6 * n)):
+                return None
+
+            num_values = sorted({p[1] for p in parsed})
+            face_by_num = {}
+            for num in num_values:
+                idxs = [i for i, nn, _ in parsed if nn == num]
+                face_by_num[num] = float(np.nanmean(face_distance[idxs])) if idxs else float("inf")
+            ordered_nums = [num for num, _ in sorted(face_by_num.items(), key=lambda kv: kv[1])]
+
+            groups = {}
+            for i, number, letter_rank in parsed:
+                groups.setdefault(number, []).append((i, letter_rank, float(ml_rank[i])))
+
+            out = []
+            for number in ordered_nums:
+                bucket = groups.get(number, [])
+                bucket.sort(key=lambda t: (-t[1], t[2]))  # e.g. N14 -> M14 -> L14 ...
+                out.extend([i for i, _, _ in bucket])
+
+            remaining = [idx for idx in range(n) if idx not in set(out)]
+            if remaining:
+                remaining.sort(key=lambda ii: (float(face_distance[ii]), -float(secondary[ii]), float(ml_rank[ii])))
+                out.extend(remaining)
+            return out
+
         order_list = []
-        for r in np.sort(np.unique(row_index)):
-            idxs = np.where(row_index == r)[0]
-            if pattern == "chevron":
-                row_order = _chevron_row_order(idxs)
-            elif pattern == "diamond":
-                row_order = sorted(
-                    idxs.tolist(),
-                    key=lambda ii: (
-                        abs(float(face_distance[ii] - np.nanmedian(face_distance)))
-                        + abs(float(secondary[ii] - sec_center)),
-                        float(ml_rank[ii]),
-                    ),
-                )
-            else:  # line pattern
-                row_order = sorted(idxs.tolist(), key=lambda ii: (float(secondary[ii]), float(ml_rank[ii])))
-            order_list.extend(row_order)
+        if pattern == "line":
+            forced_line = _line_order_from_hole_ids()
+            if forced_line is not None:
+                order_list = forced_line
+            else:
+                for r in np.sort(np.unique(row_index)):
+                    idxs = np.where(row_index == r)[0]
+                    row_order = sorted(idxs.tolist(), key=lambda ii: (-float(secondary[ii]), float(ml_rank[ii])))
+                    order_list.extend(row_order)
+        else:
+            for r in np.sort(np.unique(row_index)):
+                idxs = np.where(row_index == r)[0]
+                if pattern == "chevron":
+                    row_order = _chevron_row_order(idxs)
+                elif pattern == "diamond":
+                    row_order = sorted(
+                        idxs.tolist(),
+                        key=lambda ii: (
+                            abs(float(face_distance[ii] - np.nanmedian(face_distance)))
+                            + abs(float(secondary[ii] - sec_center)),
+                            float(ml_rank[ii]),
+                        ),
+                    )
+                else:
+                    row_order = sorted(idxs.tolist(), key=lambda ii: (float(secondary[ii]), float(ml_rank[ii])))
+                order_list.extend(row_order)
         order = np.asarray(order_list, dtype=int)
         sequence_rank = np.empty(n, dtype=int)
         sequence_rank[order] = np.arange(1, n + 1)
@@ -2512,13 +2565,11 @@ def delay_predict(
         scaled_burden = burden_proxy / np.sqrt(charge_per_m)
         scaled_burden_risk = np.maximum(0.0, (0.7 - scaled_burden) / 0.7)
         confinement = 1.0 / np.maximum(nearest_spacing, 0.6)
-        flyrock_distance = 40.0 + 11.0 * np.sqrt(np.maximum(charge, 0.0)) + 120.0 * scaled_burden_risk + 95.0 * confinement + 8.0 * np.maximum(powder_factor, 0.0)
+        flyrock_distance = 25.0 + 8.0 * np.sqrt(np.maximum(charge, 0.0)) + 80.0 * scaled_burden_risk + 55.0 * confinement + 5.0 * np.maximum(powder_factor, 0.0)
         flyrock_distance = np.clip(flyrock_distance, 20.0, 700.0)
-        flyrock_risk = (scaled_burden < 0.7) | (flyrock_distance >= 160.0)
-        if n >= 8:
-            # Ensure high-risk tail is visible in overlay even on conservative datasets.
-            p85 = float(np.nanpercentile(flyrock_distance, 85))
-            flyrock_risk = flyrock_risk | (flyrock_distance >= p85)
+        front_face = face_distance <= float(np.nanquantile(face_distance, 0.35))
+        high_pf = powder_factor >= float(np.nanquantile(powder_factor, 0.85))
+        flyrock_risk = ((scaled_burden < 0.7) & front_face) | ((scaled_burden < 0.9) & high_pf) | (flyrock_distance >= 220.0)
 
         return {
             "delay": delays,
@@ -2536,6 +2587,124 @@ def delay_predict(
             "tmin_ms_per_m": tmin_ms_per_m,
             "nearest_spacing": nearest_spacing,
         }
+
+    def _estimate_delay_outputs_with_combined_benchmark(dfv_in, physics_in):
+        import numpy as np
+        import pandas as pd
+        from sklearn.ensemble import RandomForestRegressor
+        from sklearn.model_selection import train_test_split
+
+        try:
+            cdf = _read_upload_df(None, DATASETS["combined"])
+            syn = _feature_map_synonyms()
+            in_res = _resolve_map(cdf.columns, INPUT_LABELS, syn["inputs"])
+            out_names = ["Fragmentation", "Ground Vibration", "Airblast"]
+            out_res = _resolve_map(cdf.columns, out_names, syn["outputs"])
+            if any(v is None for v in in_res) or any(v is None for v in out_res):
+                return None, {"available": False, "reason": "combined mapping unavailable"}
+
+            Xraw = cdf[in_res].copy()
+            Yraw = cdf[out_res].copy()
+            Xraw.columns = list(INPUT_LABELS)
+            Yraw.columns = out_names
+            Xnum = Xraw.apply(pd.to_numeric, errors="coerce")
+            Ynum = Yraw.apply(pd.to_numeric, errors="coerce")
+            work = Xnum.join(Ynum, how="inner").dropna()
+            if len(work) < 50:
+                return None, {"available": False, "reason": "combined dataset too small"}
+
+            xcols = list(INPUT_LABELS)
+            X = work[xcols]
+            Y = work[out_names]
+            med = {c: float(X[c].median()) for c in xcols}
+            bounds = {c: (float(X[c].quantile(0.02)), float(X[c].quantile(0.98))) for c in xcols}
+
+            models = {}
+            scores = {}
+            for out_name in out_names:
+                xtr, xte, ytr, yte = train_test_split(X, Y[out_name], test_size=0.2, random_state=42)
+                mdl = RandomForestRegressor(n_estimators=300, random_state=42).fit(xtr.values, ytr.values)
+                models[out_name] = mdl
+                scores[out_name] = float(mdl.score(xte.values, yte.values))
+
+            n = len(dfv_in)
+            depth = pd.to_numeric(dfv_in.get("Depth", pd.Series(np.nan, index=dfv_in.index)), errors="coerce").fillna(med.get("Hole depth (m)", 10.0)).to_numpy(float)
+            charge = pd.to_numeric(dfv_in.get("Charge", pd.Series(np.nan, index=dfv_in.index)), errors="coerce").fillna(med.get("Explosive mass (kg)", 50.0)).to_numpy(float)
+            spacing = np.maximum(np.asarray(physics_in.get("nearest_spacing", np.ones(n)), dtype=float), 0.6)
+            burden = np.maximum(spacing * 0.9, 0.5)
+            stem = np.maximum(0.7 * depth, 0.2)
+            linear_charge = charge / np.maximum(depth, 0.5)
+            blast_volume = np.maximum(depth * burden * spacing, 0.5)
+            powder_factor = charge / np.maximum(blast_volume, 0.5)
+            distance = np.full(n, med.get("Distance (m)", 300.0), dtype=float)
+            rock_density = np.full(n, med.get("Rock density (t/m³)", 2.6), dtype=float)
+            hole_dia = np.full(n, med.get("Hole diameter (mm)", 165.0), dtype=float)
+
+            rows = []
+            for i in range(n):
+                row = {
+                    "Hole depth (m)": float(depth[i]),
+                    "Hole diameter (mm)": float(hole_dia[i]),
+                    "Burden (m)": float(burden[i]),
+                    "Spacing (m)": float(spacing[i]),
+                    "Stemming (m)": float(stem[i]),
+                    "Distance (m)": float(distance[i]),
+                    "Powder factor (kg/m³)": float(powder_factor[i]),
+                    "Rock density (t/m³)": float(rock_density[i]),
+                    "Linear charge (kg/m)": float(linear_charge[i]),
+                    "Explosive mass (kg)": float(charge[i]),
+                    "Blast volume (m³)": float(blast_volume[i]),
+                    "# holes": 1.0,
+                }
+                for c in xcols:
+                    lo, hi = bounds[c]
+                    row[c] = float(np.clip(row.get(c, med[c]), lo, hi))
+                rows.append(row)
+
+            Xdelay = pd.DataFrame(rows)[xcols].values
+            frag_ml = models["Fragmentation"].predict(Xdelay)
+            gv_ml = models["Ground Vibration"].predict(Xdelay)
+            ab_ml = models["Airblast"].predict(Xdelay)
+
+            frag_emp = []
+            gv_emp = []
+            ab_emp = []
+            for row in rows:
+                vals = {k: float(v) for k, v in row.items()}
+                vals["HPD_override"] = 1.0
+                frag_emp.append(_empirical_value_for_output(vals, "Fragmentation"))
+                gv_emp.append(_empirical_value_for_output(vals, "Ground Vibration"))
+                ab_emp.append(_empirical_value_for_output(vals, "Airblast"))
+
+            frag = 0.55 * np.asarray(frag_ml, dtype=float) + 0.45 * np.asarray(frag_emp, dtype=float)
+            gv = 0.55 * np.asarray(gv_ml, dtype=float) + 0.45 * np.asarray(gv_emp, dtype=float)
+            ab = 0.55 * np.asarray(ab_ml, dtype=float) + 0.45 * np.asarray(ab_emp, dtype=float)
+
+            # BME guideline PPV estimate: C = 1143 * (R/sqrt(W))^-1.65
+            w = np.maximum(charge, 1e-3)
+            r = np.maximum(distance, 1.0)
+            ppv_bme = 1143.0 * np.power(r / np.sqrt(w), -1.65)
+
+            out_df = dfv_in.copy()
+            out_df["Fragmentation"] = np.asarray([_clamp_physical_output("Fragmentation", float(v)) for v in frag], dtype=float)
+            out_df["GroundVibration"] = np.asarray([_clamp_physical_output("Ground Vibration", float(v)) for v in gv], dtype=float)
+            out_df["Airblast"] = np.asarray([_clamp_physical_output("Airblast", float(v)) for v in ab], dtype=float)
+            out_df["PPV_BME"] = np.asarray([max(0.001, float(v)) for v in ppv_bme], dtype=float)
+
+            summary = {
+                "available": True,
+                "combined_rows_used": int(len(work)),
+                "ml_r2": {k: float(v) for k, v in scores.items()},
+                "means": {
+                    "fragmentation": float(np.nanmean(out_df["Fragmentation"])),
+                    "ground_vibration": float(np.nanmean(out_df["GroundVibration"])),
+                    "airblast": float(np.nanmean(out_df["Airblast"])),
+                    "ppv_bme": float(np.nanmean(out_df["PPV_BME"])),
+                },
+            }
+            return out_df, summary
+        except Exception as e:
+            return None, {"available": False, "reason": str(e)}
 
     try:
         dataset_used = DATASETS["delay_v1"]
@@ -2604,6 +2773,10 @@ def delay_predict(
     dfv["FlyrockRisk"] = physics["flyrock_risk"]
     dfv["InitiationPattern"] = physics["pattern"]
 
+    enriched_dfv, blast_quality = _estimate_delay_outputs_with_combined_benchmark(dfv, physics)
+    if enriched_dfv is not None:
+        dfv = enriched_dfv
+
     dfv = dfv.dropna(subset=["X", "Y", "Delay"])
 
     # limit to 2000 points for payload size
@@ -2633,6 +2806,7 @@ def delay_predict(
             "flyrock_risk_holes": int(np.sum(np.asarray(dfv["FlyrockRisk"], dtype=bool))),
             "flyrock_max_distance": float(np.max(dfv["FlyrockDistance"])) if len(dfv) else 0.0,
         },
+        "blast_quality": blast_quality,
     }
 
 
