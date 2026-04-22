@@ -2463,11 +2463,23 @@ def delay_predict(
             return out
 
         def _line_order_echelon_by_geometry():
-            """Echelon isochron order: one column of holes after another, top→bottom in each column.
+            """Boustrophedon (serpentine) tie-up: left→right by column, alternating direction.
+            Col 0: top→bottom, col 1: bottom→top, col 2: top→bottom, ... so hole #1 is the
+            top-left of the first column (e.g. N14). Column strips use PCA across-bench when needed."""
 
-            Axis-parallel X bins fail on slanted/diagonal benches. Use 2D PCA: the narrow
-            across-bench direction bins columns; within a column, sort by plan Y (highest first) so
-            the sequence matches a straightforward left-to-right, top-to-bottom firing sweep."""
+            def _serpentine_from_bins(col_bin: np.ndarray) -> list[int]:
+                out = []
+                for idx_c, ci in enumerate(sorted(np.unique(col_bin).tolist())):
+                    idxs = np.where(col_bin == ci)[0].tolist()
+                    if not idxs:
+                        continue
+                    if idx_c % 2 == 0:
+                        row_order = sorted(idxs, key=lambda ii: (-float(y[ii]), float(ml_rank[ii])))
+                    else:
+                        row_order = sorted(idxs, key=lambda ii: (float(y[ii]), float(ml_rank[ii])))
+                    out.extend(row_order)
+                return out
+
             if n <= 0:
                 return []
             if n == 1:
@@ -2480,11 +2492,10 @@ def delay_predict(
             if not np.isfinite(C).all():
                 col_pitch = max(1.0, ns_med * 0.85)
                 xmin0 = float(np.nanmin(x))
-                col_index = np.round((x - xmin0) / col_pitch).astype(int)
-                return np.lexsort((-y, col_index)).tolist()
+                col_index = np.round((x - xmin0) / col_pitch).astype(np.int64)
+                return _serpentine_from_bins(col_index)
 
             _ev, U = np.linalg.eigh(C)
-            # Smaller plan variance ≈ "across" the strip (fewer columns in typical figures).
             e_across = U[:, 0].astype(float)
             across = (X2 @ e_across).ravel()
             if n > 2:
@@ -2497,8 +2508,7 @@ def delay_predict(
             col_w = float(np.median(d_leg)) if len(d_leg) else max(0.1, (float(np.max(across)) - float(np.min(across))) / max(8.0, n / 10.0))
             col_w = max(col_w * 0.5, 0.35 * ns_med, 0.2)
             col_bin = np.round((across - float(np.min(across))) / col_w).astype(np.int64)
-            # np.lexsort: last key is primary — column first, then top of plan = max Y
-            return np.lexsort((-y.astype(float), col_bin)).tolist()
+            return _serpentine_from_bins(col_bin)
 
         order_list = []
         if pattern == "line":
