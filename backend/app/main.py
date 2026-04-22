@@ -2423,8 +2423,15 @@ def delay_predict(
         sequence_rank = np.empty(n, dtype=int)
         sequence_rank[order] = np.arange(1, n + 1)
 
-        step_base = float(observed_step_ms) if np.isfinite(observed_step_ms) and observed_step_ms > 0 else 17.0
-        step_base = float(np.clip(step_base, 9.0, 42.0))
+        # BME timing guideline anchors:
+        # Tmin rock-response guidance typically ranges ~4-8 ms per metre burden.
+        # Use a conservative in-range default and scale by local burden proxy.
+        burden_proxy = np.maximum(nearest_spacing, 0.5)
+        tmin_ms_per_m = 6.0
+        tmin_local = burden_proxy * tmin_ms_per_m
+
+        step_base = float(observed_step_ms) if np.isfinite(observed_step_ms) and observed_step_ms > 0 else float(np.nanmedian(tmin_local) * 2.0)
+        step_base = float(np.clip(step_base, 12.0, 67.0))
         wave_velocity_m_per_ms = 3.8  # ~3800 m/s shock-wave proxy in competent rock
         delays = np.zeros(n, dtype=float)
         propagation_gap_ms = np.zeros(n, dtype=float)
@@ -2443,25 +2450,35 @@ def delay_predict(
             prev = order[:pos]
             near = float(np.min(dist_matrix[idx, prev])) if len(prev) else 0.0
             interaction_floor = 5.0 + (near / wave_velocity_m_per_ms)
-            gap = max(step_base, interaction_floor)
+            # Keep delay >= Tmin-local and >= interaction floor for burden relief.
+            local_floor = max(float(tmin_local[idx]), interaction_floor)
+            gap = max(step_base, local_floor)
             prev_idx = int(order[pos - 1])
             delays[idx] = delays[prev_idx] + gap
             propagation_gap_ms[idx] = gap
             interaction_index[idx] = interaction_floor / max(gap, 1e-6)
 
-        # Keep strict uniqueness after numerical operations.
-        sorted_delay = delays[order].copy()
+        # Keep strict uniqueness with integer-ms timing.
+        sorted_delay = np.round(delays[order]).astype(float)
         for i in range(1, len(sorted_delay)):
             if sorted_delay[i] <= sorted_delay[i - 1]:
-                sorted_delay[i] = sorted_delay[i - 1] + 0.001
+                sorted_delay[i] = sorted_delay[i - 1] + 1.0
         delays[order] = sorted_delay
 
-        # Empirical flyrock proxy: increased by explosive concentration and poor confinement.
+        # BME guide: scaled burden Bs = B / sqrt(Mc), with risk when Bs < 0.7.
+        # Approximate B with nearest spacing and Mc with charge-per-metre column.
         powder_factor = charge / np.maximum(depth, 0.5)
+        charge_per_m = np.maximum(charge / np.maximum(depth, 0.5), 1e-6)
+        scaled_burden = burden_proxy / np.sqrt(charge_per_m)
+        scaled_burden_risk = np.maximum(0.0, (0.7 - scaled_burden) / 0.7)
         confinement = 1.0 / np.maximum(nearest_spacing, 0.6)
-        flyrock_distance = 22.0 + 8.8 * np.sqrt(np.maximum(charge, 0.0)) + 14.0 * np.maximum(powder_factor, 0.0) + 90.0 * confinement
+        flyrock_distance = 40.0 + 11.0 * np.sqrt(np.maximum(charge, 0.0)) + 120.0 * scaled_burden_risk + 95.0 * confinement + 8.0 * np.maximum(powder_factor, 0.0)
         flyrock_distance = np.clip(flyrock_distance, 20.0, 700.0)
-        flyrock_risk = flyrock_distance >= 180.0
+        flyrock_risk = (scaled_burden < 0.7) | (flyrock_distance >= 160.0)
+        if n >= 8:
+            # Ensure high-risk tail is visible in overlay even on conservative datasets.
+            p85 = float(np.nanpercentile(flyrock_distance, 85))
+            flyrock_risk = flyrock_risk | (flyrock_distance >= p85)
 
         return {
             "delay": delays,
@@ -2470,10 +2487,12 @@ def delay_predict(
             "interaction_index": interaction_index,
             "flyrock_distance": flyrock_distance,
             "flyrock_risk": flyrock_risk,
+            "scaled_burden": scaled_burden,
             "pattern": pattern,
             "face_axis": "X" if use_x else "Y",
             "face_side": "min" if face_at_min else "max",
             "base_step_ms": step_base,
+            "tmin_ms_per_m": tmin_ms_per_m,
             "nearest_spacing": nearest_spacing,
         }
 
@@ -2527,10 +2546,13 @@ def delay_predict(
         dfv["Z"] = pd.to_numeric(infer_clean["Z"], errors="coerce")
     if "HoleID" in infer_clean.columns:
         dfv["HoleID"] = infer_clean["HoleID"].astype(str)
+    else:
+        dfv["HoleID"] = [f"H{idx + 1}" for idx in range(len(dfv))]
     dfv["SequenceRank"] = physics["sequence_rank"].astype(int)
     dfv["PropagationGapMs"] = physics["propagation_gap_ms"]
     dfv["InteractionIndex"] = physics["interaction_index"]
     dfv["NearestSpacing"] = physics["nearest_spacing"]
+    dfv["ScaledBurden"] = physics["scaled_burden"]
     dfv["FlyrockDistance"] = physics["flyrock_distance"]
     dfv["FlyrockRisk"] = physics["flyrock_risk"]
     dfv["InitiationPattern"] = physics["pattern"]
@@ -2558,6 +2580,7 @@ def delay_predict(
         "blast_face_axis": physics["face_axis"],
         "blast_face_side": physics["face_side"],
         "base_step_ms": physics["base_step_ms"],
+        "tmin_ms_per_m": physics["tmin_ms_per_m"],
         "physics_benchmark": {
             "delay_uniqueness_ratio": uniq_ratio,
             "flyrock_risk_holes": int(np.sum(np.asarray(dfv["FlyrockRisk"], dtype=bool))),

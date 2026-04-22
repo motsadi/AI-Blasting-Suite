@@ -3213,8 +3213,21 @@ function PlanView({
   const waitingCount = currentTime == null ? 0 : pts.filter((p) => Number(p.Delay) > currentTime + eps).length;
   const firedCount = currentTime == null ? pts.length : pts.filter((p) => Number(p.Delay) < currentTime - eps).length;
   const labelable = showLabels ? (pts.length <= 220 ? pts : currentPoints.concat(selectedPoint ? [selectedPoint] : [])) : [];
-  const idLabelable = showHoleIds ? (pts.length <= 180 ? pts : currentPoints.concat(selectedPoint ? [selectedPoint] : [])) : [];
+  const idStride = Math.max(1, Math.ceil(pts.length / 160));
+  const idLabelable = showHoleIds
+    ? pts.filter((point, i) => {
+        const isCurrent = currentTime != null && Math.abs(Number(point.Delay) - currentTime) < eps;
+        const isSelected = selectedPoint != null && selectedPoint.__idx === point.__idx;
+        return i % idStride === 0 || isCurrent || isSelected;
+      })
+    : [];
   const flyrockRiskPoints = pts.filter((p) => String(p.FlyrockRisk).toLowerCase() === "true" || Number(p.FlyrockRisk) === 1);
+  const flyrockOverlayPoints =
+    flyrockRiskPoints.length > 0
+      ? flyrockRiskPoints
+      : [...pts]
+          .sort((a, b) => Number(b.FlyrockDistance || 0) - Number(a.FlyrockDistance || 0))
+          .slice(0, Math.max(1, Math.floor(pts.length * 0.12)));
   const xLabel = "X coordinate (m)";
   const yLabel = "Y coordinate (m)";
 
@@ -3273,7 +3286,7 @@ function PlanView({
               return <circle key={`prev-ring-${point.__idx}`} cx={x} cy={y} r={Math.max(26, maxRadius + 16)} fill="none" stroke="rgba(255,255,255,0.16)" strokeWidth={1} />;
             })}
           {showFlyrock &&
-            flyrockRiskPoints.map((point) => {
+            flyrockOverlayPoints.map((point) => {
               const x = mapX(Number(point.X));
               const y = mapY(Number(point.Y));
               const flyDist = Number(point.FlyrockDistance);
@@ -3330,7 +3343,6 @@ function PlanView({
             const y = mapY(Number(point.Y));
             const isCurrent = currentTime != null && Math.abs(Number(point.Delay) - currentTime) < eps;
             const isSelected = selectedPoint != null && selectedPoint.__idx === point.__idx;
-            if (!isCurrent && !isSelected && pts.length > 180) return null;
             const idText = String(point.HoleID ?? `H${point.__idx + 1}`).slice(0, 12);
             return (
               <g key={`id-${point.__idx}-${i}`}>
