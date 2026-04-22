@@ -2317,7 +2317,7 @@ def delay_predict(
         rename[cols["x"]] = "X"
         rename[cols["y"]] = "Y"
         opt = {
-            "HoleID": ["holeid", "hole id", "id", "hole"],
+            "HoleID": ["holeid", "hole id", "id", "hole", "hole_no", "hole number", "hole_number"],
             "Depth": ["depth", "hole_depth", "hole depth (m)", "hole_depth_m"],
             "Charge": ["charge", "explosive mass", "explosive_mass", "charge_kg"],
             "Z": ["z", "rl", "elev", "elevation"],
@@ -2327,7 +2327,155 @@ def delay_predict(
             col = _find(std, aliases)
             if col is not None:
                 rename[col] = std
-        return df_in.rename(columns=rename)
+        out = df_in.rename(columns=rename)
+        if "HoleID" not in out.columns and len(df_in.columns):
+            first_col = df_in.columns[0]
+            first_low = str(first_col).strip().lower()
+            if first_col not in rename:
+                s = df_in[first_col]
+                numeric_ratio = float(pd.to_numeric(s, errors="coerce").notna().mean()) if len(s) else 0.0
+                unique_ratio = float(s.astype(str).nunique(dropna=True) / max(1, len(s)))
+                if "hole" in first_low or "id" in first_low or numeric_ratio < 0.95 or unique_ratio > 0.94:
+                    out = out.rename(columns={first_col: "HoleID"})
+        return out
+
+    def _rank01(vals):
+        arr = np.asarray(vals, dtype=float)
+        n = len(arr)
+        if n <= 1:
+            return np.zeros(n, dtype=float)
+        order = np.argsort(arr, kind="mergesort")
+        ranks = np.empty(n, dtype=float)
+        ranks[order] = np.linspace(0.0, 1.0, n)
+        return ranks
+
+    def _nearest_spacing(dist_matrix):
+        if len(dist_matrix) <= 1:
+            return np.zeros(len(dist_matrix), dtype=float)
+        return np.min(dist_matrix, axis=1)
+
+    def _infer_initiation_pattern(df_in, span_x, span_y):
+        for col in ["InitiationPattern", "Pattern", "pattern", "initiation_pattern"]:
+            if col in df_in.columns and len(df_in[col].dropna()):
+                raw = str(df_in[col].dropna().iloc[0]).strip().lower()
+                if "diamond" in raw:
+                    return "diamond"
+                if "chevron" in raw or "v-cut" in raw or "v cut" in raw:
+                    return "chevron"
+                if "line" in raw or "row" in raw:
+                    return "line"
+        aspect = min(span_x, span_y) / max(1e-9, max(span_x, span_y))
+        return "diamond" if aspect >= 0.72 else "chevron"
+
+    def _build_physics_sequence(df_in, ml_delay, observed_step_ms):
+        x = pd.to_numeric(df_in["X"], errors="coerce").to_numpy(dtype=float)
+        y = pd.to_numeric(df_in["Y"], errors="coerce").to_numpy(dtype=float)
+        n = len(df_in)
+
+        pts = np.column_stack([x, y])
+        dx = x[:, None] - x[None, :]
+        dy = y[:, None] - y[None, :]
+        dist_matrix = np.sqrt(dx * dx + dy * dy)
+        np.fill_diagonal(dist_matrix, np.inf)
+        nearest_spacing = _nearest_spacing(dist_matrix)
+        nearest_spacing = np.where(np.isfinite(nearest_spacing), nearest_spacing, np.nanmedian(nearest_spacing[np.isfinite(nearest_spacing)]) if np.isfinite(nearest_spacing).any() else 1.0)
+
+        span_x = float(np.nanmax(x) - np.nanmin(x)) if n else 1.0
+        span_y = float(np.nanmax(y) - np.nanmin(y)) if n else 1.0
+        use_x = span_x >= span_y
+        primary = x if use_x else y
+        secondary = y if use_x else x
+
+        pmin = float(np.nanmin(primary))
+        pmax = float(np.nanmax(primary))
+        q_lo = float(np.nanquantile(primary, 0.15))
+        q_hi = float(np.nanquantile(primary, 0.85))
+        lo_mask = primary <= q_lo
+        hi_mask = primary >= q_hi
+        lo_open = float(np.nanmean(nearest_spacing[lo_mask])) if np.any(lo_mask) else 0.0
+        hi_open = float(np.nanmean(nearest_spacing[hi_mask])) if np.any(hi_mask) else 0.0
+        face_at_min = lo_open >= hi_open
+        face_distance = primary - pmin if face_at_min else pmax - primary
+        face_rank = _rank01(face_distance)
+
+        pattern = _infer_initiation_pattern(df_in, span_x, span_y)
+        sec_center = np.nanmedian(secondary)
+        sec_spread = max(1e-9, float(np.nanstd(secondary)))
+        lateral = np.abs((secondary - sec_center) / sec_spread)
+        radial = np.hypot((x - np.nanmedian(x)) / max(1e-9, span_x), (y - np.nanmedian(y)) / max(1e-9, span_y))
+        if pattern == "diamond":
+            pattern_rank = _rank01(radial)
+        elif pattern == "line":
+            pattern_rank = np.zeros(n, dtype=float)
+        else:
+            pattern_rank = _rank01(lateral)
+
+        charge = pd.to_numeric(df_in.get("Charge", pd.Series(np.nan, index=df_in.index)), errors="coerce").to_numpy(dtype=float)
+        depth = pd.to_numeric(df_in.get("Depth", pd.Series(np.nan, index=df_in.index)), errors="coerce").to_numpy(dtype=float)
+        charge = np.where(np.isfinite(charge), charge, np.nanmedian(charge[np.isfinite(charge)]) if np.isfinite(charge).any() else 0.0)
+        depth = np.where(np.isfinite(depth), depth, np.nanmedian(depth[np.isfinite(depth)]) if np.isfinite(depth).any() else 0.0)
+
+        charge_rank = _rank01(charge)
+        depth_rank = _rank01(depth)
+        ml_rank = _rank01(ml_delay)
+        score = 0.46 * face_rank + 0.24 * pattern_rank + 0.2 * ml_rank + 0.07 * charge_rank + 0.03 * depth_rank
+        order = np.argsort(score, kind="mergesort")
+        sequence_rank = np.empty(n, dtype=int)
+        sequence_rank[order] = np.arange(1, n + 1)
+
+        step_base = float(observed_step_ms) if np.isfinite(observed_step_ms) and observed_step_ms > 0 else 17.0
+        step_base = float(np.clip(step_base, 9.0, 42.0))
+        wave_velocity_m_per_ms = 3.8  # ~3800 m/s shock-wave proxy in competent rock
+        delays = np.zeros(n, dtype=float)
+        propagation_gap_ms = np.zeros(n, dtype=float)
+        interaction_index = np.zeros(n, dtype=float)
+        ml_min = float(np.nanmin(ml_delay)) if len(ml_delay) and np.isfinite(np.nanmin(ml_delay)) else 0.0
+        start_delay = max(0.0, ml_min)
+
+        if n:
+            first_idx = int(order[0])
+            delays[first_idx] = start_delay
+            propagation_gap_ms[first_idx] = step_base
+            interaction_index[first_idx] = 0.0
+
+        for pos in range(1, n):
+            idx = int(order[pos])
+            prev = order[:pos]
+            near = float(np.min(dist_matrix[idx, prev])) if len(prev) else 0.0
+            interaction_floor = 5.0 + (near / wave_velocity_m_per_ms)
+            gap = max(step_base, interaction_floor)
+            prev_idx = int(order[pos - 1])
+            delays[idx] = delays[prev_idx] + gap
+            propagation_gap_ms[idx] = gap
+            interaction_index[idx] = interaction_floor / max(gap, 1e-6)
+
+        # Keep strict uniqueness after numerical operations.
+        sorted_delay = delays[order].copy()
+        for i in range(1, len(sorted_delay)):
+            if sorted_delay[i] <= sorted_delay[i - 1]:
+                sorted_delay[i] = sorted_delay[i - 1] + 0.001
+        delays[order] = sorted_delay
+
+        # Empirical flyrock proxy: increased by explosive concentration and poor confinement.
+        powder_factor = charge / np.maximum(depth, 0.5)
+        confinement = 1.0 / np.maximum(nearest_spacing, 0.6)
+        flyrock_distance = 22.0 + 8.8 * np.sqrt(np.maximum(charge, 0.0)) + 14.0 * np.maximum(powder_factor, 0.0) + 90.0 * confinement
+        flyrock_distance = np.clip(flyrock_distance, 20.0, 700.0)
+        flyrock_risk = flyrock_distance >= 180.0
+
+        return {
+            "delay": delays,
+            "sequence_rank": sequence_rank,
+            "propagation_gap_ms": propagation_gap_ms,
+            "interaction_index": interaction_index,
+            "flyrock_distance": flyrock_distance,
+            "flyrock_risk": flyrock_risk,
+            "pattern": pattern,
+            "face_axis": "X" if use_x else "Y",
+            "face_side": "min" if face_at_min else "max",
+            "base_step_ms": step_base,
+            "nearest_spacing": nearest_spacing,
+        }
 
     try:
         dataset_used = DATASETS["delay_v1"]
@@ -2354,13 +2502,19 @@ def delay_predict(
 
     infer_keep = ["Depth", "Charge", "X", "Y"] + (["Z"] if "Z" in infer_df.columns and "Z" in train_clean.columns else [])
     infer_clean = infer_df.dropna(subset=infer_keep).copy()
+    if len(infer_clean) > 2000:
+        infer_clean = infer_clean.sample(2000, random_state=42).copy()
     X_infer = infer_clean[[c for c in ["Depth", "Charge", "X", "Y", "Z"] if c in infer_clean.columns and c in train_clean.columns]].apply(pd.to_numeric, errors="coerce").values
     yhat = mdl.predict(sc.transform(X_infer))
+    observed_delay = pd.to_numeric(train_clean["Delay"], errors="coerce") if "Delay" in train_clean.columns else pd.Series(dtype=float)
+    observed_unique = np.sort(observed_delay.dropna().unique()) if len(observed_delay) else np.array([])
+    observed_step = float(np.median(np.diff(observed_unique))) if len(observed_unique) > 1 else float("nan")
+    physics = _build_physics_sequence(infer_clean, yhat, observed_step)
     dfv = pd.DataFrame(
         {
             "X": pd.to_numeric(infer_clean["X"], errors="coerce"),
             "Y": pd.to_numeric(infer_clean["Y"], errors="coerce"),
-            "Delay": yhat,
+            "Delay": physics["delay"],
         }
     )
     if "Delay" in infer_clean.columns:
@@ -2373,12 +2527,22 @@ def delay_predict(
         dfv["Z"] = pd.to_numeric(infer_clean["Z"], errors="coerce")
     if "HoleID" in infer_clean.columns:
         dfv["HoleID"] = infer_clean["HoleID"].astype(str)
+    dfv["SequenceRank"] = physics["sequence_rank"].astype(int)
+    dfv["PropagationGapMs"] = physics["propagation_gap_ms"]
+    dfv["InteractionIndex"] = physics["interaction_index"]
+    dfv["NearestSpacing"] = physics["nearest_spacing"]
+    dfv["FlyrockDistance"] = physics["flyrock_distance"]
+    dfv["FlyrockRisk"] = physics["flyrock_risk"]
+    dfv["InitiationPattern"] = physics["pattern"]
 
     dfv = dfv.dropna(subset=["X", "Y", "Delay"])
 
     # limit to 2000 points for payload size
     if len(dfv) > 2000:
         dfv = dfv.sample(2000, random_state=42)
+
+    uniq_delays = pd.Series(dfv["Delay"]).nunique(dropna=True)
+    uniq_ratio = float(uniq_delays / max(1, len(dfv)))
 
     return {
         "points": dfv.to_dict(orient="records"),
@@ -2390,6 +2554,15 @@ def delay_predict(
         "features_used": feature_cols,
         "target_source": target_source,
         "actual_delay_available": bool("ActualDelay" in dfv.columns),
+        "initiation_pattern": physics["pattern"],
+        "blast_face_axis": physics["face_axis"],
+        "blast_face_side": physics["face_side"],
+        "base_step_ms": physics["base_step_ms"],
+        "physics_benchmark": {
+            "delay_uniqueness_ratio": uniq_ratio,
+            "flyrock_risk_holes": int(np.sum(np.asarray(dfv["FlyrockRisk"], dtype=bool))),
+            "flyrock_max_distance": float(np.max(dfv["FlyrockDistance"])) if len(dfv) else 0.0,
+        },
     }
 
 

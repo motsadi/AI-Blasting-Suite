@@ -1645,6 +1645,8 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   const [speed, setSpeed] = useState(1);
   const [showLabels, setShowLabels] = useState(true);
   const [showShock, setShowShock] = useState(true);
+  const [showHoleIds, setShowHoleIds] = useState(true);
+  const [showFlyrock, setShowFlyrock] = useState(true);
   const [selectedPoint, setSelectedPoint] = useState<Record<string, any> | null>(null);
 
   async function run() {
@@ -1719,6 +1721,10 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     selectedPoint && Number.isFinite(Number(selectedPoint.ActualDelay))
       ? Number(selectedPoint.Delay) - Number(selectedPoint.ActualDelay)
       : null;
+  const flyrockRiskCount = useMemo(
+    () => points.filter((p) => String(p.FlyrockRisk).toLowerCase() === "true" || Number(p.FlyrockRisk) === 1).length,
+    [points]
+  );
 
   useEffect(() => {
     if (!playing || !uniqueTimes.length) return;
@@ -1784,6 +1790,14 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
             <div className="kpiTitle">Median holes/step</div>
             <div className="kpiValue">{delayStats?.medianGroup ?? "—"}</div>
           </div>
+          <div className="kpi">
+            <div className="kpiTitle">Initiation pattern</div>
+            <div className="kpiValue" style={{ fontSize: 14 }}>{resp.initiation_pattern ?? "—"}</div>
+          </div>
+          <div className="kpi">
+            <div className="kpiTitle">Flyrock risk holes</div>
+            <div className="kpiValue">{flyrockRiskCount}</div>
+          </div>
         </div>
       ) : null}
       {resp?.points?.length ? (
@@ -1792,6 +1806,8 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
             <div className="sectionTitle">Simulation Controls</div>
             <div className="subtitle">
               Dataset: {resp.dataset_used ?? "default"} · target source: {resp.target_source ?? "observed_delay"} · features: {(resp.features_used ?? []).join(", ")}
+              <br />
+              Pattern: {resp.initiation_pattern ?? "—"} · Blast face: {resp.blast_face_axis ?? "—"}-{resp.blast_face_side ?? "—"} · Uniqueness: {formatNum((resp?.physics_benchmark?.delay_uniqueness_ratio ?? 0) * 100)}%
             </div>
             <div className="grid3" style={{ marginTop: 10 }}>
               <div>
@@ -1844,7 +1860,9 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
                 <label className="label">Visual overlays</label>
                 <div style={{ display: "grid", gap: 6, marginTop: 8 }}>
                   <label className="label"><input type="checkbox" checked={showLabels} onChange={(e) => setShowLabels(e.target.checked)} /> Show delay labels</label>
+                  <label className="label"><input type="checkbox" checked={showHoleIds} onChange={(e) => setShowHoleIds(e.target.checked)} /> Show hole IDs</label>
                   <label className="label"><input type="checkbox" checked={showShock} onChange={(e) => setShowShock(e.target.checked)} /> Show shock-front rings</label>
+                  <label className="label"><input type="checkbox" checked={showFlyrock} onChange={(e) => setShowFlyrock(e.target.checked)} /> Show flyrock risk overlay</label>
                 </div>
               </div>
             </div>
@@ -1857,7 +1875,9 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
             currentTime={currentTime}
             previousTime={previousTime}
             showLabels={showLabels}
+            showHoleIds={showHoleIds}
             showShock={showShock}
+            showFlyrock={showFlyrock}
             selectedPoint={selectedPoint}
             onSelect={setSelectedPoint}
           />
@@ -1904,6 +1924,20 @@ function DelayPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
                       <div className="kpi">
                         <div className="kpiTitle">Depth</div>
                         <div className="kpiValue">{formatNum(selectedPoint.Depth)}</div>
+                      </div>
+                      <div className="kpi">
+                        <div className="kpiTitle">Flyrock distance</div>
+                        <div className="kpiValue">{Number.isFinite(Number(selectedPoint.FlyrockDistance)) ? `${formatNum(selectedPoint.FlyrockDistance)} m` : "—"}</div>
+                      </div>
+                      <div className="kpi">
+                        <div className="kpiTitle">Flyrock risk</div>
+                        <div className="kpiValue" style={{ fontSize: 14 }}>
+                          {String(selectedPoint.FlyrockRisk).toLowerCase() === "true" || Number(selectedPoint.FlyrockRisk) === 1 ? "Risk" : "Low"}
+                        </div>
+                      </div>
+                      <div className="kpi">
+                        <div className="kpiTitle">Sequence rank</div>
+                        <div className="kpiValue">{Number.isFinite(Number(selectedPoint.SequenceRank)) ? Number(selectedPoint.SequenceRank) : "—"}</div>
                       </div>
                     </div>
                     {selectedActualGap != null ? (
@@ -2551,7 +2585,9 @@ function PlanView({
   currentTime,
   previousTime,
   showLabels,
+  showHoleIds,
   showShock,
+  showFlyrock,
   selectedPoint,
   onSelect,
 }: {
@@ -2561,7 +2597,9 @@ function PlanView({
   currentTime?: number;
   previousTime?: number;
   showLabels: boolean;
+  showHoleIds: boolean;
   showShock: boolean;
+  showFlyrock: boolean;
   selectedPoint: Record<string, any> | null;
   onSelect: (point: Record<string, any>) => void;
 }) {
@@ -2630,6 +2668,8 @@ function PlanView({
   const waitingCount = currentTime == null ? 0 : pts.filter((p) => Number(p.Delay) > currentTime + eps).length;
   const firedCount = currentTime == null ? pts.length : pts.filter((p) => Number(p.Delay) < currentTime - eps).length;
   const labelable = showLabels ? (pts.length <= 220 ? pts : currentPoints.concat(selectedPoint ? [selectedPoint] : [])) : [];
+  const idLabelable = showHoleIds ? (pts.length <= 180 ? pts : currentPoints.concat(selectedPoint ? [selectedPoint] : [])) : [];
+  const flyrockRiskPoints = pts.filter((p) => String(p.FlyrockRisk).toLowerCase() === "true" || Number(p.FlyrockRisk) === 1);
   const xLabel = "X coordinate (m)";
   const yLabel = "Y coordinate (m)";
 
@@ -2687,6 +2727,14 @@ function PlanView({
               const y = mapY(Number(point.Y));
               return <circle key={`prev-ring-${point.__idx}`} cx={x} cy={y} r={Math.max(26, maxRadius + 16)} fill="none" stroke="rgba(255,255,255,0.16)" strokeWidth={1} />;
             })}
+          {showFlyrock &&
+            flyrockRiskPoints.map((point) => {
+              const x = mapX(Number(point.X));
+              const y = mapY(Number(point.Y));
+              const flyDist = Number(point.FlyrockDistance);
+              const ring = Math.max(maxRadius + 7, Math.min(24, maxRadius + (Number.isFinite(flyDist) ? flyDist / 24 : 9)));
+              return <circle key={`flyrisk-${point.__idx}`} cx={x} cy={y} r={ring} fill="none" stroke="rgba(239,68,68,0.7)" strokeWidth={1.4} strokeDasharray="3 2" />;
+            })}
 
           {pts.map((point) => {
             const x = mapX(Number(point.X));
@@ -2731,6 +2779,23 @@ function PlanView({
               </g>
             );
           })}
+          {idLabelable.map((point, i) => {
+            if (!point) return null;
+            const x = mapX(Number(point.X));
+            const y = mapY(Number(point.Y));
+            const isCurrent = currentTime != null && Math.abs(Number(point.Delay) - currentTime) < eps;
+            const isSelected = selectedPoint != null && selectedPoint.__idx === point.__idx;
+            if (!isCurrent && !isSelected && pts.length > 180) return null;
+            const idText = String(point.HoleID ?? `H${point.__idx + 1}`).slice(0, 12);
+            return (
+              <g key={`id-${point.__idx}-${i}`}>
+                <rect x={x - 14} y={y + 9} width={56} height={14} rx={4} fill="rgba(15,23,42,0.82)" />
+                <text x={x + 14} y={y + 19} fontSize="8.5" textAnchor="middle" fill={isCurrent || isSelected ? "#f8fafc" : "#e2e8f0"} fontWeight="700">
+                  {idText}
+                </text>
+              </g>
+            );
+          })}
         </svg>
         <div className="card" style={{ padding: 10, display: "grid", gap: 8, alignSelf: "stretch" }}>
           <div className="label" style={{ textAlign: "center" }}>{colorBy}</div>
@@ -2744,6 +2809,7 @@ function PlanView({
         <div className="label">Grey = waiting holes</div>
         <div className="label">Colour = predicted delay sequence</div>
         <div className="label">White halo = current firing hole(s)</div>
+        <div className="label">Red dashed ring = flyrock-risk hole</div>
         <div className="label">Marker size = {sizeBy}</div>
         <div className="label">Fired {firedCount} · Current {currentPoints.length} · Waiting {waitingCount}</div>
       </div>
