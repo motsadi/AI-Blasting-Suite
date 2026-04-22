@@ -2355,6 +2355,8 @@ def delay_predict(
         return np.min(dist_matrix, axis=1)
 
     def _infer_initiation_pattern(df_in, span_x, span_y):
+        import re
+
         for col in ["InitiationPattern", "Pattern", "pattern", "initiation_pattern"]:
             if col in df_in.columns and len(df_in[col].dropna()):
                 raw = str(df_in[col].dropna().iloc[0]).strip().lower()
@@ -2364,8 +2366,22 @@ def delay_predict(
                     return "chevron"
                 if "line" in raw or "row" in raw:
                     return "line"
-        # Default to line initiation for production sequencing unless explicitly overridden.
-        return "line"
+        if "HoleID" in df_in.columns:
+            vals = df_in["HoleID"].astype(str).tolist()
+            letters = set()
+            numbers = set()
+            parsed = 0
+            for v in vals:
+                m = re.match(r"^\s*([A-Za-z]+)\s*[-_/]?\s*(\d+)\s*$", v)
+                if not m:
+                    continue
+                parsed += 1
+                letters.add(m.group(1).upper())
+                numbers.add(int(m.group(2)))
+            if parsed >= max(8, int(0.6 * len(vals))) and len(letters) >= 4 and len(numbers) >= 4:
+                return "line"
+        aspect = min(span_x, span_y) / max(1e-9, max(span_x, span_y))
+        return "diamond" if aspect >= 0.72 else "chevron"
 
     def _build_physics_sequence(df_in, ml_delay, observed_step_ms):
         x = pd.to_numeric(df_in["X"], errors="coerce").to_numpy(dtype=float)
@@ -2485,16 +2501,33 @@ def delay_predict(
                 out.extend(remaining)
             return out
 
+        def _line_order_from_geometry():
+            xmin = float(np.nanmin(x))
+            ymax = float(np.nanmax(y))
+            col_pitch = max(1.0, float(np.nanmedian(nearest_spacing[np.isfinite(nearest_spacing)])) * 0.85)
+            col_index = np.round((x - xmin) / col_pitch).astype(int)
+            ordered_cols = sorted(np.unique(col_index).tolist())
+            out = []
+            for ci in ordered_cols:
+                idxs = np.where(col_index == ci)[0]
+                # Top -> down in each vertical column.
+                row_order = sorted(idxs.tolist(), key=lambda ii: (-float(y[ii]), float(ml_rank[ii])))
+                out.extend(row_order)
+            if not out:
+                return list(range(n))
+            # Guarantee the top-left hole is first in line mode.
+            top_left = int(np.argmin((x - xmin) ** 2 + (y - ymax) ** 2))
+            if top_left in out:
+                out = [top_left] + [ii for ii in out if ii != top_left]
+            return out
+
         order_list = []
         if pattern == "line":
             forced_line = _line_order_from_hole_ids()
             if forced_line is not None:
                 order_list = forced_line
             else:
-                for r in np.sort(np.unique(row_index)):
-                    idxs = np.where(row_index == r)[0]
-                    row_order = sorted(idxs.tolist(), key=lambda ii: (-float(secondary[ii]), float(ml_rank[ii])))
-                    order_list.extend(row_order)
+                order_list = _line_order_from_geometry()
         else:
             for r in np.sort(np.unique(row_index)):
                 idxs = np.where(row_index == r)[0]
@@ -2519,7 +2552,7 @@ def delay_predict(
         # BME timing guideline anchors:
         # Tmin rock-response guidance typically ranges ~4-8 ms per metre burden.
         # Use a conservative in-range default and scale by local burden proxy.
-        burden_proxy = np.maximum(nearest_spacing, 0.5)
+        burden_proxy = np.maximum(nearest_spacing, 2.0)
         tmin_ms_per_m = 6.0
         tmin_local = burden_proxy * tmin_ms_per_m
 
@@ -2564,12 +2597,15 @@ def delay_predict(
         charge_per_m = np.maximum(charge / np.maximum(depth, 0.5), 1e-6)
         scaled_burden = burden_proxy / np.sqrt(charge_per_m)
         scaled_burden_risk = np.maximum(0.0, (0.7 - scaled_burden) / 0.7)
-        confinement = 1.0 / np.maximum(nearest_spacing, 0.6)
-        flyrock_distance = 25.0 + 8.0 * np.sqrt(np.maximum(charge, 0.0)) + 80.0 * scaled_burden_risk + 55.0 * confinement + 5.0 * np.maximum(powder_factor, 0.0)
+        confinement = 1.0 / np.maximum(nearest_spacing, 2.0)
+        c_med = float(np.nanmedian(charge))
+        c_iqr = max(1e-6, float(np.nanquantile(charge, 0.75) - np.nanquantile(charge, 0.25)))
+        charge_norm = np.clip((charge - c_med) / c_iqr, -2.0, 3.0)
+        flyrock_distance = 110.0 + 55.0 * scaled_burden_risk + 18.0 * confinement + 12.0 * np.maximum(charge_norm, 0.0)
         flyrock_distance = np.clip(flyrock_distance, 20.0, 700.0)
         front_face = face_distance <= float(np.nanquantile(face_distance, 0.35))
-        high_pf = powder_factor >= float(np.nanquantile(powder_factor, 0.85))
-        flyrock_risk = ((scaled_burden < 0.7) & front_face) | ((scaled_burden < 0.9) & high_pf) | (flyrock_distance >= 220.0)
+        high_pf = powder_factor >= float(np.nanquantile(powder_factor, 0.9))
+        flyrock_risk = ((scaled_burden < 0.7) & front_face) | ((scaled_burden < 0.8) & high_pf) | (flyrock_distance >= 185.0)
 
         return {
             "delay": delays,
