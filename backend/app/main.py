@@ -2380,8 +2380,12 @@ def delay_predict(
                 numbers.add(int(m.group(2)))
             if parsed >= max(8, int(0.6 * len(vals))) and len(letters) >= 4 and len(numbers) >= 4:
                 return "line"
+        # Elongated / strip benches: echelon "line" (column by column) matches field isochron figures;
+        # reserve diamond for nearly square patterns, not chevron-by-default.
         aspect = min(span_x, span_y) / max(1e-9, max(span_x, span_y))
-        return "diamond" if aspect >= 0.72 else "chevron"
+        if aspect >= 0.78:
+            return "diamond"
+        return "line"
 
     def _build_physics_sequence(df_in, ml_delay, observed_step_ms):
         x = pd.to_numeric(df_in["X"], errors="coerce").to_numpy(dtype=float)
@@ -2458,76 +2462,30 @@ def delay_predict(
                     out.append(left[i])
             return out
 
-        def _line_order_from_hole_ids():
-            import re
-
-            if "HoleID" not in df_in.columns:
-                return None
-            vals = df_in["HoleID"].astype(str).tolist()
-            parsed = []
-            for i, v in enumerate(vals):
-                m = re.match(r"^\s*([A-Za-z]+)\s*[-_/]?\s*(\d+)\s*$", v)
-                if not m:
-                    continue
-                letter = m.group(1).upper()
-                number = int(m.group(2))
-                letter_rank = 0
-                for ch in letter:
-                    letter_rank = (letter_rank * 26) + (ord(ch) - ord("A") + 1)
-                parsed.append((i, number, letter_rank))
-            if len(parsed) < max(8, int(0.6 * n)):
-                return None
-
-            num_values = sorted({p[1] for p in parsed})
-            face_by_num = {}
-            for num in num_values:
-                idxs = [i for i, nn, _ in parsed if nn == num]
-                face_by_num[num] = float(np.nanmean(face_distance[idxs])) if idxs else float("inf")
-            ordered_nums = [num for num, _ in sorted(face_by_num.items(), key=lambda kv: kv[1])]
-
-            groups = {}
-            for i, number, letter_rank in parsed:
-                groups.setdefault(number, []).append((i, letter_rank, float(ml_rank[i])))
-
-            out = []
-            for number in ordered_nums:
-                bucket = groups.get(number, [])
-                bucket.sort(key=lambda t: (-t[1], t[2]))  # e.g. N14 -> M14 -> L14 ...
-                out.extend([i for i, _, _ in bucket])
-
-            remaining = [idx for idx in range(n) if idx not in set(out)]
-            if remaining:
-                remaining.sort(key=lambda ii: (float(face_distance[ii]), -float(secondary[ii]), float(ml_rank[ii])))
-                out.extend(remaining)
-            return out
-
-        def _line_order_from_geometry():
+        def _line_order_echelon_by_geometry():
+            """Firing order matching echelon isochron plots: left column then next to the right; within
+            each column, top to bottom (decreasing Y when Y increases with northing 'up' on the plan)."""
             xmin = float(np.nanmin(x))
-            ymax = float(np.nanmax(y))
             col_pitch = max(1.0, float(np.nanmedian(nearest_spacing[np.isfinite(nearest_spacing)])) * 0.85)
             col_index = np.round((x - xmin) / col_pitch).astype(int)
+            # Left to right: smaller X (more negative) first, matching a bench advancing along strike.
             ordered_cols = sorted(np.unique(col_index).tolist())
             out = []
             for ci in ordered_cols:
                 idxs = np.where(col_index == ci)[0]
-                # Top -> down in each vertical column.
-                row_order = sorted(idxs.tolist(), key=lambda ii: (-float(y[ii]), float(ml_rank[ii])))
+                # Top -> bottom in the column: highest Y first (plan 'top' / northing if Y is north).
+                row_order = sorted(
+                    idxs.tolist(),
+                    key=lambda ii: (-float(y[ii]), float(secondary[ii]), float(ml_rank[ii])),
+                )
                 out.extend(row_order)
             if not out:
                 return list(range(n))
-            # Guarantee the top-left hole is first in line mode.
-            top_left = int(np.argmin((x - xmin) ** 2 + (y - ymax) ** 2))
-            if top_left in out:
-                out = [top_left] + [ii for ii in out if ii != top_left]
             return out
 
         order_list = []
         if pattern == "line":
-            forced_line = _line_order_from_hole_ids()
-            if forced_line is not None:
-                order_list = forced_line
-            else:
-                order_list = _line_order_from_geometry()
+            order_list = _line_order_echelon_by_geometry()
         else:
             for r in np.sort(np.unique(row_index)):
                 idxs = np.where(row_index == r)[0]
