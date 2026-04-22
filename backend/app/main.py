@@ -2463,25 +2463,42 @@ def delay_predict(
             return out
 
         def _line_order_echelon_by_geometry():
-            """Firing order matching echelon isochron plots: left column then next to the right; within
-            each column, top to bottom (decreasing Y when Y increases with northing 'up' on the plan)."""
-            xmin = float(np.nanmin(x))
-            col_pitch = max(1.0, float(np.nanmedian(nearest_spacing[np.isfinite(nearest_spacing)])) * 0.85)
-            col_index = np.round((x - xmin) / col_pitch).astype(int)
-            # Left to right: smaller X (more negative) first, matching a bench advancing along strike.
-            ordered_cols = sorted(np.unique(col_index).tolist())
-            out = []
-            for ci in ordered_cols:
-                idxs = np.where(col_index == ci)[0]
-                # Top -> bottom in the column: highest Y first (plan 'top' / northing if Y is north).
-                row_order = sorted(
-                    idxs.tolist(),
-                    key=lambda ii: (-float(y[ii]), float(secondary[ii]), float(ml_rank[ii])),
-                )
-                out.extend(row_order)
-            if not out:
-                return list(range(n))
-            return out
+            """Echelon isochron order: one column of holes after another, top→bottom in each column.
+
+            Axis-parallel X bins fail on slanted/diagonal benches. Use 2D PCA: the narrow
+            across-bench direction bins columns; within a column, sort by plan Y (highest first) so
+            the sequence matches a straightforward left-to-right, top-to-bottom firing sweep."""
+            if n <= 0:
+                return []
+            if n == 1:
+                return [0]
+            ns_med = float(np.nanmedian(nearest_spacing[np.isfinite(nearest_spacing)])) if np.isfinite(nearest_spacing).any() else 5.0
+            xc = x - float(np.nanmean(x))
+            yc = y - float(np.nanmean(y))
+            X2 = np.column_stack([xc, yc])
+            C = np.cov(X2, rowvar=False)
+            if not np.isfinite(C).all():
+                col_pitch = max(1.0, ns_med * 0.85)
+                xmin0 = float(np.nanmin(x))
+                col_index = np.round((x - xmin0) / col_pitch).astype(int)
+                return np.lexsort((-y, col_index)).tolist()
+
+            _ev, U = np.linalg.eigh(C)
+            # Smaller plan variance ≈ "across" the strip (fewer columns in typical figures).
+            e_across = U[:, 0].astype(float)
+            across = (X2 @ e_across).ravel()
+            if n > 2:
+                c_ax = float(np.corrcoef(xc, across)[0, 1])
+                if c_ax < 0:
+                    across = -across
+            across_sorted = np.sort(across)
+            d_leg = np.diff(across_sorted)
+            d_leg = d_leg[d_leg > 1e-5]
+            col_w = float(np.median(d_leg)) if len(d_leg) else max(0.1, (float(np.max(across)) - float(np.min(across))) / max(8.0, n / 10.0))
+            col_w = max(col_w * 0.5, 0.35 * ns_med, 0.2)
+            col_bin = np.round((across - float(np.min(across))) / col_w).astype(np.int64)
+            # np.lexsort: last key is primary — column first, then top of plan = max Y
+            return np.lexsort((-y.astype(float), col_bin)).tolist()
 
         order_list = []
         if pattern == "line":

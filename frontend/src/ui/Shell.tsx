@@ -3242,14 +3242,7 @@ function PlanView({
   const waitingCount = currentTime == null ? 0 : pts.filter((p) => Number(p.Delay) > currentTime + eps).length;
   const firedCount = currentTime == null ? pts.length : pts.filter((p) => Number(p.Delay) < currentTime - eps).length;
   const labelable = showLabels ? (pts.length <= 220 ? pts : currentPoints.concat(selectedPoint ? [selectedPoint] : [])) : [];
-  const idStride = Math.max(1, Math.ceil(pts.length / 160));
-  const idLabelable = showHoleIds
-    ? pts.filter((point, i) => {
-        const isCurrent = currentTime != null && Math.abs(Number(point.Delay) - currentTime) < eps;
-        const isSelected = selectedPoint != null && selectedPoint.__idx === point.__idx;
-        return i % idStride === 0 || isCurrent || isSelected;
-      })
-    : [];
+  const idLabelable = showHoleIds ? pts : [];
   const flyrockRiskPoints = pts.filter((p) => String(p.FlyrockRisk).toLowerCase() === "true" || Number(p.FlyrockRisk) === 1);
   const flyrockOverlayPoints = flyrockRiskPoints;
   const xLabel = "X coordinate (m)";
@@ -3368,10 +3361,28 @@ function PlanView({
             const isCurrent = currentTime != null && Math.abs(Number(point.Delay) - currentTime) < eps;
             const isSelected = selectedPoint != null && selectedPoint.__idx === point.__idx;
             const idText = String(point.HoleID ?? `H${point.__idx + 1}`).slice(0, 12);
+            const fs = pts.length > 300 ? 7 : pts.length > 180 ? 7.5 : 8.5;
+            const tw = Math.max(32, 8 + idText.length * (fs * 0.6));
+            const ox = (point.__idx % 3) * 2.4 - 2.4;
+            const oy = (Math.floor(point.__idx / 3) % 2) * 2.2;
             return (
               <g key={`id-${point.__idx}-${i}`}>
-                <rect x={x - 14} y={y + 9} width={56} height={14} rx={4} fill="rgba(15,23,42,0.82)" />
-                <text x={x + 14} y={y + 19} fontSize="8.5" textAnchor="middle" fill={isCurrent || isSelected ? "#f8fafc" : "#e2e8f0"} fontWeight="700">
+                <rect
+                  x={x - tw / 2 + ox}
+                  y={y + 8 + oy}
+                  width={tw}
+                  height={13}
+                  rx={3}
+                  fill="rgba(15,23,42,0.82)"
+                />
+                <text
+                  x={x + ox}
+                  y={y + 18 + oy}
+                  fontSize={fs}
+                  textAnchor="middle"
+                  fill={isCurrent || isSelected ? "#f8fafc" : "#e2e8f0"}
+                  fontWeight="700"
+                >
                   {idText}
                 </text>
               </g>
