@@ -2415,11 +2415,51 @@ def delay_predict(
         charge = np.where(np.isfinite(charge), charge, np.nanmedian(charge[np.isfinite(charge)]) if np.isfinite(charge).any() else 0.0)
         depth = np.where(np.isfinite(depth), depth, np.nanmedian(depth[np.isfinite(depth)]) if np.isfinite(depth).any() else 0.0)
 
-        charge_rank = _rank01(charge)
-        depth_rank = _rank01(depth)
         ml_rank = _rank01(ml_delay)
-        score = 0.46 * face_rank + 0.24 * pattern_rank + 0.2 * ml_rank + 0.07 * charge_rank + 0.03 * depth_rank
-        order = np.argsort(score, kind="mergesort")
+        burden_step = float(np.nanmedian(nearest_spacing)) if np.isfinite(np.nanmedian(nearest_spacing)) else 1.0
+        burden_step = float(np.clip(burden_step, 0.8, 24.0))
+        row_index = np.floor(face_distance / max(0.8, burden_step * 0.9)).astype(int)
+        row_index = row_index - int(np.min(row_index))
+
+        def _chevron_row_order(idxs):
+            if len(idxs) <= 2:
+                return list(idxs)
+            sorted_by_center = sorted(idxs.tolist(), key=lambda ii: (abs(float(secondary[ii] - sec_center)), float(ml_rank[ii])))
+            left, right, center = [], [], []
+            for ii in sorted_by_center:
+                delta = float(secondary[ii] - sec_center)
+                if abs(delta) < 1e-9:
+                    center.append(ii)
+                elif delta < 0:
+                    left.append(ii)
+                else:
+                    right.append(ii)
+            out = list(center)
+            for i in range(max(len(left), len(right))):
+                if i < len(right):
+                    out.append(right[i])
+                if i < len(left):
+                    out.append(left[i])
+            return out
+
+        order_list = []
+        for r in np.sort(np.unique(row_index)):
+            idxs = np.where(row_index == r)[0]
+            if pattern == "chevron":
+                row_order = _chevron_row_order(idxs)
+            elif pattern == "diamond":
+                row_order = sorted(
+                    idxs.tolist(),
+                    key=lambda ii: (
+                        abs(float(face_distance[ii] - np.nanmedian(face_distance)))
+                        + abs(float(secondary[ii] - sec_center)),
+                        float(ml_rank[ii]),
+                    ),
+                )
+            else:  # line pattern
+                row_order = sorted(idxs.tolist(), key=lambda ii: (float(secondary[ii]), float(ml_rank[ii])))
+            order_list.extend(row_order)
+        order = np.asarray(order_list, dtype=int)
         sequence_rank = np.empty(n, dtype=int)
         sequence_rank[order] = np.arange(1, n + 1)
 
@@ -2483,6 +2523,7 @@ def delay_predict(
         return {
             "delay": delays,
             "sequence_rank": sequence_rank,
+            "row_index": row_index,
             "propagation_gap_ms": propagation_gap_ms,
             "interaction_index": interaction_index,
             "flyrock_distance": flyrock_distance,
@@ -2545,10 +2586,16 @@ def delay_predict(
     if "Z" in infer_clean.columns:
         dfv["Z"] = pd.to_numeric(infer_clean["Z"], errors="coerce")
     if "HoleID" in infer_clean.columns:
-        dfv["HoleID"] = infer_clean["HoleID"].astype(str)
+        hole_ids = infer_clean["HoleID"].astype(str).str.strip()
+        invalid = hole_ids.eq("") | hole_ids.str.lower().isin(["nan", "none", "null"])
+        if invalid.any():
+            fallback = pd.Series([f"H{idx + 1}" for idx in range(len(hole_ids))], index=hole_ids.index)
+            hole_ids = hole_ids.where(~invalid, fallback)
+        dfv["HoleID"] = hole_ids.values
     else:
         dfv["HoleID"] = [f"H{idx + 1}" for idx in range(len(dfv))]
     dfv["SequenceRank"] = physics["sequence_rank"].astype(int)
+    dfv["RowIndex"] = physics["row_index"].astype(int)
     dfv["PropagationGapMs"] = physics["propagation_gap_ms"]
     dfv["InteractionIndex"] = physics["interaction_index"]
     dfv["NearestSpacing"] = physics["nearest_spacing"]
