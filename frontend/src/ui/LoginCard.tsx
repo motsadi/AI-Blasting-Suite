@@ -6,17 +6,38 @@ type Props = {
   onLogin: (session: { token: string; email: string }) => void;
 };
 
+const DEFAULT_ALLOWED_LOGIN_EMAILS = [
+  "so13000604@biust.ac.bw",
+  "Ozigwa@debswana.bw",
+  "Tgalefete@debswana.bw",
+  "Mhiya@debswana.bw",
+  "Ttshambane@debswana.bw",
+  "Mgaopelo@debswana.bw",
+];
+
+const allowedLoginEmails = new Set(
+  ((import.meta.env.VITE_ALLOWED_LOGIN_EMAILS as string | undefined)?.split(",") ?? DEFAULT_ALLOWED_LOGIN_EMAILS)
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean)
+);
+
 export function LoginCard({ onLogin }: Props) {
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [step, setStep] = useState<"email" | "code">("email");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const canRequestCode = email.includes("@") && !!INSTANT_APP_ID;
-  const canVerifyCode = !!code.trim() && !!INSTANT_APP_ID;
+  const normalizedEmail = email.trim().toLowerCase();
+  const isAllowedEmail = allowedLoginEmails.has(normalizedEmail);
+  const canRequestCode = email.includes("@") && isAllowedEmail && !!INSTANT_APP_ID;
+  const canVerifyCode = !!code.trim() && isAllowedEmail && !!INSTANT_APP_ID;
 
   async function requestCode() {
     if (!email.includes("@")) return;
+    if (!isAllowedEmail) {
+      setErr("This email is not authorized for this application.");
+      return;
+    }
     setErr(null);
     setBusy(true);
     try {
@@ -37,13 +58,17 @@ export function LoginCard({ onLogin }: Props) {
     try {
       const db = getDb();
       const res = await db.auth.signInWithMagicCode({ email, code: code.trim() });
+      const signedInEmail = res.user.email ?? email;
+      if (!allowedLoginEmails.has(signedInEmail.trim().toLowerCase())) {
+        throw new Error("This email is not authorized for this application.");
+      }
       const refreshToken = res?.user?.refresh_token;
       if (!refreshToken) {
         throw new Error("No refresh_token returned from InstantDB");
       }
       localStorage.setItem("instant_refresh_token", refreshToken);
-      localStorage.setItem("instant_email", res.user.email ?? email);
-      onLogin({ email: res.user.email ?? email, token: refreshToken });
+      localStorage.setItem("instant_email", signedInEmail);
+      onLogin({ email: signedInEmail, token: refreshToken });
     } catch (e: any) {
       setErr(String(e?.body?.message ?? e?.message ?? e));
     } finally {

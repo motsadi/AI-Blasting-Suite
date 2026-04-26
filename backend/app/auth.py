@@ -16,6 +16,26 @@ def _extract_email(user: dict[str, Any]) -> str:
     return "Unknown"
 
 
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def _allowed_auth_emails() -> set[str]:
+    return {
+        _normalize_email(email)
+        for email in settings.allowed_auth_emails.split(",")
+        if email.strip()
+    }
+
+
+def _require_allowed_user(user: dict[str, Any]) -> str:
+    email = _extract_email(user)
+    allowed_emails = _allowed_auth_emails()
+    if allowed_emails and _normalize_email(email) not in allowed_emails:
+        raise HTTPException(status_code=403, detail="Email is not authorized for this application")
+    return email
+
+
 def _verify_refresh_token(token: str) -> dict[str, Any]:
     if not settings.instantdb_app_id:
         raise HTTPException(status_code=500, detail="Server missing BLAST_INSTANTDB_APP_ID")
@@ -56,7 +76,9 @@ def require_auth(authorization: Optional[str] = Header(default=None)) -> str:
     token = authorization.split(" ", 1)[1].strip()
     if not token:
         raise HTTPException(status_code=401, detail="Empty token")
-    _verify_refresh_token(token)
+    data = _verify_refresh_token(token)
+    user = data.get("user") if isinstance(data.get("user"), dict) else {}
+    _require_allowed_user(user)
     return token
 
 
@@ -72,5 +94,5 @@ def require_user(authorization: Optional[str] = Header(default=None)) -> dict[st
         raise HTTPException(status_code=401, detail="Empty token")
     data = _verify_refresh_token(token)
     user = data.get("user") if isinstance(data.get("user"), dict) else {}
-    return {"token": token, "email": _extract_email(user), "user": user}
+    return {"token": token, "email": _require_allowed_user(user), "user": user}
 
