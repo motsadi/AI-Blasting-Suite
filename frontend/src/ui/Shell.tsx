@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { DelayDesignPanel } from "./delay/DelayDesignPanel";
 
 type Session = { token: string; email: string };
 type Props = {
@@ -51,7 +52,7 @@ const TAB_META: Record<TabKey, { title: string; desc: string; icon: string }> = 
   backbreak: { title: "Back Break", desc: "RF model from CSV", icon: "🔧" },
   flyrock: { title: "Flyrock (ML + Empirical)", desc: "ML + empirical lines", icon: "🪨" },
   slope: { title: "Slope Stability", desc: "Stable/Failure classifier", icon: "🧱" },
-  delay: { title: "Delay Prediction", desc: "Delay prediction & plan view", icon: "⏱️" },
+  delay: { title: "Delay Design & Simulation", desc: "Tie-up design, delay assignment and playback", icon: "⏱️" },
 };
 
 const NAV_GROUPS: Array<{ title: string; items: TabKey[] }> = [
@@ -119,13 +120,13 @@ const MODULE_GUIDES: ModuleGuide[] = [
   },
   {
     tab: "delay",
-    when: "Use for sequence timing analysis and plan-view interpretation.",
-    helps: "It supports blasting sequence decisions by exposing likely delay timing behaviour and spatial firing order.",
-    tasks: "Delay prediction, playback review, and sequence diagnostics.",
+    when: "Use for blast timing design, delay assignment, and planning/simulation review.",
+    helps: "It supports transparent row, chevron, V-cut, box-cut, point, line, and manual timing designs from imported hole coordinates.",
+    tasks: "CSV import, timing design, playback review, validation, and draft delay assignment export.",
     instructions: [
-      "Load a sequence-ready dataset and run the delay prediction.",
-      "Inspect the plan view to verify spatial logic and firing order.",
-      "Use the exported outputs when coordinating implementation with operations teams.",
+      "Import blast-hole CSV data and confirm X/Y, Hole ID, depth, and charge mappings.",
+      "Choose a timing pattern, adjust delay settings, and assign delays before simulation.",
+      "Export CSV/report outputs as planning drafts for qualified review only.",
     ],
   },
   {
@@ -581,7 +582,7 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
           ) : tab === "slope" ? (
             <SlopePanel apiBaseUrl={apiBaseUrl} token={session.token} />
           ) : tab === "delay" ? (
-            <DelayPanel apiBaseUrl={apiBaseUrl} token={session.token} />
+            <DelayDesignPanel />
           ) : (
             <PlaceholderPanel title={TAB_META[tab]?.title ?? "Module"} />
           )}
