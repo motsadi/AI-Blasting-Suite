@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     instantdb_api_uri: str = "https://api.instantdb.com"
     instantdb_app_id: Optional[str] = None  # required for verifying refresh_token
     instantdb_admin_key: Optional[str] = None
+    allowed_auth_emails: str = (
+        "so13000604@biust.ac.bw,"
+        "Ozigwa@debswana.bw,"
+        "Tgalefete@debswana.bw,"
+        "Mhiya@debswana.bw,"
+        "Ttshambane@debswana.bw,"
+        "Mgaopelo@debswana.bw"
+    )
 
 
 settings = Settings()
