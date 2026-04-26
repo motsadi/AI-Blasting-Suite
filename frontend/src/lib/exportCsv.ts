@@ -15,7 +15,13 @@ const COLUMNS = [
   "Delay_ms",
   "Firing_Order",
   "Timing_Group",
+  "Estimated_Fragmentation_X50_mm",
+  "Estimated_PPV_mm_s",
+  "Estimated_Airblast_dB",
+  "Estimated_Flyrock_Distance_m",
+  "Flyrock_Risk",
   "Validation_Warnings",
+  "Performance_Warnings",
   "Notes",
 ];
 
@@ -39,7 +45,13 @@ export function delayAssignmentRows(holes: BlastHole[], pattern: TimingPattern) 
     Delay_ms: hole.delayMs ?? "",
     Firing_Order: hole.firingOrder ?? "",
     Timing_Group: hole.timingGroup ?? "",
+    Estimated_Fragmentation_X50_mm: hole.estimatedFragmentationMm ?? "",
+    Estimated_PPV_mm_s: hole.estimatedPpvMmS ?? "",
+    Estimated_Airblast_dB: hole.estimatedAirblastDb ?? "",
+    Estimated_Flyrock_Distance_m: hole.estimatedFlyrockDistanceM ?? "",
+    Flyrock_Risk: hole.flyrockRisk ?? "",
     Validation_Warnings: (hole.validationWarnings ?? []).join("; "),
+    Performance_Warnings: (hole.performanceWarnings ?? []).join("; "),
     Notes: "Planning/Simulation Draft",
   }));
 }

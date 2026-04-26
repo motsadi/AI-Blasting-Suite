@@ -12,7 +12,7 @@ export function buildPrintableReport(project: BlastProject, issues: ValidationIs
     .slice()
     .sort((a, b) => (a.firingOrder ?? Number.MAX_SAFE_INTEGER) - (b.firingOrder ?? Number.MAX_SAFE_INTEGER))
     .map(
-      (hole) => `<tr><td>${esc(hole.id)}</td><td>${esc(hole.originalId ?? "")}</td><td>${esc(hole.x)}</td><td>${esc(hole.y)}</td><td>${esc(hole.delayMs ?? "")}</td><td>${esc(hole.firingOrder ?? "")}</td><td>${esc(hole.timingGroup ?? "")}</td></tr>`
+      (hole) => `<tr><td>${esc(hole.id)}</td><td>${esc(hole.originalId ?? "")}</td><td>${esc(hole.x)}</td><td>${esc(hole.y)}</td><td>${esc(hole.delayMs ?? "")}</td><td>${esc(hole.firingOrder ?? "")}</td><td>${esc(hole.timingGroup ?? "")}</td><td>${esc(hole.estimatedFragmentationMm?.toFixed(0) ?? "")}</td><td>${esc(hole.estimatedPpvMmS?.toFixed(2) ?? "")}</td><td>${esc(hole.estimatedAirblastDb?.toFixed(1) ?? "")}</td><td>${esc(hole.flyrockRisk ?? "")}</td></tr>`
     )
     .join("");
   return `<!doctype html>
@@ -50,7 +50,7 @@ export function buildPrintableReport(project: BlastProject, issues: ValidationIs
   </div>
   <h2>Hole Delay Table</h2>
   <table>
-    <thead><tr><th>Hole ID</th><th>Original ID</th><th>X</th><th>Y</th><th>Delay ms</th><th>Firing order</th><th>Group</th></tr></thead>
+    <thead><tr><th>Hole ID</th><th>Original ID</th><th>X</th><th>Y</th><th>Delay ms</th><th>Firing order</th><th>Group</th><th>Frag X50 mm</th><th>PPV mm/s</th><th>Airblast dB</th><th>Flyrock risk</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>
 </body>

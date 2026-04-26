@@ -9,7 +9,7 @@ export type TimingPattern =
 
 export type TimingDirection = "leftToRight" | "rightToLeft" | "bottomToTop" | "topToBottom";
 
-export type ColorMode = "delay" | "row" | "charge" | "depth" | "group";
+export type ColorMode = "delay" | "row" | "charge" | "depth" | "group" | "fragmentation" | "ppv" | "airblast" | "flyrock";
 
 export type ValidationSeverity = "error" | "warning";
 
@@ -26,6 +26,12 @@ export interface BlastHole {
   delayMs?: number;
   firingOrder?: number;
   timingGroup?: string;
+  estimatedFragmentationMm?: number;
+  estimatedPpvMmS?: number;
+  estimatedAirblastDb?: number;
+  estimatedFlyrockDistanceM?: number;
+  flyrockRisk?: "low" | "moderate" | "high";
+  performanceWarnings?: string[];
   selected?: boolean;
   validationWarnings?: string[];
 }
