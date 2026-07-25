@@ -7,6 +7,8 @@ from typing import Any
 import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 
+from .physics.remap import settle_and_remap
+from .physics.solver import run_event_physics
 from .schemas import GeoMotionRequest
 
 
@@ -291,35 +293,27 @@ def simulate(request: GeoMotionRequest) -> dict[str, Any]:
     holes = request.holes
     a = request.assumptions
     validation = _validation(request)
-    hole_points = np.array([[h.x, h.y] for h in holes], dtype=float)
-    depths = np.array([h.depth if h.depth is not None else 15.7 for h in holes], dtype=float)
-    charges = np.array([h.charge if h.charge is not None else 625.0 for h in holes], dtype=float)
-    z_values = np.array(
-        [h.z if h.z is not None else 680.0 for h in holes], dtype=float
-    )
-    floor_values = np.array(
-        [
-            (h.z if h.z is not None else 680.0)
-            - (h.depth if h.depth is not None else 15.7)
-            for h in holes
-        ],
-        dtype=float,
-    )
-    floor_rl = float(np.median(floor_values))
-    collar_rl = float(np.median(z_values))
-    delays = _timing(holes, hole_points, a)
-    blocks = _make_blocks(request, floor_rl, collar_rl)
-    vectors, uncertainty, weighted_delay = _movement(
-        request, blocks, hole_points, delays, depths, charges
-    )
-    destination = blocks["positions"] + vectors
-    destination[:, 2] += (a.swell_factor - 1.0) * blocks["bench_height"][0] * 0.35
-
+    physics = run_event_physics(request, realization=1 if request.mode == "hybrid" else 0)
+    source = physics.source
+    hole_points = np.array([[hole.x, hole.y] for hole in holes], dtype=float)
     span = (float(np.ptp(hole_points[:, 0])), float(np.ptp(hole_points[:, 1])))
-    dest_class = _destination_class(destination, blocks["center"], span, a.cutoff_grade_cpht)
-    source_class = blocks["source_class"]
-    tonnes = blocks["tonnes"]
-    grade = blocks["grade"]
+    remap = settle_and_remap(
+        physics.destination_positions,
+        source.center,
+        source.floor_rl,
+        a.cell_size_m,
+        span,
+        a.cutoff_grade_cpht,
+        a.minimum_mining_unit_m,
+        source.grade,
+        source.tonnes,
+    )
+    destination = remap.positions
+    vectors = destination - source.positions
+    dest_class = remap.destination_class
+    source_class = source.source_class
+    tonnes = source.tonnes
+    grade = source.grade
     carats = tonnes * grade / 100.0
     source_ore = source_class == "ORE"
     destination_ore = dest_class == "ORE"
@@ -330,6 +324,10 @@ def simulate(request: GeoMotionRequest) -> dict[str, Any]:
     ore_stream = float(np.sum(tonnes[destination_ore]))
     total_carats = float(np.sum(carats[source_ore]))
     recovered_carats = float(np.sum(carats[source_ore & destination_ore]))
+    loader_ore = remap.loader_destination == "ORE"
+    loader_ore_retained = float(np.sum(tonnes[source_ore & loader_ore]))
+    loader_dilution = float(np.sum(tonnes[~source_ore & loader_ore]))
+    loader_stream = float(np.sum(tonnes[loader_ore]))
 
     mixing_matrix = []
     for source in ("ORE", "WASTE"):
@@ -344,47 +342,64 @@ def simulate(request: GeoMotionRequest) -> dict[str, Any]:
                 }
             )
 
+    total_blocks = len(source.positions)
+    visual_stride = max(1, int(np.ceil(total_blocks / a.max_visual_blocks)))
+    visual_indices = np.arange(0, total_blocks, visual_stride, dtype=np.int64)[: a.max_visual_blocks]
     block_rows = []
-    for idx in range(len(blocks["positions"])):
-        source = blocks["positions"][idx]
+    for idx in visual_indices:
+        source_position = source.positions[idx]
         dest = destination[idx]
         vector = vectors[idx]
         block_rows.append(
             {
                 "id": idx + 1,
-                "source": [_round(v) for v in source],
+                "source": [_round(v) for v in source_position],
                 "destination": [_round(v) for v in dest],
                 "vector": [_round(v) for v in vector],
                 "displacement_m": _round(float(np.linalg.norm(vector))),
-                "uncertainty_m": _round(uncertainty[idx]),
-                "facies": str(blocks["facies"][idx]),
+                "uncertainty_m": _round(physics.uncertainty[idx]),
+                "facies": str(source.facies[idx]),
                 "source_class": str(source_class[idx]),
                 "destination_class": str(dest_class[idx]),
-                "density_t_m3": _round(blocks["density"][idx]),
+                "density_t_m3": _round(source.density[idx]),
                 "grade_cpht": _round(grade[idx]),
                 "tonnes": _round(tonnes[idx]),
                 "contained_carats": _round(carats[idx]),
-                "effective_time_ms": _round(weighted_delay[idx], 1),
+                "effective_time_ms": _round(physics.effective_time_ms[idx], 1),
+                "velocity": [_round(v) for v in physics.velocities[idx]],
+                "peak_impulse_m_s": _round(physics.peak_impulse_m_s[idx]),
+                "burden_velocity_m_s": _round(physics.burden_velocity_m_s[idx]),
+                "contributing_event": int(physics.contributing_event[idx]),
+                "size_m": a.cell_size_m,
+                "provenance": "synthetic",
             }
         )
 
     hole_rows = []
+    minimum_delay = min(hole.delay_ms for hole in holes)
     for idx, hole in enumerate(holes):
         hole_rows.append(
             {
                 "id": hole.id,
                 "x": _round(hole.x),
                 "y": _round(hole.y),
-                "z": _round(z_values[idx]),
-                "depth_m": _round(depths[idx]),
-                "charge_kg": _round(charges[idx]),
-                "delay_ms": _round(delays[idx], 1),
+                "z": _round(hole.z if hole.z is not None else 680.0),
+                "depth_m": _round(hole.depth if hole.depth is not None else 15.7),
+                "charge_kg": _round(hole.charge if hole.charge is not None else 625.0),
+                "original_delay_ms": _round(hole.original_delay_ms if hole.original_delay_ms is not None else hole.delay_ms, 3),
+                "delay_ms": _round(hole.delay_ms - minimum_delay, 3),
+                "diameter_mm": _round(hole.diameter_mm or a.hole_diameter_mm),
+                "inclination_deg": _round(hole.inclination_deg),
+                "azimuth_deg": _round(hole.azimuth_deg),
+                "decks": len(hole.decks) or 1,
             }
         )
 
     magnitudes = np.linalg.norm(vectors, axis=1)
     metrics = {
-        "cells": len(block_rows),
+        "cells": total_blocks,
+        "visual_cells": len(block_rows),
+        "voxel_size_m": a.cell_size_m,
         "total_tonnes": _round(float(np.sum(tonnes)), 1),
         "mass_balance_error_percent": 0.0,
         "contained_carats": _round(total_carats, 1),
@@ -399,21 +414,28 @@ def simulate(request: GeoMotionRequest) -> dict[str, Any]:
         "predicted_feed_grade_cpht": _round(
             float(np.sum(carats[destination_ore]) * 100.0 / max(ore_stream, 1e-9)), 2
         ),
+        "loader_recovery_percent": _percent(loader_ore_retained, ore_tonnes),
+        "loader_dilution_percent": _percent(loader_dilution, loader_stream),
+        "minimum_mining_unit_m": a.minimum_mining_unit_m,
         "mean_displacement_m": _round(float(np.mean(magnitudes)), 2),
         "p95_displacement_m": _round(float(np.percentile(magnitudes, 95)), 2),
         "mean_heave_m": _round(float(np.mean(vectors[:, 2])), 2),
         "max_throw_m": _round(float(np.max(np.linalg.norm(vectors[:, :2], axis=1))), 2),
+        "max_burden_velocity_m_s": _round(float(np.max(physics.burden_velocity_m_s)), 3),
+        "mean_peak_impulse_m_s": _round(float(np.mean(physics.peak_impulse_m_s)), 3),
     }
+    validation["warnings"].extend(
+        [
+            "S135B pressure and gas expansion use a reduced-order surrogate, not product-certified JWL constants.",
+            "Rock, geology, grade-control and loader inputs are synthetic until replaced by measured files.",
+        ]
+    )
     return {
         "engine": {
             "name": "GeoMotion 3D Engine",
-            "version": "0.1.0-synthetic",
+            "version": "0.2.0-event-physics",
             "mode": request.mode,
-            "model_kind": (
-                "mass-conserving physics + synthetic random-forest residual"
-                if request.mode == "hybrid"
-                else "mass-conserving physics baseline"
-            ),
+            "model_kind": "reduced-order timed detonation, burden velocity, dynamic relief and conservative voxel remap",
             "calibration": "synthetic_unvalidated",
             "notice": "Synthetic Demonstration / Uncalibrated — Planning Only",
             "seed": request.seed,
@@ -426,9 +448,32 @@ def simulate(request: GeoMotionRequest) -> dict[str, Any]:
         "surface": _surface(destination, a.cell_size_m),
         "mixing_matrix": mixing_matrix,
         "uncertainty": {
-            "method": "Synthetic ensemble proxy; replace with measured site residual distributions.",
-            "mean_m": _round(float(np.mean(uncertainty)), 2),
-            "p95_m": _round(float(np.percentile(uncertainty, 95)), 2),
+            "method": "Timing/VOD/rock-property proxy; replace with measured site residual distributions.",
+            "mean_m": _round(float(np.mean(physics.uncertainty)), 2),
+            "p95_m": _round(float(np.percentile(physics.uncertainty, 95)), 2),
             "out_of_domain": True,
+        },
+        "events": physics.events,
+        "event_history": physics.event_history,
+        "transport": {
+            "format": "json_lod",
+            "full_resolution_blocks": total_blocks,
+            "returned_blocks": len(block_rows),
+            "stride": visual_stride,
+            "full_resolution_available_for_export": True,
+        },
+        "provenance": {
+            "tie_up": "site_supplied",
+            "explosive_density_rws_and_booster": "site_supplied",
+            "vod_range": "manufacturer_range_assumption",
+            "geology_rock_surfaces_and_grade": "synthetic",
+            "movement_monitors": "not_supplied",
+        },
+        "remap": {
+            "method": "conservative one-metre column settlement",
+            "collision_count": remap.collision_count,
+            "occupied_cells": remap.occupied_cells,
+            "mass_preserved": True,
+            "contained_carats_preserved": True,
         },
     }

@@ -133,6 +133,7 @@ export function rowsToBlastHoles(rows: Array<Record<string, string>>, mapping: C
       depth: Number.isFinite(depth) ? depth : undefined,
       charge: Number.isFinite(charge) ? charge : undefined,
       delayMs: Number.isFinite(delay) ? delay : undefined,
+      originalDelayMs: Number.isFinite(delay) ? delay : undefined,
       validationWarnings: warnings,
     });
   });
