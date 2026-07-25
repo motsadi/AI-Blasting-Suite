@@ -6,6 +6,7 @@ const Y_ALIASES = ["y", "northing", "north", "y coordinate", "y_coordinate"];
 const Z_ALIASES = ["z", "rl", "elev", "elevation", "z coordinate", "z_coordinate"];
 const DEPTH_ALIASES = ["depth", "hole depth", "hole_depth", "hole depth (m)", "hole_depth_m"];
 const CHARGE_ALIASES = ["charge", "charge_kg", "explosive mass", "explosive_mass", "explosive mass (kg)"];
+const DELAY_ALIASES = ["delay", "delay_ms", "delay (ms)", "time_ms", "firing time", "firing_time"];
 
 function normalizeHeader(value: string) {
   return value.trim().toLowerCase();
@@ -28,6 +29,7 @@ export function inferColumnMapping(columns: string[]): ColumnMapping {
     z: findColumn(columns, Z_ALIASES),
     depth: findColumn(columns, DEPTH_ALIASES),
     charge: findColumn(columns, CHARGE_ALIASES),
+    delay: findColumn(columns, DELAY_ALIASES),
   };
 }
 
@@ -120,6 +122,7 @@ export function rowsToBlastHoles(rows: Array<Record<string, string>>, mapping: C
     const z = mapping.z ? toNumber(row[mapping.z]) : undefined;
     const depth = mapping.depth ? toNumber(row[mapping.depth]) : undefined;
     const charge = mapping.charge ? toNumber(row[mapping.charge]) : undefined;
+    const delay = mapping.delay ? toNumber(row[mapping.delay]) : undefined;
 
     holes.push({
       id,
@@ -129,6 +132,8 @@ export function rowsToBlastHoles(rows: Array<Record<string, string>>, mapping: C
       z: Number.isFinite(z) ? z : undefined,
       depth: Number.isFinite(depth) ? depth : undefined,
       charge: Number.isFinite(charge) ? charge : undefined,
+      delayMs: Number.isFinite(delay) ? delay : undefined,
+      originalDelayMs: Number.isFinite(delay) ? delay : undefined,
       validationWarnings: warnings,
     });
   });

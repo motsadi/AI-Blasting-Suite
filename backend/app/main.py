@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import json
+import csv
+import gzip
+import io
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from app.auth import require_auth, require_user
 from app.assets import LoadedAssets, assets_status, load_local_assets
 from app.core_imports import add_core_bundle_to_path
 from app.gcs import REQUIRED_DATASET_FILES, sync_assets_from_gcs
+from app.geomotion import GeoMotionRequest, GeoMotionResponse, simulate as simulate_geomotion
 from app.schemas import AssetsStatus, PredictRequest, PredictResponse
 from app.settings import settings
 
@@ -2287,6 +2292,66 @@ def slope_predict(
         "test_accuracy": test_acc,
         "class_balance": class_balance,
     }
+
+
+@app.post("/v1/geomotion/simulate", response_model=GeoMotionResponse)
+def geomotion_simulate(
+    request: GeoMotionRequest,
+    _token: str = Depends(require_auth),
+):
+    """Run the uncalibrated GeoMotion synthetic demonstration engine."""
+    return simulate_geomotion(request)
+
+
+@app.post("/v1/geomotion/export")
+def geomotion_export(
+    request: GeoMotionRequest,
+    _token: str = Depends(require_auth),
+):
+    """Recompute and stream the full-resolution movement table as gzip CSV."""
+    full_request = request.model_copy(
+        update={
+            "assumptions": request.assumptions.model_copy(
+                update={"max_visual_blocks": 500000}
+            )
+        }
+    )
+    result = simulate_geomotion(full_request)
+    buffer = io.StringIO()
+    fields = [
+        "id", "source_x", "source_y", "source_z", "destination_x", "destination_y",
+        "destination_z", "dx", "dy", "dz", "displacement_m", "uncertainty_m",
+        "peak_impulse_m_s", "burden_velocity_m_s", "contributing_event", "facies",
+        "source_class", "destination_class", "grade_cpht", "tonnes", "contained_carats",
+        "provenance",
+    ]
+    writer = csv.DictWriter(buffer, fieldnames=fields)
+    writer.writeheader()
+    for block in result["blocks"]:
+        writer.writerow(
+            {
+                "id": block["id"],
+                "source_x": block["source"][0],
+                "source_y": block["source"][1],
+                "source_z": block["source"][2],
+                "destination_x": block["destination"][0],
+                "destination_y": block["destination"][1],
+                "destination_z": block["destination"][2],
+                "dx": block["vector"][0],
+                "dy": block["vector"][1],
+                "dz": block["vector"][2],
+                **{field: block[field] for field in fields[10:]},
+            }
+        )
+    compressed = gzip.compress(buffer.getvalue().encode("utf-8"), compresslevel=6)
+    return StreamingResponse(
+        io.BytesIO(compressed),
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": 'attachment; filename="geomotion_1m_full_resolution.csv.gz"',
+            "X-GeoMotion-Notice": "Synthetic Demonstration - Uncalibrated - Planning Only",
+        },
+    )
 
 
 @app.post("/v1/delay/predict")

@@ -24,6 +24,7 @@ export interface BlastHole {
   rowIndex?: number;
   columnIndex?: number;
   delayMs?: number;
+  originalDelayMs?: number;
   firingOrder?: number;
   timingGroup?: string;
   estimatedFragmentationMm?: number;
@@ -74,6 +75,7 @@ export interface ColumnMapping {
   z?: string;
   depth?: string;
   charge?: string;
+  delay?: string;
 }
 
 export interface ParsedCsv {
