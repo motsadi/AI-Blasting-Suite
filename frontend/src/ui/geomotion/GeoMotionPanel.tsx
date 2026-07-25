@@ -81,6 +81,36 @@ function colorFor(block: GeoMotionBlock, mode: GeoMotionColor, destination: bool
   return new THREE.Color().setHSL(0.62 - Math.min(block.displacement_m / 15, 1) * 0.62, 0.82, 0.5);
 }
 
+function ColorLegend({ mode }: { mode: GeoMotionColor }) {
+  const categorical = mode === "classification"
+    ? [{ label: "Ore", color: "#16a34a" }, { label: "Waste", color: "#64748b" }]
+    : mode === "facies"
+      ? [
+          { label: "VK", color: "#7c3aed" },
+          { label: "SVK M1", color: "#0ea5e9" },
+          { label: "Contact", color: "#f59e0b" },
+          { label: "Waste", color: "#64748b" },
+        ]
+      : null;
+  if (categorical) {
+    return (
+      <div className="geomotionLegend">
+        {categorical.map((item) => (
+          <span key={item.label}><i style={{ background: item.color }} />{item.label}</span>
+        ))}
+      </div>
+    );
+  }
+  const title = {
+    grade: "Low grade → High grade",
+    displacement: "Low movement → High movement",
+    uncertainty: "Low uncertainty → High uncertainty",
+    burdenVelocity: "Low velocity → High velocity",
+    impulse: "Low impulse → High impulse",
+  }[mode];
+  return <div className="geomotionLegend"><span className="geomotionGradient" />{title}</div>;
+}
+
 function GeoMotionScene({
   result,
   progress,
@@ -116,6 +146,8 @@ function GeoMotionScene({
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(width, height);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.NoToneMapping;
     host.replaceChildren(renderer.domElement);
 
     const all = result.blocks;
@@ -134,10 +166,8 @@ function GeoMotionScene({
     const clippingPlanes = clipPercent < 99
       ? [new THREE.Plane(new THREE.Vector3(-1, 0, 0), gridSize * (clipPercent / 100 - 0.5))]
       : [];
-    const blockMaterial = new THREE.MeshStandardMaterial({
+    const blockMaterial = new THREE.MeshBasicMaterial({
       vertexColors: true,
-      roughness: 0.86,
-      metalness: 0.02,
       clippingPlanes,
     });
     renderer.localClippingEnabled = clippingPlanes.length > 0;
@@ -595,6 +625,7 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
               <input type="range" min={5} max={100} value={clipPercent} onChange={(event) => setClipPercent(Number(event.target.value))} />
               <span>{clipPercent}%</span>
             </div>
+            <ColorLegend mode={colorMode} />
             {view === "movement" ? (
               <div>
                 <div className="geomotionTimeline">
