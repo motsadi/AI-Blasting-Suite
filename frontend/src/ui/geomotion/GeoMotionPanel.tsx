@@ -67,29 +67,40 @@ function colorFor(block: GeoMotionBlock, mode: GeoMotionColor, destination: bool
     return new THREE.Color({ VK: "#7c3aed", SVK_M1: "#0ea5e9", CONTACT: "#f59e0b", WASTE: "#64748b" }[block.facies]);
   }
   if (mode === "grade") {
-    return new THREE.Color().setHSL(0.68 - Math.min(block.grade_cpht / 60, 1) * 0.68, 0.82, 0.5);
+    const t = Math.round(Math.min(block.grade_cpht / 60, 1) * 11) / 11;
+    return new THREE.Color().setHSL(0.68 - t * 0.68, 0.82, 0.5);
   }
   if (mode === "uncertainty") {
-    return new THREE.Color().setHSL(0.33 - Math.min(block.uncertainty_m / 3, 1) * 0.33, 0.82, 0.5);
+    const t = Math.round(Math.min(block.uncertainty_m / 3, 1) * 11) / 11;
+    return new THREE.Color().setHSL(0.33 - t * 0.33, 0.82, 0.5);
   }
   if (mode === "burdenVelocity") {
-    return new THREE.Color().setHSL(0.62 - Math.min(block.burden_velocity_m_s / 8, 1) * 0.62, 0.84, 0.5);
+    const t = Math.round(Math.min(block.burden_velocity_m_s / 8, 1) * 11) / 11;
+    return new THREE.Color().setHSL(0.62 - t * 0.62, 0.84, 0.5);
   }
   if (mode === "impulse") {
-    return new THREE.Color().setHSL(0.74 - Math.min(block.peak_impulse_m_s / 8, 1) * 0.74, 0.84, 0.5);
+    const t = Math.round(Math.min(block.peak_impulse_m_s / 8, 1) * 11) / 11;
+    return new THREE.Color().setHSL(0.74 - t * 0.74, 0.84, 0.5);
   }
-  return new THREE.Color().setHSL(0.62 - Math.min(block.displacement_m / 15, 1) * 0.62, 0.82, 0.5);
+  const t = Math.round(Math.min(block.displacement_m / 15, 1) * 11) / 11;
+  return new THREE.Color().setHSL(0.62 - t * 0.62, 0.82, 0.5);
 }
 
-function ColorLegend({ mode }: { mode: GeoMotionColor }) {
+function ColorLegend({ mode, blocks, destination }: { mode: GeoMotionColor; blocks: GeoMotionBlock[]; destination: boolean }) {
+  const classificationCount = (classification: "ORE" | "WASTE") =>
+    blocks.filter((block) => (destination ? block.destination_class : block.source_class) === classification).length;
+  const faciesCount = (facies: GeoMotionBlock["facies"]) => blocks.filter((block) => block.facies === facies).length;
   const categorical = mode === "classification"
-    ? [{ label: "Ore", color: "#16a34a" }, { label: "Waste", color: "#64748b" }]
+    ? [
+        { label: `Ore (${classificationCount("ORE").toLocaleString()})`, color: "#16a34a" },
+        { label: `Waste (${classificationCount("WASTE").toLocaleString()})`, color: "#64748b" },
+      ]
     : mode === "facies"
       ? [
-          { label: "VK", color: "#7c3aed" },
-          { label: "SVK M1", color: "#0ea5e9" },
-          { label: "Contact", color: "#f59e0b" },
-          { label: "Waste", color: "#64748b" },
+          { label: `VK (${faciesCount("VK").toLocaleString()})`, color: "#7c3aed" },
+          { label: `SVK M1 (${faciesCount("SVK_M1").toLocaleString()})`, color: "#0ea5e9" },
+          { label: `Contact (${faciesCount("CONTACT").toLocaleString()})`, color: "#f59e0b" },
+          { label: `Waste (${faciesCount("WASTE").toLocaleString()})`, color: "#64748b" },
         ]
       : null;
   if (categorical) {
@@ -166,27 +177,31 @@ function GeoMotionScene({
     const clippingPlanes = clipPercent < 99
       ? [new THREE.Plane(new THREE.Vector3(-1, 0, 0), gridSize * (clipPercent / 100 - 0.5))]
       : [];
-    const blockMaterial = new THREE.MeshBasicMaterial({
-      vertexColors: true,
-      clippingPlanes,
-    });
     renderer.localClippingEnabled = clippingPlanes.length > 0;
-    const voxels = new THREE.InstancedMesh(blockGeometry, blockMaterial, all.length);
     const transform = new THREE.Matrix4();
-    all.forEach((block, index) => {
+    const colorBatches = new Map<string, { color: THREE.Color; matrices: THREE.Matrix4[] }>();
+    all.forEach((block) => {
       const t = view === "source" ? 0 : view === "destination" ? 1 : progress;
       transform.makeTranslation(
         block.source[0] + (block.destination[0] - block.source[0]) * t - center.x,
         (block.source[2] + (block.destination[2] - block.source[2]) * t - center.z) * verticalExaggeration,
         -(block.source[1] + (block.destination[1] - block.source[1]) * t - center.y)
       );
-      voxels.setMatrixAt(index, transform);
       const color = colorFor(block, colorMode, t > 0.5);
-      voxels.setColorAt(index, color);
+      const key = color.getHexString();
+      const batch = colorBatches.get(key) ?? { color, matrices: [] };
+      batch.matrices.push(transform.clone());
+      colorBatches.set(key, batch);
     });
-    voxels.instanceMatrix.needsUpdate = true;
-    if (voxels.instanceColor) voxels.instanceColor.needsUpdate = true;
-    scene.add(voxels);
+    const voxelMaterials: THREE.MeshBasicMaterial[] = [];
+    colorBatches.forEach((batch) => {
+      const material = new THREE.MeshBasicMaterial({ color: batch.color, clippingPlanes });
+      const mesh = new THREE.InstancedMesh(blockGeometry, material, batch.matrices.length);
+      batch.matrices.forEach((matrix, index) => mesh.setMatrixAt(index, matrix));
+      mesh.instanceMatrix.needsUpdate = true;
+      voxelMaterials.push(material);
+      scene.add(mesh);
+    });
 
     const floor = result.validation.floor_rl_m ?? Math.min(...all.map((block) => block.source[2]));
     const holeVertices: number[] = [];
@@ -246,7 +261,7 @@ function GeoMotionScene({
       observer.disconnect();
       controls.dispose();
       blockGeometry.dispose();
-      blockMaterial.dispose();
+      voxelMaterials.forEach((material) => material.dispose());
       holeGeometry.dispose();
       renderer.dispose();
       host.replaceChildren();
@@ -625,7 +640,7 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
               <input type="range" min={5} max={100} value={clipPercent} onChange={(event) => setClipPercent(Number(event.target.value))} />
               <span>{clipPercent}%</span>
             </div>
-            <ColorLegend mode={colorMode} />
+            <ColorLegend mode={colorMode} blocks={result.blocks} destination={view === "destination" || (view === "movement" && progress > 0.5)} />
             {view === "movement" ? (
               <div>
                 <div className="geomotionTimeline">
