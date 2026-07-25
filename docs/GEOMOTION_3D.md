@@ -44,6 +44,8 @@ The physics baseline combines effective explosive energy, distance attenuation, 
 
 Hybrid mode applies a small random-forest residual trained on seeded synthetic parameter sweeps. This demonstrates the production calibration interface, but does not add mine accuracy. When measured mine data become available, the synthetic residual must be replaced with a site model trained on measured `dx`, `dy`, `dz`, post-blast surfaces, and reconciliation outcomes. Validation splits must be by blast, not random cells from the same blast.
 
+If a frontend preview is connected to an older Cloud Run revision that returns `404` or `405` for the GeoMotion endpoint, the UI runs a deterministic browser demonstration instead of failing. The result identifies the browser fallback in its engine metadata and validation warnings. This keeps demonstrations available while the Python backend is deployed, but the Cloud Run engine remains the authoritative implementation.
+
 ## Output definitions
 
 - **Ore recovery:** in-situ ore tonnes remaining inside the synthetic post-blast ore destination divided by in-situ ore tonnes.

@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { parseBlastCsv } from "../../lib/csvParser";
 import { downloadTextFile } from "../../lib/exportCsv";
+import { simulateGeoMotionLocally } from "../../lib/geomotionFallback";
 import { defaultRowTolerance } from "../../lib/rowDetection";
 import { assignTiming } from "../../lib/timingAlgorithms";
 import type { BlastHole, ValidationIssue } from "../../types/blast";
@@ -265,18 +266,25 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
     setRunning(true);
     setError("");
     try {
+      const request = {
+        project_name: projectName,
+        seed: 66532,
+        mode,
+        holes: toGeoMotionHoles(holes),
+        assumptions,
+      };
       const response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/geomotion/simulate`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          project_name: projectName,
-          seed: 66532,
-          mode,
-          holes: toGeoMotionHoles(holes),
-          assumptions,
-        }),
+        body: JSON.stringify(request),
       });
       const payload = await response.json().catch(() => null);
+      if (response.status === 404 || response.status === 405) {
+        setResult(simulateGeoMotionLocally(request));
+        setProgress(1);
+        setView("destination");
+        return;
+      }
       if (!response.ok) throw new Error(payload?.detail?.[0]?.msg || payload?.detail || `Simulation failed (${response.status})`);
       setResult(payload as GeoMotionResult);
       setProgress(1);
