@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.geomotion import GeoMotionRequest, simulate
+from app.geomotion import GeoMotionRequest, GeoMotionResponse, simulate
 
 
 def request(mode: str = "hybrid") -> GeoMotionRequest:
@@ -27,6 +27,7 @@ class GeoMotionEngineTests(unittest.TestCase):
     def test_seeded_run_is_deterministic_and_mass_conserving(self):
         first = simulate(request())
         second = simulate(request())
+        GeoMotionResponse.model_validate(first)
         self.assertEqual(first["metrics"], second["metrics"])
         self.assertEqual(first["blocks"][:5], second["blocks"][:5])
         self.assertEqual(first["metrics"]["mass_balance_error_percent"], 0.0)

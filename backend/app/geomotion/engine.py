@@ -103,6 +103,14 @@ def _make_blocks(request: GeoMotionRequest, floor_rl: float, collar_rl: float) -
     gz = floor_rl + (np.arange(levels) + 0.5) * (bench_height / levels)
     xx, yy, zz = np.meshgrid(gx, gy, gz, indexing="xy")
     positions = np.column_stack([xx.ravel(), yy.ravel(), zz.ravel()])
+    collar_points = np.column_stack([xs, ys])
+    distance_to_pattern = np.min(
+        np.linalg.norm(positions[:, None, :2] - collar_points[None, :, :], axis=2),
+        axis=1,
+    )
+    # Restrict the synthetic bench to the drilled footprint instead of the
+    # larger rectangular bounds used to construct the grid.
+    positions = positions[distance_to_pattern <= max(a.spacing_m, a.burden_m) * 0.90]
 
     cx = float(np.mean(xs))
     cy = float(np.mean(ys))
@@ -254,7 +262,12 @@ def _destination_class(
     ny = (positions[:, 1] - center[1] - 0.10 * span_y * np.sin(nx * 1.7)) / max(
         span_y * 0.36, 1.0
     )
-    expected_grade = 18.0 + 22.0 * np.maximum(0.0, 1.0 - np.sqrt(nx * nx + ny * ny))
+    radius = np.sqrt(nx * nx + ny * ny)
+    expected_grade = np.where(
+        radius < 1.0,
+        18.0 + 22.0 * np.maximum(0.0, 1.0 - radius),
+        np.where(radius < 1.12, 3.0 * (1.12 - radius) / 0.12, 0.0),
+    )
     return np.where(expected_grade >= cutoff, "ORE", "WASTE")
 
 
