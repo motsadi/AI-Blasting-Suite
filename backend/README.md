@@ -36,6 +36,7 @@ python backend/tools/upload_assets_to_gcs.py
 - `POST /v1/predict` (empirical + optional ML if model assets present)
 - `POST /v1/predict/upload` (train fallback ML from uploaded dataset)
 - `POST /v1/geomotion/simulate` (mass-conserving synthetic 3D ore-movement demonstration)
+- `POST /v1/geomotion/export` (authoritative full-resolution 1 m gzip movement export)
 
 ### Core logic import
 

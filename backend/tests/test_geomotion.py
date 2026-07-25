@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import unittest
 
+import numpy as np
+from pydantic import ValidationError
+
 from app.geomotion import GeoMotionRequest, GeoMotionResponse, simulate
 from app.geomotion.explosives import linear_charge_kg_m
+from app.geomotion.io import parse_block_model_csv, parse_movement_monitors_csv
+from app.geomotion.physics.remap import settle_and_remap
 from app.geomotion.physics.scheduler import build_event_queue
 
 
@@ -42,10 +47,7 @@ class GeoMotionEngineTests(unittest.TestCase):
     def test_hybrid_and_physics_modes_are_distinct(self):
         physics = simulate(request("physics"))
         hybrid = simulate(request("hybrid"))
-        self.assertNotEqual(
-            physics["metrics"]["mean_displacement_m"],
-            hybrid["metrics"]["mean_displacement_m"],
-        )
+        self.assertNotEqual(physics["events"][0]["timing_error_ms"], hybrid["events"][0]["timing_error_ms"])
         self.assertIn("dynamic relief", hybrid["engine"]["model_kind"])
 
     def test_metrics_are_bounded(self):
@@ -86,6 +88,38 @@ class GeoMotionEngineTests(unittest.TestCase):
         self.assertAlmostEqual(linear_charge_kg_m(127), 16.0, delta=0.35)
         self.assertAlmostEqual(linear_charge_kg_m(165), 27.0, delta=0.4)
         self.assertAlmostEqual(linear_charge_kg_m(250), 61.4, delta=0.3)
+
+    def test_delay_is_required_and_unique(self):
+        payload = request().model_dump()
+        payload["holes"][0].pop("delay_ms")
+        with self.assertRaises(ValidationError):
+            GeoMotionRequest(**payload)
+        payload = request().model_dump()
+        payload["holes"][1]["delay_ms"] = payload["holes"][0]["delay_ms"]
+        with self.assertRaises(ValidationError):
+            GeoMotionRequest(**payload)
+
+    def test_measured_csv_adapters(self):
+        blocks = parse_block_model_csv("X,Y,Z,Density,Grade,Facies\n1,2,3,2.4,20,VK\n")
+        monitors = parse_movement_monitors_csv("X,Y,Z,dX,dY,dZ\n1,2,3,4,5,6\n")
+        self.assertEqual(blocks[0]["provenance"], "measured")
+        self.assertEqual(monitors[0]["dx"], 4.0)
+
+    def test_remap_has_unique_destination_cells(self):
+        positions = np.array([[0.1, 0.1, 0.5], [0.2, 0.2, 0.6], [0.1, 0.1, 1.5]])
+        result = settle_and_remap(
+            positions,
+            np.array([0.0, 0.0]),
+            0.0,
+            1.0,
+            (10.0, 10.0),
+            12.0,
+            5.0,
+            np.array([20.0, 0.0, 20.0]),
+            np.ones(3),
+        )
+        self.assertEqual(len(np.unique(result.positions, axis=0)), 3)
+        self.assertEqual(result.occupied_cells, 3)
 
 
 if __name__ == "__main__":

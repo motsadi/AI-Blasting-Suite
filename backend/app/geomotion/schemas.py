@@ -80,7 +80,7 @@ class GeoMotionAssumptions(BaseModel):
     joint_persistence: float = Field(default=0.6, ge=0, le=1)
     loader_bucket_t: float = Field(default=100.0, gt=1, le=1000)
     minimum_mining_unit_m: float = Field(default=5.0, ge=1, le=50)
-    max_visual_blocks: int = Field(default=35000, ge=1000, le=150000)
+    max_visual_blocks: int = Field(default=35000, ge=1000, le=500000)
 
 
 class GeoMotionDatasetRef(BaseModel):
