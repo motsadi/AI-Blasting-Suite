@@ -76,6 +76,10 @@ body{
 .geomotionViewerControls{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .geomotionViewerControls .input{ width:auto; min-width:145px; }
 .geomotionTimeline{ display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:center; padding:6px 8px 10px; color:var(--muted); font-size:11px; font-weight:700; }
+.geomotionLegend{ display:flex; align-items:center; justify-content:flex-end; gap:12px; flex-wrap:wrap; padding:0 8px 9px; color:var(--muted); font-size:11px; font-weight:750; }
+.geomotionLegend span{ display:inline-flex; align-items:center; gap:5px; }
+.geomotionLegend i{ display:inline-block; width:13px; height:13px; border-radius:3px; border:1px solid rgba(15,23,42,.18); }
+.geomotionGradient{ width:90px; height:10px; border-radius:999px; background:linear-gradient(90deg,#2563eb,#22c55e,#f59e0b,#ef4444); border:1px solid rgba(15,23,42,.12); }
 .geomotionScene{ width:100%; min-height:560px; height:min(68vh,720px); border:1px solid var(--border); border-radius:14px; overflow:hidden; background:#f8fafc; }
 .geomotionResultsGrid{ display:grid; grid-template-columns:1.2fr .85fr 1fr; gap:12px; }
 .geomotionTable{ width:100%; border-collapse:collapse; margin-top:10px; font-size:12px; }
