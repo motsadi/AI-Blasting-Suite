@@ -4,15 +4,13 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { parseBlastCsv } from "../../lib/csvParser";
 import { downloadTextFile } from "../../lib/exportCsv";
 import { simulateGeoMotionLocally } from "../../lib/geomotionFallback";
-import { defaultRowTolerance } from "../../lib/rowDetection";
-import { assignTiming } from "../../lib/timingAlgorithms";
 import type { BlastHole, ValidationIssue } from "../../types/blast";
-import { DEFAULT_TIMING_SETTINGS } from "../../types/blast";
 import type {
   GeoMotionAssumptions,
   GeoMotionBlock,
   GeoMotionColor,
   GeoMotionMode,
+  GeoMotionRequest,
   GeoMotionResult,
   GeoMotionView,
 } from "../../types/geomotion";
@@ -38,7 +36,7 @@ function metric(title: string, value: string, detail?: string) {
 }
 
 function diamondReferenceCsv() {
-  const rows = ["Hole ID,Depth,Charge,X,Y,Z"];
+  const rows = ["Hole ID,Depth,Charge,X,Y,Z,Delay"];
   const originX = -5357.116;
   const originY = 4521.675;
   const angle = (-17 * Math.PI) / 180;
@@ -53,25 +51,11 @@ function diamondReferenceCsv() {
       const depth = 15.69 + variation;
       const charge = Math.max(570, (depth - 5.02) * 61.4);
       const id = `${String.fromCharCode(65 + row)}${column + 1}`;
-      rows.push(`${id},${depth.toFixed(3)},${charge.toFixed(6)},${x.toFixed(3)},${y.toFixed(3)},${(664 + depth).toFixed(3)}`);
+      rows.push(`${id},${depth.toFixed(3)},${charge.toFixed(6)},${x.toFixed(3)},${y.toFixed(3)},${(664 + depth).toFixed(3)},${8000 + index * 8}`);
       index += 1;
     }
   }
   return rows.join("\n");
-}
-
-function ensureTiming(holes: BlastHole[]) {
-  if (holes.every((hole) => Number.isFinite(hole.delayMs))) return holes;
-  const center = {
-    x: holes.reduce((sum, hole) => sum + hole.x, 0) / Math.max(holes.length, 1),
-    y: holes.reduce((sum, hole) => sum + hole.y, 0) / Math.max(holes.length, 1),
-  };
-  return assignTiming(holes, {
-    pattern: "vCut",
-    settings: { ...DEFAULT_TIMING_SETTINGS, rowTolerance: defaultRowTolerance(holes) },
-    initiationPoint: center,
-    vWidth: "medium",
-  });
 }
 
 function colorFor(block: GeoMotionBlock, mode: GeoMotionColor, destination: boolean) {
@@ -87,6 +71,12 @@ function colorFor(block: GeoMotionBlock, mode: GeoMotionColor, destination: bool
   }
   if (mode === "uncertainty") {
     return new THREE.Color().setHSL(0.33 - Math.min(block.uncertainty_m / 3, 1) * 0.33, 0.82, 0.5);
+  }
+  if (mode === "burdenVelocity") {
+    return new THREE.Color().setHSL(0.62 - Math.min(block.burden_velocity_m_s / 8, 1) * 0.62, 0.84, 0.5);
+  }
+  if (mode === "impulse") {
+    return new THREE.Color().setHSL(0.74 - Math.min(block.peak_impulse_m_s / 8, 1) * 0.74, 0.84, 0.5);
   }
   return new THREE.Color().setHSL(0.62 - Math.min(block.displacement_m / 15, 1) * 0.62, 0.82, 0.5);
 }
@@ -126,24 +116,30 @@ function GeoMotionScene({
       all.reduce((sum, block) => sum + block.source[1], 0) / all.length,
       all.reduce((sum, block) => sum + block.source[2], 0) / all.length
     );
-    const positions = new Float32Array(all.length * 3);
-    const colors = new Float32Array(all.length * 3);
+    const lodScale = Math.max(1, Math.cbrt(result.transport?.stride || 1));
+    const voxelSize = result.assumptions.cell_size_m * lodScale * 0.985;
+    const blockGeometry = new THREE.BoxGeometry(voxelSize, voxelSize, voxelSize);
+    const blockMaterial = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.86,
+      metalness: 0.02,
+    });
+    const voxels = new THREE.InstancedMesh(blockGeometry, blockMaterial, all.length);
+    const transform = new THREE.Matrix4();
     all.forEach((block, index) => {
       const t = view === "source" ? 0 : view === "destination" ? 1 : progress;
-      positions[index * 3] = block.source[0] + (block.destination[0] - block.source[0]) * t - center.x;
-      positions[index * 3 + 1] = block.source[2] + (block.destination[2] - block.source[2]) * t - center.z;
-      positions[index * 3 + 2] = -(block.source[1] + (block.destination[1] - block.source[1]) * t - center.y);
+      transform.makeTranslation(
+        block.source[0] + (block.destination[0] - block.source[0]) * t - center.x,
+        block.source[2] + (block.destination[2] - block.source[2]) * t - center.z,
+        -(block.source[1] + (block.destination[1] - block.source[1]) * t - center.y)
+      );
+      voxels.setMatrixAt(index, transform);
       const color = colorFor(block, colorMode, t > 0.5);
-      colors.set(color.toArray(), index * 3);
+      voxels.setColorAt(index, color);
     });
-    const blockGeometry = new THREE.BufferGeometry();
-    blockGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    blockGeometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-    const points = new THREE.Points(
-      blockGeometry,
-      new THREE.PointsMaterial({ size: Math.max(2.2, result.assumptions.cell_size_m * 0.55), vertexColors: true, opacity: 0.88, transparent: true })
-    );
-    scene.add(points);
+    voxels.instanceMatrix.needsUpdate = true;
+    if (voxels.instanceColor) voxels.instanceColor.needsUpdate = true;
+    scene.add(voxels);
 
     const floor = result.validation.floor_rl_m ?? Math.min(...all.map((block) => block.source[2]));
     const holeVertices: number[] = [];
@@ -205,6 +201,7 @@ function GeoMotionScene({
       observer.disconnect();
       controls.dispose();
       blockGeometry.dispose();
+      blockMaterial.dispose();
       holeGeometry.dispose();
       renderer.dispose();
       host.replaceChildren();
@@ -219,6 +216,7 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
   const [holes, setHoles] = useState<BlastHole[]>([]);
   const [fileName, setFileName] = useState("");
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
+  const [inputErrors, setInputErrors] = useState<string[]>([]);
   const [assumptions, setAssumptions] = useState<GeoMotionAssumptions>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -246,9 +244,40 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
 
   function loadCsv(text: string, name: string) {
     const parsed = parseBlastCsv(text);
-    setHoles(ensureTiming(parsed.holes));
+    const nextIssues = [...parsed.issues];
+    const rejected = parsed.holes.filter(
+      (hole) =>
+        !Number.isFinite(hole.depth) ||
+        (hole.depth as number) < 1 ||
+        !Number.isFinite(hole.charge) ||
+        (hole.charge as number) <= 0
+    );
+    const valid = parsed.holes.filter((hole) => !rejected.includes(hole));
+    if (rejected.length) {
+      nextIssues.push({
+        severity: "warning",
+        message: `${rejected.length} physically invalid row(s) were excluded (depth < 1 m, missing/non-positive charge).`,
+        suggestion: "Correct these records in the source charge sheet before a production study.",
+      });
+    }
+    const errors: string[] = [];
+    if (!parsed.mapping.delay) errors.push("A Delay column is required. GeoMotion will not invent firing times.");
+    const missingDelay = valid.filter((hole) => !Number.isFinite(hole.delayMs));
+    if (missingDelay.length) errors.push(`${missingDelay.length} valid hole row(s) have missing or non-numeric Delay.`);
+    const delays = valid.map((hole) => hole.delayMs as number).filter(Number.isFinite);
+    if (new Set(delays).size !== delays.length) errors.push("Every hole must have a unique cumulative firing time.");
+    const minimumDelay = delays.length ? Math.min(...delays) : 0;
+    const normalized = errors.length
+      ? valid
+      : valid.map((hole) => ({
+          ...hole,
+          originalDelayMs: hole.delayMs,
+          delayMs: (hole.delayMs as number) - minimumDelay,
+        }));
+    setHoles(normalized);
     setFileName(name);
-    setIssues(parsed.issues);
+    setIssues(nextIssues);
+    setInputErrors(errors);
     setResult(null);
     setError("");
   }
@@ -263,15 +292,20 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
       setError("Import at least three valid blast holes before running GeoMotion.");
       return;
     }
+    if (inputErrors.length || holes.some((hole) => !Number.isFinite(hole.delayMs))) {
+      setError(inputErrors[0] || "Every hole requires a valid cumulative Delay.");
+      return;
+    }
     setRunning(true);
     setError("");
     try {
-      const request = {
+      const request: GeoMotionRequest = {
         project_name: projectName,
         seed: 66532,
         mode,
         holes: toGeoMotionHoles(holes),
         assumptions,
+        site_data: { datasets: [], synthetic_defaults_enabled: true },
       };
       const response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/geomotion/simulate`, {
         method: "POST",
@@ -280,7 +314,11 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
       });
       const payload = await response.json().catch(() => null);
       if (response.status === 404 || response.status === 405) {
-        setResult(simulateGeoMotionLocally(request));
+        const previewRequest: GeoMotionRequest = {
+          ...request,
+          assumptions: { ...request.assumptions, cell_size_m: 3, max_visual_blocks: 20000 },
+        };
+        setResult(simulateGeoMotionLocally(previewRequest));
         setProgress(1);
         setView("destination");
         return;
@@ -349,7 +387,7 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
           <div className="sectionTitle">Blast input</div>
           <label className="label">Project</label>
           <input className="input" value={projectName} onChange={(event) => setProjectName(event.target.value)} />
-          <label className="label" style={{ marginTop: 10 }}>Charged-hole tie-up CSV</label>
+          <label className="label" style={{ marginTop: 10 }}>Delay-bearing charged-hole CSV</label>
           <input className="input" type="file" accept=".csv" onChange={(event) => handleFile(event.target.files?.[0] ?? null)} />
           <button className="btn" style={{ marginTop: 8 }} onClick={() => loadCsv(diamondReferenceCsv(), "680-665QS32-33_synthetic_reference.csv")}>
             Load 182-hole diamond demonstration
@@ -361,6 +399,12 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
             {metric("Source", fileName || "No CSV")}
           </div>
           {issues.length ? <div className="warningBox">{issues.length} CSV issue(s): {issues.slice(0, 2).map((issue) => issue.message).join(" ")}</div> : null}
+          {inputErrors.map((message) => <div key={message} className="error">{message}</div>)}
+          {holes.length && !inputErrors.length ? (
+            <div className="geomotionModelNote">
+              Timing normalized to first firing: 0–{format(Math.max(...holes.map((hole) => hole.delayMs ?? 0)), 1)} ms. Original cumulative values are preserved.
+            </div>
+          ) : null}
         </section>
 
         <section className="card">
@@ -379,22 +423,44 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
             {numberField("Model cell", "cell_size_m", "m")}
             {numberField("Relative energy", "explosive_relative_energy", "ratio")}
           </div>
+          <details className="geomotionAdvanced">
+            <summary>Explosive, rock, joints and loader defaults</summary>
+            <div className="geomotionAssumptions">
+              {numberField("S135B density", "explosive_density_kg_m3", "kg/m³")}
+              {numberField("S135B RWS", "explosive_rws_percent", "%")}
+              {numberField("Nominal VOD", "vod_m_s", "m/s")}
+              {numberField("VOD uncertainty", "vod_uncertainty_m_s", "m/s")}
+              {numberField("UCS", "ucs_mpa", "MPa")}
+              {numberField("Tensile strength", "tensile_strength_mpa", "MPa")}
+              {numberField("Young's modulus", "youngs_modulus_gpa", "GPa")}
+              {numberField("Poisson ratio", "poisson_ratio", "ratio")}
+              {numberField("Damping", "damping_ratio", "ratio")}
+              {numberField("Fragmentation index", "fragmentation_index", "0–1")}
+              {numberField("Joint dip", "joint_dip_deg", "°")}
+              {numberField("Joint direction", "joint_dip_direction_deg", "°")}
+              {numberField("Joint spacing", "joint_spacing_m", "m")}
+              {numberField("Joint persistence", "joint_persistence", "0–1")}
+              {numberField("Loader bucket", "loader_bucket_t", "t")}
+              {numberField("Minimum mining unit", "minimum_mining_unit_m", "m")}
+            </div>
+            <div className="warningBox">These values are synthetic/site assumptions until replaced by mine files or manufacturer records.</div>
+          </details>
         </section>
 
         <section className="card geomotionRunCard">
           <div className="sectionTitle">Simulation</div>
           <label className="label">Engine mode</label>
           <select className="input" value={mode} onChange={(event) => setMode(event.target.value as GeoMotionMode)}>
-            <option value="physics">Physics baseline</option>
-            <option value="hybrid">Physics + synthetic ML residual</option>
+            <option value="physics">Event physics baseline</option>
+            <option value="hybrid">Event physics + uncertainty realization</option>
           </select>
           <div className="geomotionModelNote">
             {mode === "hybrid"
-              ? "A synthetic random-forest residual modifies the constrained physics field. It demonstrates the future calibration architecture; it is not trained on mine measurements."
-              : "Deterministic energy, relief, timing, confinement, heave and throw model without ML correction."}
+              ? "Reduced-order timed detonation, gas impulse, burden velocity, dynamic relief, joints and conservative settlement with synthetic uncertainty."
+              : "Reduced-order event physics without a site-calibrated residual. This is not FEM/DEM or certified S135B JWL modelling."}
           </div>
-          <button className="btn btnPrimary geomotionRunButton" disabled={running || holes.length < 3} onClick={runSimulation}>
-            {running ? "Computing movement field…" : "Run GeoMotion 3D"}
+          <button className="btn btnPrimary geomotionRunButton" disabled={running || holes.length < 3 || !!inputErrors.length} onClick={runSimulation}>
+            {running ? "Computing 1 m event physics…" : "Run GeoMotion 3D"}
           </button>
           {error ? <div className="error">{error}</div> : null}
         </section>
@@ -429,15 +495,26 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
                   <option value="grade">Grade cpht</option>
                   <option value="displacement">Displacement</option>
                   <option value="uncertainty">Uncertainty</option>
+                  <option value="burdenVelocity">Burden velocity</option>
+                  <option value="impulse">Peak impulse</option>
                 </select>
                 <label className="label"><input type="checkbox" checked={showVectors} onChange={(event) => setShowVectors(event.target.checked)} /> Vectors</label>
               </div>
             </div>
             {view === "movement" ? (
-              <div className="geomotionTimeline">
-                <span>In situ</span>
-                <input type="range" min={0} max={100} value={Math.round(progress * 100)} onChange={(event) => setProgress(Number(event.target.value) / 100)} />
-                <span>Post-blast</span>
+              <div>
+                <div className="geomotionTimeline">
+                  <span>In situ</span>
+                  <input type="range" min={0} max={100} value={Math.round(progress * 100)} onChange={(event) => setProgress(Number(event.target.value) / 100)} />
+                  <span>Post-blast</span>
+                </div>
+                {result.events.length ? (
+                  <div className="subtitle" style={{ padding: "0 8px 8px" }}>
+                    Event {Math.min(result.events.length, Math.floor(progress * result.events.length) + 1)}/{result.events.length} ·
+                    hole {String(result.events[Math.min(result.events.length - 1, Math.floor(progress * result.events.length))]?.hole_id)} ·
+                    {format(Number(result.events[Math.min(result.events.length - 1, Math.floor(progress * result.events.length))]?.actual_time_ms), 2)} ms
+                  </div>
+                ) : null}
               </div>
             ) : null}
             <GeoMotionScene result={result} progress={progress} view={view} colorMode={colorMode} showVectors={showVectors} />
@@ -451,6 +528,10 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
                 {metric("P95 movement", `${format(result.metrics.p95_displacement_m, 2)} m`)}
                 {metric("Mean heave", `${format(result.metrics.mean_heave_m, 2)} m`)}
                 {metric("Maximum throw", `${format(result.metrics.max_throw_m, 2)} m`)}
+                {metric("Max burden velocity", `${format(result.metrics.max_burden_velocity_m_s, 3)} m/s`)}
+                {metric("Loader recovery", `${format(result.metrics.loader_recovery_percent, 2)}%`)}
+                {metric("Loader dilution", `${format(result.metrics.loader_dilution_percent, 2)}%`)}
+                {metric("Physics voxels", format(result.metrics.cells, 0), `${format(result.metrics.voxel_size_m, 1)} m resolution`)}
                 {metric("Mean uncertainty", `${format(result.uncertainty.mean_m, 2)} m`)}
                 {metric("P95 uncertainty", `${format(result.uncertainty.p95_m, 2)} m`)}
               </div>

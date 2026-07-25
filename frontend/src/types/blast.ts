@@ -24,6 +24,7 @@ export interface BlastHole {
   rowIndex?: number;
   columnIndex?: number;
   delayMs?: number;
+  originalDelayMs?: number;
   firingOrder?: number;
   timingGroup?: string;
   estimatedFragmentationMm?: number;

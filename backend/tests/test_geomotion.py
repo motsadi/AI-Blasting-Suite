@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 
 from app.geomotion import GeoMotionRequest, GeoMotionResponse, simulate
+from app.geomotion.explosives import linear_charge_kg_m
+from app.geomotion.physics.scheduler import build_event_queue
 
 
 def request(mode: str = "hybrid") -> GeoMotionRequest:
@@ -18,6 +20,7 @@ def request(mode: str = "hybrid") -> GeoMotionRequest:
                     "z": 664.0 + depth,
                     "depth": depth,
                     "charge": 625.0,
+                    "delay_ms": 8000 + (row * 5 + column) * 8,
                 }
             )
     return GeoMotionRequest(project_name="Test", seed=42, mode=mode, holes=holes)
@@ -32,6 +35,9 @@ class GeoMotionEngineTests(unittest.TestCase):
         self.assertEqual(first["blocks"][:5], second["blocks"][:5])
         self.assertEqual(first["metrics"]["mass_balance_error_percent"], 0.0)
         self.assertGreater(first["metrics"]["total_tonnes"], 0)
+        self.assertEqual(first["metrics"]["voxel_size_m"], 1.0)
+        self.assertTrue(first["remap"]["mass_preserved"])
+        self.assertTrue(first["events"])
 
     def test_hybrid_and_physics_modes_are_distinct(self):
         physics = simulate(request("physics"))
@@ -40,7 +46,7 @@ class GeoMotionEngineTests(unittest.TestCase):
             physics["metrics"]["mean_displacement_m"],
             hybrid["metrics"]["mean_displacement_m"],
         )
-        self.assertIn("random-forest", hybrid["engine"]["model_kind"])
+        self.assertIn("dynamic relief", hybrid["engine"]["model_kind"])
 
     def test_metrics_are_bounded(self):
         result = simulate(request())
@@ -68,6 +74,18 @@ class GeoMotionEngineTests(unittest.TestCase):
         self.assertEqual(result["validation"]["status"], "review")
         self.assertTrue(result["validation"]["duplicate_ids"])
         self.assertTrue(result["validation"]["near_overlap_pairs"])
+
+    def test_delays_are_normalized_and_scatter_is_reproducible(self):
+        first = build_event_queue(request(), realization=3)
+        second = build_event_queue(request(), realization=3)
+        self.assertEqual(first, second)
+        self.assertEqual(min(event.nominal_time_ms for event in first), 0.0)
+        self.assertTrue(any(abs(event.timing_error_ms) > 0 for event in first))
+
+    def test_s135b_linear_charge_matches_site_values(self):
+        self.assertAlmostEqual(linear_charge_kg_m(127), 16.0, delta=0.35)
+        self.assertAlmostEqual(linear_charge_kg_m(165), 27.0, delta=0.4)
+        self.assertAlmostEqual(linear_charge_kg_m(250), 61.4, delta=0.3)
 
 
 if __name__ == "__main__":

@@ -131,6 +131,12 @@ export function simulateGeoMotionLocally(request: GeoMotionRequest): GeoMotionRe
           tonnes: round(tonnes),
           contained_carats: round((tonnes * grade) / 100),
           effective_time_ms: round(weightedDelay, 1),
+          velocity: [round(dx), round(dy), round(dz)],
+          peak_impulse_m_s: round(displacement * 0.35),
+          burden_velocity_m_s: round(displacement * 0.22),
+          contributing_event: -1,
+          size_m: cell,
+          provenance: "synthetic",
         });
       }
     }
@@ -189,7 +195,7 @@ export function simulateGeoMotionLocally(request: GeoMotionRequest): GeoMotionRe
     validation: {
       status: duplicateIds.length || overlaps.length ? "review" : "synthetic",
       warnings: [
-        "The Cloud backend did not yet expose GeoMotion; this result was computed by the browser demonstration engine.",
+        "The Cloud backend did not yet expose GeoMotion; this is a coarse 3 m browser preview, not the 1 m event-physics result.",
         "Synthetic geology and calibration are demonstration data, not measured mine evidence.",
       ],
       duplicate_ids: duplicateIds,
@@ -233,6 +239,33 @@ export function simulateGeoMotionLocally(request: GeoMotionRequest): GeoMotionRe
       mean_m: round(uncertaintyValues.reduce((total, value) => total + value, 0) / Math.max(uncertaintyValues.length, 1), 2),
       p95_m: round(uncertaintyValues[Math.floor(uncertaintyValues.length * 0.95)] ?? 0, 2),
       out_of_domain: true,
+    },
+    events: holes.map((hole, index) => ({
+      event_index: index,
+      hole_id: hole.id,
+      nominal_time_ms: hole.delay_ms,
+      actual_time_ms: hole.delay_ms,
+      timing_error_ms: 0,
+    })),
+    event_history: [],
+    transport: {
+      format: "browser_preview",
+      full_resolution_blocks: blocks.length,
+      returned_blocks: blocks.length,
+      stride: 1,
+      full_resolution_available_for_export: false,
+    },
+    provenance: {
+      tie_up: "site_supplied",
+      geology_rock_surfaces_and_grade: "synthetic",
+      engine: "coarse_browser_preview",
+    },
+    remap: {
+      method: "coarse browser settlement",
+      collision_count: 0,
+      occupied_cells: blocks.length,
+      mass_preserved: true,
+      contained_carats_preserved: true,
     },
   };
 }
