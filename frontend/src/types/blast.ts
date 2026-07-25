@@ -74,6 +74,7 @@ export interface ColumnMapping {
   z?: string;
   depth?: string;
   charge?: string;
+  delay?: string;
 }
 
 export interface ParsedCsv {

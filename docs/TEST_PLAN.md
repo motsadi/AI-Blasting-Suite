@@ -1,6 +1,22 @@
-# Delay Module Test Plan
+# GeoMotion 3D Test Plan
 
-Use this checklist before deploying changes to the Delay Design & Simulation module.
+Use this checklist before deploying changes to the GeoMotion 3D module.
+
+## GeoMotion demonstration
+
+- Load the built-in 182-hole diamond demonstration and confirm the stated 6 m burden, 7 m spacing, 250 mm diameter, and diamond defaults.
+- Import the supplied charged-hole tie-up and confirm missing IDs, duplicate IDs, and near-overlapping collars are surfaced rather than silently removed.
+- Run physics mode twice with the same seed and confirm identical results.
+- Run hybrid mode and confirm the model is identified as a synthetic random-forest residual, not a calibrated mine model.
+- Confirm tonnes and contained-carats attributes move with each block and mass-balance error remains zero.
+- Confirm ore recovery plus ore loss is approximately 100% for source ore.
+- Switch among in-situ, movement timeline, and post-blast views.
+- Orbit, zoom, toggle vectors, and colour by classification, facies, grade, displacement, and uncertainty.
+- Export movement CSV and result JSON; confirm both carry `Synthetic Demonstration / Uncalibrated — Planning Only`.
+- Confirm failed API calls and malformed inputs produce visible errors.
+- Confirm the module contains no arming, firing, detonator programming, or hardware controls.
+
+## Legacy timing regression
 
 - Import a valid CSV with `Hole ID`, `Depth`, `Charge`, `X`, `Y`, and `Z`.
 - Import a CSV with blank or `N/A` Hole IDs and confirm generated IDs such as `H001`.
