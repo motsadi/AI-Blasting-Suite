@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { GeoMotionPanel } from "./geomotion/GeoMotionPanel";
+
+const GeoMotionPanel = lazy(() =>
+  import("./geomotion/GeoMotionPanel").then((module) => ({ default: module.GeoMotionPanel }))
+);
 
 type Session = { token: string; email: string };
 type Props = {
@@ -644,7 +647,9 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
           ) : tab === "slope" ? (
             <SlopePanel apiBaseUrl={apiBaseUrl} token={session.token} />
           ) : tab === "delay" ? (
-            <GeoMotionPanel apiBaseUrl={apiBaseUrl} token={session.token} />
+            <Suspense fallback={<div className="card"><div className="subtitle">Loading GeoMotion 3D…</div></div>}>
+              <GeoMotionPanel apiBaseUrl={apiBaseUrl} token={session.token} />
+            </Suspense>
           ) : (
             <PlaceholderPanel title={TAB_META[tab]?.title ?? "Module"} />
           )}
