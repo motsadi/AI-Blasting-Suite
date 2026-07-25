@@ -62,6 +62,11 @@ body{
 .geomotionInputWithUnit{ display:flex; align-items:center; gap:5px; }
 .geomotionInputWithUnit .input{ min-width:0; padding:7px 8px; }
 .geomotionInputWithUnit small{ width:38px; color:var(--muted); font-size:10px; }
+.geomotionAdvanced{
+  margin-top:12px; padding:9px 10px; border:1px solid var(--border);
+  border-radius:10px; background:#f8fafc;
+}
+.geomotionAdvanced summary{ cursor:pointer; font-size:12px; font-weight:850; color:#164e63; }
 .warningBox{
   margin-top:8px; padding:8px 10px; border-radius:9px; border:1px solid #fde68a;
   background:#fffbeb; color:#854d0e; font-size:11px; line-height:1.4;

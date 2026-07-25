@@ -1,68 +1,87 @@
 # GeoMotion 3D Engine
 
-GeoMotion 3D is an independent, physics-informed blast-movement demonstration. It transforms a charged-hole tie-up and a synthetic pre-blast diamond block model into a mass-conserving post-blast material model.
+GeoMotion 3D is an independent, reduced-order event-physics blast-movement demonstration. It transforms a delay-bearing charged-hole tie-up and a contiguous 1 m diamond block model into a mass-conserving post-blast material model.
 
 ## Status and safety
 
-All current geology, measured movement, calibration, grade, recovery, dilution, and uncertainty outputs are synthetic. They are intended for software demonstration and workflow design only. They are not validated predictions for Orapa or any other mine and must not be used for field execution, dig-limit control, resource reporting, or production decisions.
+All current geology, movement calibration, grade, recovery, dilution and uncertainty outputs are synthetic unless their provenance explicitly says measured. They are not validated predictions for Orapa or any other mine and must not be used for field execution, dig-limit control, resource reporting or production decisions.
 
-The module does not arm, program, or communicate with detonators. The repository-wide requirements in `SAFETY_SCOPE.md` remain in force.
+The module does not arm, program or communicate with detonators. `SAFETY_SCOPE.md` remains in force.
 
-## Input contract
-
-The tie-up accepts:
+## Required tie-up
 
 | Field | Requirement | Notes |
 |---|---|---|
 | Hole ID | Recommended | Missing IDs receive generated identifiers |
-| X, Y | Required | Coordinates in a consistent projected metre system |
-| Z | Recommended | Collar RL |
-| Depth | Recommended | Metres |
-| Charge | Recommended | Kilograms |
-| Delay | Optional | Milliseconds; an open V-style demonstration sequence is generated when absent |
+| X, Y | Required | Projected coordinates in metres |
+| Z | Required | Collar RL |
+| Depth | Required | At least 1 m |
+| Charge | Required | Positive kilograms |
+| Delay | Required | Unique cumulative nominal firing time in milliseconds |
 
-The diamond demonstration defaults are based on the supplied 680-665QS32-33 context: 250 mm holes, 6 m burden, 7 m spacing, 5.02 m stemming, 1 m subdrill, 2.35 t/m³ rock density, 0.92 kg/m³ powder factor, and an open V-chevron concept.
+The importer preserves cumulative delay and simulates `Delay - minimum Delay`. It rejects missing or duplicate delays rather than inventing a timing pattern. Invalid charge/depth rows are explicitly excluded and reported.
 
-Input QA reports duplicate IDs, near-overlapping collars, imputed fields, nearest-hole spacing, and an inferred floor RL. It never silently deletes an uploaded record.
+## S135B, decks and rock defaults
 
-## Synthetic geology
+- S135B density: `1250.51 kg/m³` and RWS `115%` (site supplied).
+- VOD: nominal `4500 m/s`, sampled within an assumed `3500–5500 m/s` range.
+- Pentolite booster: `400 g`.
+- Linear loading checks: approximately 16, 27 and 61.4 kg/m for 127, 165 and 250 mm holes.
+- Missing deck records: one continuous toe-up S135B deck and one booster near the toe, marked synthetic.
+- Electronic timing scatter: `σ = 0.094 + 0.000345 × normalized delay` ms unless overridden.
 
-The engine creates a seeded 3D block model around the blast footprint. Each cell carries:
+Editable synthetic rock defaults include UCS, tensile strength, Young's modulus, Poisson ratio, damping, fragmentation index and joint orientation/spacing/persistence. These are sensitivity assumptions, not measured mine properties.
 
-- Source and destination coordinates
-- Kimberlite facies (`VK`, `SVK_M1`, contact, or waste)
-- Density and tonnes
-- Synthetic grade in carats per hundred tonnes (cpht)
-- Ore/waste classification
-- Contained synthetic carats
+## Optional measured datasets
 
-The seed makes a demonstration repeatable. Neither facies nor grade is inferred from the tie-up.
+The UI can register grade-control blocks, geological structures, pre/post-blast surfaces, movement monitors, dig limits and loader/MMU geometry. Backend CSV adapters validate:
 
-## Movement model
+- Block model: `X,Y,Z,Density,Grade,Facies`, with optional block dimensions.
+- Surface: `X,Y,Z`.
+- Movement monitors: `X,Y,Z,dX,dY,dZ`.
+- Dig limits: polygon ID, vertex sequence, `X,Y`, destination.
 
-The physics baseline combines effective explosive energy, distance attenuation, burden and spacing, free-face direction, timing relief, confinement, depth, heave, throw, and swell. Overlapping hole influence produces one 3D movement vector per cell. Movement is bounded, and the source cell's tonnes, grade, facies, and contained carats travel with that cell.
+Registered metadata alone does not alter a simulation. Until validated contents are supplied to a provider, the result says that synthetic providers remained active.
 
-Hybrid mode applies a small random-forest residual trained on seeded synthetic parameter sweeps. This demonstrates the production calibration interface, but does not add mine accuracy. When measured mine data become available, the synthetic residual must be replaced with a site model trained on measured `dx`, `dy`, `dz`, post-blast surfaces, and reconciliation outcomes. Validation splits must be by blast, not random cells from the same blast.
+## Contiguous one-metre source model
 
-If a frontend preview is connected to an older Cloud Run revision that returns `404` or `405` for the GeoMotion endpoint, the UI runs a deterministic browser demonstration instead of failing. The result identifies the browser fallback in its engine metadata and validation warnings. This keeps demonstrations available while the Python backend is deployed, but the Cloud Run engine remains the authoritative implementation.
+The engine creates `1 × 1 × 1 m` mass-bearing voxels around the drilled footprint without a vertical-level cap. Each voxel carries source/destination coordinates, facies, density, tonnes, synthetic cpht grade, classification and contained carats.
 
-## Output definitions
+## Event-physics model
 
-- **Ore recovery:** in-situ ore tonnes remaining inside the synthetic post-blast ore destination divided by in-situ ore tonnes.
-- **Ore loss:** in-situ ore tonnes moved outside the synthetic ore destination divided by in-situ ore tonnes.
-- **Dilution:** source-waste tonnes entering the synthetic ore destination divided by total post-blast ore-stream tonnes.
-- **Carat recovery:** contained synthetic carats retained in the ore destination divided by in-situ contained synthetic carats.
+For every hole/deck event in sampled firing-time order, the solver:
 
-Exports include per-cell vectors, uncertainty, facies, source/destination classes, grade, tonnes, and contained carats. Every export is labelled `Synthetic Demonstration / Uncalibrated — Planning Only`.
+1. Calculates an S135B chemical-energy and detonation-pressure proxy.
+2. Applies a bounded bulk-movement energy partition and stemming effectiveness.
+3. Queries nearby voxels using a spatial index.
+4. Calculates attenuation, confinement, rock impedance, joint anisotropy and current relief.
+5. Applies a pressure/impulse-derived velocity increment and records burden velocity.
+6. Advances position between events with damping.
+7. Updates a release field so later holes respond to newly opened relief.
+8. Applies bounded settlement, gravity and swell.
+
+This is not a detonation hydrocode. Product-certified JWL constants, explicit fracture mechanics and fragment contacts require manufacturer cylinder tests and FEM/DEM software.
+
+The result is conservatively remapped into unique destination columns. Collisions settle vertically; tonnes, facies, grade and contained carats are preserved. Loader/MMU classification is calculated separately from 1 m ore-control classification.
+
+## Visualization and transport
+
+The backend computes every 1 m voxel. Interactive responses aggregate contiguous source cells into regular level-of-detail cubes while preserving aggregate tonnes and carats. The UI uses GPU-instanced solid voxels.
+
+Controls include joined or 1–3% seams, clipping, vertical exaggeration, plan/section/perspective cameras, event playback, vectors, grade/facies, ore/waste, displacement, uncertainty, burden velocity and peak impulse. Full-resolution gzip CSV export is available from the authoritative backend.
+
+If Cloud Run returns `404` or `405`, the UI runs a clearly labelled coarse 3 m browser preview. That preview is not the 1 m event solver.
+
+## Outputs
+
+- Per voxel/LOD block: origin, destination, `dx/dy/dz`, velocity, displacement, uncertainty, impulse, burden velocity, contributing event, facies, classes, grade, tonnes and carats.
+- Per event: nominal/actual firing time, timing error, charge, VOD, pressure proxy, energy, gas-decay time, stemming effectiveness, burden velocity and released voxel count.
+- Ore control: recovery, loss, dilution, feed grade, carat recovery and source/destination mixing.
+- Loader scale: recovery and dilution at the configured minimum mining unit.
+- Remap: collision count, occupied cells and mass/carat conservation flags.
+
+Every export is labelled `Synthetic Demonstration / Uncalibrated — Planning Only`.
 
 ## Mine-data onboarding
 
-Production calibration will require, per blast:
-
-1. Final as-drilled and as-charged hole/deck records with actual timing.
-2. Bench geometry, free faces, pre-blast surface, and post-blast drone/LiDAR surface.
-3. Grade-control block model with facies, density, grade, classification rules, and coordinate reference system.
-4. Measured movement vectors from monitors or surveyed markers where available.
-5. Final dig polygons, truck destinations, plant feed, and reconciliation.
-
-The production model should report spatial cross-validation, vector MAE/RMSE/bias, surface error, mass balance, recovery/dilution reconciliation, uncertainty calibration, data drift, and the domain over which predictions are supported.
+Production calibration requires final as-drilled/as-charged deck records, actual timing, bench/free-face geometry, pre/post drone or LiDAR surfaces, the grade-control block model, measured movement vectors, dig polygons, truck destinations and reconciliation. Validation must split by blast and report vector MAE/RMSE/bias, surface error, ore-control reconciliation, uncertainty calibration and drift.

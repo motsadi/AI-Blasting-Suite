@@ -4,15 +4,21 @@ Use this checklist before deploying changes to the GeoMotion 3D module.
 
 ## GeoMotion demonstration
 
-- Load the built-in 182-hole diamond demonstration and confirm the stated 6 m burden, 7 m spacing, 250 mm diameter, and diamond defaults.
-- Import the supplied charged-hole tie-up and confirm missing IDs, duplicate IDs, and near-overlapping collars are surfaced rather than silently removed.
+- Load the built-in delay-bearing 182-hole diamond demonstration and confirm 1 m physics resolution.
+- Import `Hole_data_v1.csv`; confirm cumulative times are preserved, normalized to zero and its invalid depth/charge rows are explicitly excluded.
+- Confirm a tie-up without Delay, with missing Delay or duplicate firing times cannot run.
 - Run physics mode twice with the same seed and confirm identical results.
-- Run hybrid mode and confirm the model is identified as a synthetic random-forest residual, not a calibrated mine model.
+- Run the uncertainty realization and confirm electronic scatter changes actual event times reproducibly.
+- Verify S135B density/RWS/VOD assumptions, 400 g Pentolite default and 127/165/250 mm linear-loading checks.
+- Inspect event pressure proxy, impulse, burden velocity and evolving release history.
 - Confirm tonnes and contained-carats attributes move with each block and mass-balance error remains zero.
+- Confirm conservative remapping reports unique occupied cells and collision settlement.
 - Confirm ore recovery plus ore loss is approximately 100% for source ore.
+- Confirm loader/MMU recovery and dilution are reported separately.
 - Switch among in-situ, movement timeline, and post-blast views.
-- Orbit, zoom, toggle vectors, and colour by classification, facies, grade, displacement, and uncertainty.
-- Export movement CSV and result JSON; confirm both carry `Synthetic Demonstration / Uncalibrated — Planning Only`.
+- Orbit, zoom, clip sections, change camera and Z exaggeration, join/separate voxels, toggle vectors, and colour by all overlays.
+- Export LOD movement CSV, result JSON and authoritative full-resolution CSV.gz; confirm synthetic warnings.
+- Confirm the browser fallback identifies itself as a coarse 3 m preview and never claims a 1 m result.
 - Confirm failed API calls and malformed inputs produce visible errors.
 - Confirm the module contains no arming, firing, detonator programming, or hardware controls.
 

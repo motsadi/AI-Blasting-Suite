@@ -330,12 +330,12 @@ def simulate(request: GeoMotionRequest) -> dict[str, Any]:
     loader_stream = float(np.sum(tonnes[loader_ore]))
 
     mixing_matrix = []
-    for source in ("ORE", "WASTE"):
+    for source_name in ("ORE", "WASTE"):
         for destination_name in ("ORE", "WASTE"):
-            mask = (source_class == source) & (dest_class == destination_name)
+            mask = (source_class == source_name) & (dest_class == destination_name)
             mixing_matrix.append(
                 {
-                    "source": source,
+                    "source": source_name,
                     "destination": destination_name,
                     "tonnes": _round(float(np.sum(tonnes[mask])), 1),
                     "percent_of_total": _percent(float(np.sum(tonnes[mask])), float(np.sum(tonnes))),
@@ -343,34 +343,75 @@ def simulate(request: GeoMotionRequest) -> dict[str, Any]:
             )
 
     total_blocks = len(source.positions)
-    visual_stride = max(1, int(np.ceil(total_blocks / a.max_visual_blocks)))
-    visual_indices = np.arange(0, total_blocks, visual_stride, dtype=np.int64)[: a.max_visual_blocks]
+    lod_factor = 1
+    while total_blocks / (lod_factor**3) > a.max_visual_blocks:
+        lod_factor += 1
+    origin = np.min(source.positions, axis=0)
+    lod_keys = np.floor(
+        (source.positions - origin) / (a.cell_size_m * lod_factor) + 1e-9
+    ).astype(np.int64)
+    _, first_indices, inverse = np.unique(
+        lod_keys, axis=0, return_index=True, return_inverse=True
+    )
+    group_count = len(first_indices)
+    counts = np.bincount(inverse, minlength=group_count).astype(float)
+
+    def group_mean(values: np.ndarray) -> np.ndarray:
+        if values.ndim == 1:
+            return np.bincount(inverse, weights=values, minlength=group_count) / counts
+        return np.column_stack(
+            [
+                np.bincount(inverse, weights=values[:, axis], minlength=group_count)
+                / counts
+                for axis in range(values.shape[1])
+            ]
+        )
+
+    visual_source = group_mean(source.positions)
+    visual_destination = group_mean(destination)
+    visual_vectors = visual_destination - visual_source
+    visual_tonnes = np.bincount(inverse, weights=tonnes, minlength=group_count)
+    visual_carats = np.bincount(inverse, weights=carats, minlength=group_count)
+    visual_grade = visual_carats * 100.0 / np.maximum(visual_tonnes, 1e-9)
+    visual_source_ore = (
+        np.bincount(inverse, weights=tonnes * source_ore, minlength=group_count)
+        / np.maximum(visual_tonnes, 1e-9)
+    ) >= 0.5
+    visual_destination_ore = (
+        np.bincount(inverse, weights=tonnes * destination_ore, minlength=group_count)
+        / np.maximum(visual_tonnes, 1e-9)
+    ) >= 0.5
+    visual_uncertainty = group_mean(physics.uncertainty)
+    visual_effective_time = group_mean(physics.effective_time_ms)
+    visual_velocity = group_mean(physics.velocities)
+    visual_peak_impulse = group_mean(physics.peak_impulse_m_s)
+    visual_burden_velocity = group_mean(physics.burden_velocity_m_s)
     block_rows = []
-    for idx in visual_indices:
-        source_position = source.positions[idx]
-        dest = destination[idx]
-        vector = vectors[idx]
+    for group_index, first_index in enumerate(first_indices):
+        source_position = visual_source[group_index]
+        dest = visual_destination[group_index]
+        vector = visual_vectors[group_index]
         block_rows.append(
             {
-                "id": idx + 1,
+                "id": group_index + 1,
                 "source": [_round(v) for v in source_position],
                 "destination": [_round(v) for v in dest],
                 "vector": [_round(v) for v in vector],
                 "displacement_m": _round(float(np.linalg.norm(vector))),
-                "uncertainty_m": _round(physics.uncertainty[idx]),
-                "facies": str(source.facies[idx]),
-                "source_class": str(source_class[idx]),
-                "destination_class": str(dest_class[idx]),
-                "density_t_m3": _round(source.density[idx]),
-                "grade_cpht": _round(grade[idx]),
-                "tonnes": _round(tonnes[idx]),
-                "contained_carats": _round(carats[idx]),
-                "effective_time_ms": _round(physics.effective_time_ms[idx], 1),
-                "velocity": [_round(v) for v in physics.velocities[idx]],
-                "peak_impulse_m_s": _round(physics.peak_impulse_m_s[idx]),
-                "burden_velocity_m_s": _round(physics.burden_velocity_m_s[idx]),
-                "contributing_event": int(physics.contributing_event[idx]),
-                "size_m": a.cell_size_m,
+                "uncertainty_m": _round(visual_uncertainty[group_index]),
+                "facies": str(source.facies[first_index]),
+                "source_class": "ORE" if visual_source_ore[group_index] else "WASTE",
+                "destination_class": "ORE" if visual_destination_ore[group_index] else "WASTE",
+                "density_t_m3": _round(visual_tonnes[group_index] / ((a.cell_size_m**3) * counts[group_index])),
+                "grade_cpht": _round(visual_grade[group_index]),
+                "tonnes": _round(visual_tonnes[group_index]),
+                "contained_carats": _round(visual_carats[group_index]),
+                "effective_time_ms": _round(visual_effective_time[group_index], 1),
+                "velocity": [_round(v) for v in visual_velocity[group_index]],
+                "peak_impulse_m_s": _round(visual_peak_impulse[group_index]),
+                "burden_velocity_m_s": _round(visual_burden_velocity[group_index]),
+                "contributing_event": int(physics.contributing_event[first_index]),
+                "size_m": a.cell_size_m * lod_factor,
                 "provenance": "synthetic",
             }
         )
@@ -430,6 +471,11 @@ def simulate(request: GeoMotionRequest) -> dict[str, Any]:
             "Rock, geology, grade-control and loader inputs are synthetic until replaced by measured files.",
         ]
     )
+    registered_datasets = {dataset.kind: dataset for dataset in request.site_data.datasets}
+    if registered_datasets:
+        validation["warnings"].append(
+            "Measured dataset metadata was registered; this request did not include validated dataset contents, so synthetic providers remained active."
+        )
     return {
         "engine": {
             "name": "GeoMotion 3D Engine",
@@ -459,7 +505,9 @@ def simulate(request: GeoMotionRequest) -> dict[str, Any]:
             "format": "json_lod",
             "full_resolution_blocks": total_blocks,
             "returned_blocks": len(block_rows),
-            "stride": visual_stride,
+            "stride": lod_factor**3,
+            "lod_factor": lod_factor,
+            "visual_voxel_size_m": a.cell_size_m * lod_factor,
             "full_resolution_available_for_export": True,
         },
         "provenance": {
@@ -468,6 +516,7 @@ def simulate(request: GeoMotionRequest) -> dict[str, Any]:
             "vod_range": "manufacturer_range_assumption",
             "geology_rock_surfaces_and_grade": "synthetic",
             "movement_monitors": "not_supplied",
+            "registered_dataset_kinds": ",".join(sorted(registered_datasets)) or "none",
         },
         "remap": {
             "method": "conservative one-metre column settlement",

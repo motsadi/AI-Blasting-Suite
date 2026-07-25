@@ -87,12 +87,20 @@ function GeoMotionScene({
   view,
   colorMode,
   showVectors,
+  verticalExaggeration,
+  clipPercent,
+  cameraPreset,
+  seamPercent,
 }: {
   result: GeoMotionResult;
   progress: number;
   view: GeoMotionView;
   colorMode: GeoMotionColor;
   showVectors: boolean;
+  verticalExaggeration: number;
+  clipPercent: number;
+  cameraPreset: "perspective" | "plan" | "section";
+  seamPercent: number;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
 
@@ -116,21 +124,30 @@ function GeoMotionScene({
       all.reduce((sum, block) => sum + block.source[1], 0) / all.length,
       all.reduce((sum, block) => sum + block.source[2], 0) / all.length
     );
+    const gridSize = Math.max(
+      Math.max(...all.map((block) => block.source[0])) - Math.min(...all.map((block) => block.source[0])),
+      Math.max(...all.map((block) => block.source[1])) - Math.min(...all.map((block) => block.source[1]))
+    ) * 1.5;
     const lodScale = Math.max(1, Math.cbrt(result.transport?.stride || 1));
-    const voxelSize = result.assumptions.cell_size_m * lodScale * 0.985;
-    const blockGeometry = new THREE.BoxGeometry(voxelSize, voxelSize, voxelSize);
+    const voxelSize = result.assumptions.cell_size_m * lodScale * (1 - seamPercent / 100);
+    const blockGeometry = new THREE.BoxGeometry(voxelSize, voxelSize * verticalExaggeration, voxelSize);
+    const clippingPlanes = clipPercent < 99
+      ? [new THREE.Plane(new THREE.Vector3(-1, 0, 0), gridSize * (clipPercent / 100 - 0.5))]
+      : [];
     const blockMaterial = new THREE.MeshStandardMaterial({
       vertexColors: true,
       roughness: 0.86,
       metalness: 0.02,
+      clippingPlanes,
     });
+    renderer.localClippingEnabled = clippingPlanes.length > 0;
     const voxels = new THREE.InstancedMesh(blockGeometry, blockMaterial, all.length);
     const transform = new THREE.Matrix4();
     all.forEach((block, index) => {
       const t = view === "source" ? 0 : view === "destination" ? 1 : progress;
       transform.makeTranslation(
         block.source[0] + (block.destination[0] - block.source[0]) * t - center.x,
-        block.source[2] + (block.destination[2] - block.source[2]) * t - center.z,
+        (block.source[2] + (block.destination[2] - block.source[2]) * t - center.z) * verticalExaggeration,
         -(block.source[1] + (block.destination[1] - block.source[1]) * t - center.y)
       );
       voxels.setMatrixAt(index, transform);
@@ -144,8 +161,8 @@ function GeoMotionScene({
     const floor = result.validation.floor_rl_m ?? Math.min(...all.map((block) => block.source[2]));
     const holeVertices: number[] = [];
     result.holes.forEach((hole) => {
-      holeVertices.push(hole.x - center.x, hole.z - center.z, -(hole.y - center.y));
-      holeVertices.push(hole.x - center.x, floor - center.z, -(hole.y - center.y));
+      holeVertices.push(hole.x - center.x, (hole.z - center.z) * verticalExaggeration, -(hole.y - center.y));
+      holeVertices.push(hole.x - center.x, (floor - center.z) * verticalExaggeration, -(hole.y - center.y));
     });
     const holeGeometry = new THREE.BufferGeometry();
     holeGeometry.setAttribute("position", new THREE.Float32BufferAttribute(holeVertices, 3));
@@ -156,27 +173,25 @@ function GeoMotionScene({
       const step = Math.max(1, Math.ceil(all.length / 450));
       for (let index = 0; index < all.length; index += step) {
         const block = all[index];
-        vectorVertices.push(block.source[0] - center.x, block.source[2] - center.z, -(block.source[1] - center.y));
-        vectorVertices.push(block.destination[0] - center.x, block.destination[2] - center.z, -(block.destination[1] - center.y));
+        vectorVertices.push(block.source[0] - center.x, (block.source[2] - center.z) * verticalExaggeration, -(block.source[1] - center.y));
+        vectorVertices.push(block.destination[0] - center.x, (block.destination[2] - center.z) * verticalExaggeration, -(block.destination[1] - center.y));
       }
       const vectorGeometry = new THREE.BufferGeometry();
       vectorGeometry.setAttribute("position", new THREE.Float32BufferAttribute(vectorVertices, 3));
       scene.add(new THREE.LineSegments(vectorGeometry, new THREE.LineBasicMaterial({ color: "#f97316", opacity: 0.42, transparent: true })));
     }
 
-    const gridSize = Math.max(
-      Math.max(...all.map((block) => block.source[0])) - Math.min(...all.map((block) => block.source[0])),
-      Math.max(...all.map((block) => block.source[1])) - Math.min(...all.map((block) => block.source[1]))
-    ) * 1.5;
     const grid = new THREE.GridHelper(gridSize, 18, "#94a3b8", "#dbe4ef");
-    grid.position.y = floor - center.z;
+    grid.position.y = (floor - center.z) * verticalExaggeration;
     scene.add(grid);
     scene.add(new THREE.AmbientLight("#ffffff", 2.5));
     const light = new THREE.DirectionalLight("#ffffff", 2);
     light.position.set(60, 100, 30);
     scene.add(light);
 
-    camera.position.set(gridSize * 0.7, gridSize * 0.55, gridSize * 0.72);
+    if (cameraPreset === "plan") camera.position.set(0, gridSize * 1.35, 0.01);
+    else if (cameraPreset === "section") camera.position.set(gridSize * 1.25, gridSize * 0.12, 0);
+    else camera.position.set(gridSize * 0.7, gridSize * 0.55, gridSize * 0.72);
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.target.set(0, 2, 0);
@@ -206,7 +221,7 @@ function GeoMotionScene({
       renderer.dispose();
       host.replaceChildren();
     };
-  }, [result, progress, view, colorMode, showVectors]);
+  }, [result, progress, view, colorMode, showVectors, verticalExaggeration, clipPercent, cameraPreset, seamPercent]);
 
   return <div ref={hostRef} className="geomotionScene" aria-label="Interactive GeoMotion 3D blast movement view" />;
 }
@@ -233,6 +248,11 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
   const [view, setView] = useState<GeoMotionView>("destination");
   const [colorMode, setColorMode] = useState<GeoMotionColor>("classification");
   const [showVectors, setShowVectors] = useState(true);
+  const [verticalExaggeration, setVerticalExaggeration] = useState(1);
+  const [clipPercent, setClipPercent] = useState(100);
+  const [cameraPreset, setCameraPreset] = useState<"perspective" | "plan" | "section">("perspective");
+  const [seamPercent, setSeamPercent] = useState(1);
+  const [datasetRefs, setDatasetRefs] = useState<GeoMotionRequest["site_data"]["datasets"]>([]);
 
   useEffect(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(assumptions)), [assumptions]);
 
@@ -287,6 +307,27 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
     loadCsv(await file.text(), file.name);
   }
 
+  async function registerDataset(kind: GeoMotionRequest["site_data"]["datasets"][number]["kind"], file: File | null) {
+    if (!file) return;
+    const text = await file.text();
+    const records = Math.max(0, text.split(/\r?\n/).filter((line) => line.trim()).length - 1);
+    setDatasetRefs((current) => [
+      ...current.filter((dataset) => dataset.kind !== kind),
+      { kind, filename: file.name, records, provenance: "measured", metadata: { status: "registered_for_backend_import" } },
+    ]);
+  }
+
+  function buildRequest(): GeoMotionRequest {
+    return {
+      project_name: projectName,
+      seed: 66532,
+      mode,
+      holes: toGeoMotionHoles(holes),
+      assumptions,
+      site_data: { datasets: datasetRefs, synthetic_defaults_enabled: true },
+    };
+  }
+
   async function runSimulation() {
     if (holes.length < 3) {
       setError("Import at least three valid blast holes before running GeoMotion.");
@@ -299,14 +340,7 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
     setRunning(true);
     setError("");
     try {
-      const request: GeoMotionRequest = {
-        project_name: projectName,
-        seed: 66532,
-        mode,
-        holes: toGeoMotionHoles(holes),
-        assumptions,
-        site_data: { datasets: [], synthetic_defaults_enabled: true },
-      };
+      const request = buildRequest();
       const response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/geomotion/simulate`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
@@ -341,12 +375,33 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
 
   function exportVectors() {
     if (!result) return;
-    const header = "Block ID,Source X,Source Y,Source Z,Destination X,Destination Y,Destination Z,dX,dY,dZ,Displacement m,Uncertainty m,Facies,Source Class,Destination Class,Grade cpht,Tonnes,Contained Carats,Notice";
+    const header = "Block ID,Source X,Source Y,Source Z,Destination X,Destination Y,Destination Z,dX,dY,dZ,Velocity X,Velocity Y,Velocity Z,Displacement m,Uncertainty m,Peak Impulse m/s,Burden Velocity m/s,Contributing Event,Facies,Source Class,Destination Class,Grade cpht,Tonnes,Contained Carats,Provenance,Notice";
     const rows = result.blocks.map((block) => [
-      block.id, ...block.source, ...block.destination, ...block.vector, block.displacement_m, block.uncertainty_m,
-      block.facies, block.source_class, block.destination_class, block.grade_cpht, block.tonnes, block.contained_carats, `"${NOTICE}"`,
+      block.id, ...block.source, ...block.destination, ...block.vector, ...block.velocity, block.displacement_m, block.uncertainty_m,
+      block.peak_impulse_m_s, block.burden_velocity_m_s, block.contributing_event, block.facies, block.source_class,
+      block.destination_class, block.grade_cpht, block.tonnes, block.contained_carats, block.provenance, `"${NOTICE}"`,
     ].join(","));
     downloadTextFile([header, ...rows].join("\n"), "geomotion_3d_movement_vectors_synthetic.csv", "text/csv");
+  }
+
+  async function exportFullResolution() {
+    setError("");
+    try {
+      const response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/geomotion/export`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify(buildRequest()),
+      });
+      if (!response.ok) throw new Error(response.status === 404 ? "Deploy the GeoMotion Cloud Run backend to enable full 1 m exports." : `Full export failed (${response.status}).`);
+      const url = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "geomotion_1m_full_resolution.csv.gz";
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
   }
 
   const numberField = (label: string, key: keyof GeoMotionAssumptions, suffix: string) => (
@@ -445,6 +500,25 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
             </div>
             <div className="warningBox">These values are synthetic/site assumptions until replaced by mine files or manufacturer records.</div>
           </details>
+          <details className="geomotionAdvanced">
+            <summary>Optional measured mine datasets</summary>
+            {[
+              ["grade_control_blocks", "Grade-control blocks"],
+              ["geological_structures", "Geological structures/joints"],
+              ["preblast_surface", "Pre-blast surface"],
+              ["postblast_surface", "Post-blast surface"],
+              ["movement_monitors", "Movement monitors"],
+              ["dig_limits", "Dig limits"],
+              ["loader_geometry", "Loader/MMU geometry"],
+            ].map(([kind, label]) => (
+              <label key={kind} className="geomotionField" style={{ marginTop: 8 }}>
+                <span>{label}</span>
+                <input className="input" type="file" accept=".csv" onChange={(event) => registerDataset(kind, event.target.files?.[0] ?? null)} />
+              </label>
+            ))}
+            {datasetRefs.map((dataset) => <div key={dataset.kind} className="subtitle">{dataset.kind}: {dataset.filename} ({dataset.records} records, measured)</div>)}
+            <div className="warningBox">Registered files replace synthetic providers only after backend schema validation. Unsupported or incomplete files remain excluded and are never silently treated as measured.</div>
+          </details>
         </section>
 
         <section className="card geomotionRunCard">
@@ -499,7 +573,27 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
                   <option value="impulse">Peak impulse</option>
                 </select>
                 <label className="label"><input type="checkbox" checked={showVectors} onChange={(event) => setShowVectors(event.target.checked)} /> Vectors</label>
+                <select className="input" value={cameraPreset} onChange={(event) => setCameraPreset(event.target.value as typeof cameraPreset)}>
+                  <option value="perspective">Perspective</option>
+                  <option value="plan">Plan</option>
+                  <option value="section">Section</option>
+                </select>
+                <label className="label">Z exaggeration
+                  <select className="input" value={verticalExaggeration} onChange={(event) => setVerticalExaggeration(Number(event.target.value))}>
+                    <option value={1}>1x</option><option value={2}>2x</option><option value={3}>3x</option>
+                  </select>
+                </label>
+                <label className="label">Voxel seam
+                  <select className="input" value={seamPercent} onChange={(event) => setSeamPercent(Number(event.target.value))}>
+                    <option value={0}>Joined</option><option value={1}>1%</option><option value={2}>2%</option><option value={3}>3%</option>
+                  </select>
+                </label>
               </div>
+            </div>
+            <div className="geomotionTimeline">
+              <span>Section clip</span>
+              <input type="range" min={5} max={100} value={clipPercent} onChange={(event) => setClipPercent(Number(event.target.value))} />
+              <span>{clipPercent}%</span>
             </div>
             {view === "movement" ? (
               <div>
@@ -517,7 +611,17 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
                 ) : null}
               </div>
             ) : null}
-            <GeoMotionScene result={result} progress={progress} view={view} colorMode={colorMode} showVectors={showVectors} />
+            <GeoMotionScene
+              result={result}
+              progress={progress}
+              view={view}
+              colorMode={colorMode}
+              showVectors={showVectors}
+              verticalExaggeration={verticalExaggeration}
+              clipPercent={clipPercent}
+              cameraPreset={cameraPreset}
+              seamPercent={seamPercent}
+            />
           </section>
 
           <div className="geomotionResultsGrid">
@@ -551,6 +655,7 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
               {result.validation.warnings.map((warning) => <div key={warning} className="warningBox">{warning}</div>)}
               <div className="geomotionExportButtons">
                 <button className="btn btnPrimary" onClick={exportVectors}>Movement CSV</button>
+                <button className="btn" onClick={exportFullResolution}>Full 1 m CSV.gz</button>
                 <button className="btn" onClick={exportJson}>Result JSON</button>
               </div>
             </section>

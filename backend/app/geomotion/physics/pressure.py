@@ -30,7 +30,7 @@ def event_energy(
     # Reduced-order partition: most explosive energy is consumed by fracture,
     # heat and vibration. This bounded fraction drives bulk displacement.
     strength_penalty = np.clip(tensile_strength_mpa / 25.0, 0.15, 1.4)
-    movement_fraction = float(np.clip(0.045 / strength_penalty, 0.018, 0.12))
+    movement_fraction = float(np.clip(0.0006 / strength_penalty, 0.0002, 0.002))
     charge_length = max(0.1, event.deck_top_z - event.deck_bottom_z)
     stemming_ratio = event.stemming_m / max(event.stemming_m + charge_length, 0.1)
     stemming_effectiveness = float(np.clip(0.35 + 1.8 * stemming_ratio, 0.25, 1.0))
