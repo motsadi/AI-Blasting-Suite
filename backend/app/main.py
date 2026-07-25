@@ -12,6 +12,7 @@ from app.auth import require_auth, require_user
 from app.assets import LoadedAssets, assets_status, load_local_assets
 from app.core_imports import add_core_bundle_to_path
 from app.gcs import REQUIRED_DATASET_FILES, sync_assets_from_gcs
+from app.geomotion import GeoMotionRequest, GeoMotionResponse, simulate as simulate_geomotion
 from app.schemas import AssetsStatus, PredictRequest, PredictResponse
 from app.settings import settings
 
@@ -2287,6 +2288,15 @@ def slope_predict(
         "test_accuracy": test_acc,
         "class_balance": class_balance,
     }
+
+
+@app.post("/v1/geomotion/simulate", response_model=GeoMotionResponse)
+def geomotion_simulate(
+    request: GeoMotionRequest,
+    _token: str = Depends(require_auth),
+):
+    """Run the uncalibrated GeoMotion synthetic demonstration engine."""
+    return simulate_geomotion(request)
 
 
 @app.post("/v1/delay/predict")

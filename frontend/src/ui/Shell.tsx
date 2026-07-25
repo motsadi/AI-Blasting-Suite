@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { DelayDesignPanel } from "./delay/DelayDesignPanel";
+import { GeoMotionPanel } from "./geomotion/GeoMotionPanel";
 
 type Session = { token: string; email: string };
 type Props = {
@@ -52,7 +52,7 @@ const TAB_META: Record<TabKey, { title: string; desc: string; icon: string }> = 
   backbreak: { title: "Back Break", desc: "RF model from CSV", icon: "🔧" },
   flyrock: { title: "Flyrock (ML + Empirical)", desc: "ML + empirical lines", icon: "🪨" },
   slope: { title: "Slope Stability", desc: "Stable/Failure classifier", icon: "🧱" },
-  delay: { title: "Delay Design & Simulation", desc: "Tie-up design, delay assignment and playback", icon: "⏱️" },
+  delay: { title: "GeoMotion 3D", desc: "Physics-informed ore movement and recovery", icon: "🌐" },
 };
 
 const NAV_GROUPS: Array<{ title: string; items: TabKey[] }> = [
@@ -120,13 +120,13 @@ const MODULE_GUIDES: ModuleGuide[] = [
   },
   {
     tab: "delay",
-    when: "Use for blast timing design, delay assignment, and planning/simulation review.",
-    helps: "It supports transparent row, chevron, V-cut, box-cut, point, line, and manual timing designs from imported hole coordinates.",
-    tasks: "CSV import, timing design, playback review, validation, and draft delay assignment export.",
+    when: "Use after preparing a charged-hole tie-up to model synthetic post-blast material movement.",
+    helps: "It combines a mass-conserving physics baseline with a clearly labelled synthetic ML residual to demonstrate ore loss, dilution, recovery, and mixing.",
+    tasks: "Tie-up validation, assumptions review, 3D movement simulation, ore-control analysis, and planning export.",
     instructions: [
-      "Import blast-hole CSV data and confirm X/Y, Hole ID, depth, and charge mappings.",
-      "Choose a timing pattern, adjust delay settings, and assign delays before simulation.",
-      "Export CSV/report outputs as planning drafts for qualified review only.",
+      "Import a blast-hole CSV or load the 182-hole synthetic diamond demonstration.",
+      "Review site assumptions, then compare the physics-only and hybrid demonstration modes.",
+      "Inspect movement, uncertainty, and the ore/waste mixing matrix before exporting planning-only vectors.",
     ],
   },
   {
@@ -582,7 +582,7 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
           ) : tab === "slope" ? (
             <SlopePanel apiBaseUrl={apiBaseUrl} token={session.token} />
           ) : tab === "delay" ? (
-            <DelayDesignPanel />
+            <GeoMotionPanel apiBaseUrl={apiBaseUrl} token={session.token} />
           ) : (
             <PlaceholderPanel title={TAB_META[tab]?.title ?? "Module"} />
           )}

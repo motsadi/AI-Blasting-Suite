@@ -29,6 +29,76 @@ body{
   color: var(--text);
 }
 
+.geomotionWorkspace{ display:grid; gap:14px; }
+.geomotionHero{
+  display:flex; justify-content:space-between; align-items:center; gap:18px; flex-wrap:wrap;
+  padding:22px 24px; border-radius:20px; color:#f8fafc;
+  background:linear-gradient(120deg,#071a2d 0%,#0d3f54 58%,#146b62 100%);
+  box-shadow:0 22px 50px rgba(7,26,45,.18);
+}
+.geomotionHero h2{ margin:3px 0 5px; font-size:28px; letter-spacing:-.035em; }
+.geomotionHero p{ margin:0; max-width:720px; color:rgba(248,250,252,.76); }
+.geomotionEyebrow{ color:#5eead4; font-size:11px; font-weight:900; letter-spacing:.15em; }
+.geomotionNotice{
+  padding:9px 13px; border:1px solid rgba(94,234,212,.38); border-radius:999px;
+  color:#99f6e4; background:rgba(8,47,73,.48); font-size:11px; font-weight:850;
+}
+.geomotionWorkflow{ display:grid; grid-template-columns:repeat(4,1fr); gap:7px; }
+.geomotionStep{
+  padding:9px 11px; border-radius:10px; border:1px solid var(--border);
+  background:#fff; color:var(--muted); font-size:12px; font-weight:800; text-align:center;
+}
+.geomotionStep.active{ color:#075985; border-color:#67e8f9; background:#ecfeff; }
+.geomotionTopGrid{ display:grid; grid-template-columns:1.05fr 1.5fr .8fr; gap:12px; align-items:stretch; }
+.geomotionRunCard{ display:flex; flex-direction:column; }
+.geomotionRunButton{ width:100%; margin-top:auto; padding:12px; }
+.geomotionModelNote{
+  margin:12px 0; padding:10px; border-radius:10px; background:#eff6ff;
+  border:1px solid #bfdbfe; color:#1e3a8a; font-size:11px; line-height:1.45;
+}
+.geomotionMiniGrid{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; margin-top:10px; }
+.geomotionAssumptions{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px 10px; margin-top:9px; }
+.geomotionField{ display:grid; gap:4px; color:var(--muted); font-size:11px; font-weight:700; }
+.geomotionInputWithUnit{ display:flex; align-items:center; gap:5px; }
+.geomotionInputWithUnit .input{ min-width:0; padding:7px 8px; }
+.geomotionInputWithUnit small{ width:38px; color:var(--muted); font-size:10px; }
+.warningBox{
+  margin-top:8px; padding:8px 10px; border-radius:9px; border:1px solid #fde68a;
+  background:#fffbeb; color:#854d0e; font-size:11px; line-height:1.4;
+}
+.geomotionViewerCard{ padding:12px; overflow:hidden; }
+.geomotionViewerHeader{ display:flex; justify-content:space-between; align-items:center; gap:12px; padding:2px 3px 10px; }
+.geomotionViewerControls{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.geomotionViewerControls .input{ width:auto; min-width:145px; }
+.geomotionTimeline{ display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:center; padding:6px 8px 10px; color:var(--muted); font-size:11px; font-weight:700; }
+.geomotionScene{ width:100%; min-height:560px; height:min(68vh,720px); border:1px solid var(--border); border-radius:14px; overflow:hidden; background:#f8fafc; }
+.geomotionResultsGrid{ display:grid; grid-template-columns:1.2fr .85fr 1fr; gap:12px; }
+.geomotionTable{ width:100%; border-collapse:collapse; margin-top:10px; font-size:12px; }
+.geomotionTable th,.geomotionTable td{ padding:8px; text-align:right; border-bottom:1px solid var(--border); }
+.geomotionTable th:first-child,.geomotionTable td:first-child{ text-align:left; }
+.geomotionExportButtons{ display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+.geomotionEmpty{
+  min-height:360px; display:grid; place-content:center; text-align:center; justify-items:center;
+  padding:42px; border:1px dashed #94a3b8; border-radius:18px; background:rgba(255,255,255,.62);
+}
+.geomotionEmpty h3{ margin:14px 0 4px; }
+.geomotionEmpty p{ max-width:650px; color:var(--muted); }
+.geomotionEmptyIcon{
+  display:grid; place-items:center; width:68px; height:68px; border-radius:20px;
+  color:#ccfbf1; background:linear-gradient(140deg,#0f766e,#0369a1); font-size:19px; font-weight:950;
+  box-shadow:0 14px 28px rgba(15,118,110,.22);
+}
+@media (max-width:1100px){
+  .geomotionTopGrid,.geomotionResultsGrid{ grid-template-columns:1fr; }
+  .geomotionAssumptions{ grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media (max-width:680px){
+  .geomotionWorkflow{ grid-template-columns:repeat(2,1fr); }
+  .geomotionAssumptions{ grid-template-columns:1fr; }
+  .geomotionViewerHeader{ align-items:flex-start; flex-direction:column; }
+  .geomotionScene{ min-height:460px; }
+}
+
 a{ color:inherit; }
 
 .container{
