@@ -13,10 +13,15 @@ const DEFAULT_ALLOWED_LOGIN_EMAILS = [
   "Mhiya@debswana.bw",
   "Ttshambane@debswana.bw",
   "Mgaopelo@debswana.bw",
+  "SMoabi@debswana.bw",
+  "MMoleofe@debswana.bw",
 ];
 
 const allowedLoginEmails = new Set(
-  ((import.meta.env.VITE_ALLOWED_LOGIN_EMAILS as string | undefined)?.split(",") ?? DEFAULT_ALLOWED_LOGIN_EMAILS)
+  [
+    ...DEFAULT_ALLOWED_LOGIN_EMAILS,
+    ...((import.meta.env.VITE_ALLOWED_LOGIN_EMAILS as string | undefined)?.split(",") ?? []),
+  ]
     .map((email) => email.trim().toLowerCase())
     .filter(Boolean)
 );
@@ -83,96 +88,74 @@ export function LoginCard({ onLogin }: Props) {
           <div className="loginHeroGlow loginHeroGlowPrimary" />
           <div className="loginHeroGlow loginHeroGlowSecondary" />
 
-          <div className="pill loginPill">AI-assisted blasting intelligence</div>
-          <h1 className="loginHeroTitle">Design safer, smarter and more predictable blasts.</h1>
-          <p className="loginHeroCopy">
-            The AI Blasting Suite brings blast planning, vibration insight, fragmentation forecasting
-            and explainable recommendations into one production-ready workspace.
-          </p>
-
-          <div className="loginHeroVisual" aria-hidden="true">
-            <div className="loginBlastBadge">Blast design + AI</div>
-            <svg viewBox="0 0 520 320" className="loginHeroSvg" role="presentation">
-              <defs>
-                <linearGradient id="blastSky" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stopColor="rgba(15, 23, 42, 0.98)" />
-                  <stop offset="55%" stopColor="rgba(30, 41, 59, 0.96)" />
-                  <stop offset="100%" stopColor="rgba(37, 99, 235, 0.88)" />
-                </linearGradient>
-                <linearGradient id="blastWave" x1="0%" y1="0%" x2="100%" y2="0%">
-                  <stop offset="0%" stopColor="rgba(56, 189, 248, 0.08)" />
-                  <stop offset="50%" stopColor="rgba(96, 165, 250, 0.95)" />
-                  <stop offset="100%" stopColor="rgba(56, 189, 248, 0.08)" />
-                </linearGradient>
-                <linearGradient id="terrain" x1="0%" y1="0%" x2="100%" y2="0%">
-                  <stop offset="0%" stopColor="rgba(249, 115, 22, 0.9)" />
-                  <stop offset="100%" stopColor="rgba(245, 158, 11, 0.94)" />
-                </linearGradient>
-              </defs>
-
-              <rect x="0" y="0" width="520" height="320" rx="28" fill="url(#blastSky)" />
-              <circle cx="96" cy="72" r="56" fill="rgba(56, 189, 248, 0.16)" />
-              <circle cx="420" cy="62" r="78" fill="rgba(59, 130, 246, 0.16)" />
-              <path
-                d="M0 236 C84 214 132 178 194 188 C258 198 286 236 352 226 C418 216 454 184 520 176 L520 320 L0 320 Z"
-                fill="url(#terrain)"
-                opacity="0.96"
-              />
-              <path
-                d="M0 248 C96 226 136 202 196 210 C272 220 304 252 370 244 C430 236 468 210 520 202"
-                fill="none"
-                stroke="rgba(255,255,255,0.24)"
-                strokeWidth="2"
-              />
-
-              <g opacity="0.96">
-                <rect x="112" y="104" width="14" height="120" rx="7" fill="rgba(255,255,255,0.92)" />
-                <rect x="176" y="96" width="14" height="128" rx="7" fill="rgba(255,255,255,0.92)" />
-                <rect x="240" y="114" width="14" height="110" rx="7" fill="rgba(255,255,255,0.92)" />
-                <rect x="304" y="100" width="14" height="124" rx="7" fill="rgba(255,255,255,0.92)" />
-                <rect x="368" y="118" width="14" height="106" rx="7" fill="rgba(255,255,255,0.92)" />
-              </g>
-
-              <g>
-                <circle cx="183" cy="146" r="58" fill="none" stroke="url(#blastWave)" strokeWidth="6" />
-                <circle cx="183" cy="146" r="92" fill="none" stroke="url(#blastWave)" strokeWidth="4" opacity="0.85" />
-                <circle cx="183" cy="146" r="124" fill="none" stroke="url(#blastWave)" strokeWidth="3" opacity="0.55" />
-                <circle cx="183" cy="146" r="10" fill="rgba(255,255,255,0.98)" />
-              </g>
-
-              <g>
-                <rect x="330" y="54" width="116" height="92" rx="18" fill="rgba(255,255,255,0.12)" stroke="rgba(255,255,255,0.24)" />
-                <path d="M354 116 L378 92 L396 104 L424 74" fill="none" stroke="rgba(125,211,252,0.95)" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
-                <circle cx="354" cy="116" r="6" fill="rgba(255,255,255,0.94)" />
-                <circle cx="378" cy="92" r="6" fill="rgba(255,255,255,0.94)" />
-                <circle cx="396" cy="104" r="6" fill="rgba(255,255,255,0.94)" />
-                <circle cx="424" cy="74" r="6" fill="rgba(255,255,255,0.94)" />
-                <path d="M352 132 H428" stroke="rgba(255,255,255,0.2)" strokeWidth="4" strokeLinecap="round" />
-              </g>
-            </svg>
+          <div className="loginBrandRow">
+            <div className="loginBrandMark">B</div>
+            <div>
+              <strong>BlastOps</strong>
+              <span>Mine intelligence workspace</span>
+            </div>
+            <div className="loginLiveBadge"><i /> Operational analytics</div>
           </div>
 
-          <div className="loginFeatureGrid">
-            <div className="loginFeatureCard">
-              <div className="loginFeatureLabel">Prediction</div>
-              <div className="loginFeatureText">Forecast vibration, fragmentation and airblast before execution.</div>
+          <div className="loginEyebrow">FROM BLAST DESIGN TO ORE RECOVERY</div>
+          <h1 className="loginHeroTitle">See the movement.<br />Protect the ore.</h1>
+          <p className="loginHeroCopy">
+            One focused workspace for blast predictions, cost control, wall protection and
+            three-dimensional material movement.
+          </p>
+
+          <div className="loginCommandVisual" aria-hidden="true">
+            <div className="loginVisualHeader">
+              <span>GeoMotion 3D</span>
+              <span>Post-blast movement model</span>
             </div>
-            <div className="loginFeatureCard">
-              <div className="loginFeatureLabel">Optimization</div>
-              <div className="loginFeatureText">Compare scenarios and tune blast parameters with AI support.</div>
+            <svg viewBox="0 0 620 250" className="loginHeroSvg" role="presentation">
+              <defs>
+                <linearGradient id="loginGrid" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stopColor="#38bdf8" />
+                  <stop offset="100%" stopColor="#14b8a6" />
+                </linearGradient>
+                <filter id="loginGlow"><feGaussianBlur stdDeviation="5" result="blur" /></filter>
+              </defs>
+              <path d="M90 174 L280 78 L520 158 L330 238 Z" fill="rgba(8,20,38,.86)" stroke="rgba(125,211,252,.34)" strokeWidth="2" />
+              <g opacity=".25" stroke="#7dd3fc">
+                {[0,1,2,3,4,5,6].map((i) => <path key={`gx-${i}`} d={`M${90+i*31.7} ${174-i*16} L${330+i*31.7} ${238-i*16}`} />)}
+                {[0,1,2,3,4,5].map((i) => <path key={`gy-${i}`} d={`M${90+i*48} ${174+i*16} L${280+i*48} ${78+i*16}`} />)}
+              </g>
+              <g fill="url(#loginGrid)">
+                {[0,1,2,3,4].flatMap((row) => [0,1,2,3,4,5].map((column) => {
+                  const x = 205 + column * 38 + row * 18;
+                  const y = 95 + row * 24 - column * 7;
+                  const ore = row > 1 && column > 1 && column < 5;
+                  return <rect key={`${row}-${column}`} x={x} y={y} width="25" height="25" rx="3" fill={ore ? "#22c55e" : "#475569"} opacity={ore ? ".95" : ".72"} />;
+                }))}
+              </g>
+              <g stroke="#fb923c" strokeWidth="3" strokeLinecap="round" opacity=".9">
+                <path d="M236 121 l-24 -18" /><path d="M306 135 l-22 -24" /><path d="M378 149 l-18 -27" />
+              </g>
+              <circle cx="212" cy="103" r="7" fill="#fdba74" filter="url(#loginGlow)" />
+              <circle cx="284" cy="111" r="7" fill="#fdba74" filter="url(#loginGlow)" />
+              <circle cx="360" cy="122" r="7" fill="#fdba74" filter="url(#loginGlow)" />
+              <text x="38" y="48" fill="#7dd3fc" fontSize="12" fontWeight="700">SOURCE</text>
+              <text x="500" y="220" fill="#5eead4" fontSize="12" fontWeight="700">DESTINATION</text>
+            </svg>
+            <div className="loginVisualMetrics">
+              <div><span>Movement</span><strong>3D vectors</strong></div>
+              <div><span>Ore control</span><strong>Recovery</strong></div>
+              <div><span>Risk</span><strong>Dilution</strong></div>
             </div>
-            <div className="loginFeatureCard">
-              <div className="loginFeatureLabel">Explainability</div>
-              <div className="loginFeatureText">Understand which variables drive outcomes and recommended actions.</div>
-            </div>
+          </div>
+
+          <div className="loginCapabilityRow">
+            <span>Prediction</span><span>Cost optimisation</span><span>GeoMotion 3D</span><span>Safety analytics</span>
           </div>
         </section>
 
         <section className="card loginCardPanel">
-          <div className="pill" style={{ display: "inline-flex", marginBottom: 10 }}>Secure access</div>
-          <div className="loginCardTitle">Sign in to your blasting workspace</div>
+          <div className="loginAccessIcon">↗</div>
+          <div className="loginCardTitle">Welcome back</div>
           <div className="subtitle">
-            Use your email to receive a one-time magic code and continue into the platform.
+            Sign in securely to continue to the blasting workspace.
           </div>
 
           <div className="loginProgress">

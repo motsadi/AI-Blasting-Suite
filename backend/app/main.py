@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import json
+import csv
+import gzip
+import io
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from app.auth import require_auth, require_user
 from app.assets import LoadedAssets, assets_status, load_local_assets
 from app.core_imports import add_core_bundle_to_path
 from app.gcs import REQUIRED_DATASET_FILES, sync_assets_from_gcs
+from app.geomotion import GeoMotionRequest, GeoMotionResponse, simulate as simulate_geomotion
+from app.geomotion.io import parse_block_model_csv
 from app.schemas import AssetsStatus, PredictRequest, PredictResponse
 from app.settings import settings
 
@@ -1911,6 +1917,8 @@ def flyrock_predict(
 
     return {
         "prediction": yhat,
+        "dataset_used": DATASETS["flyrock"],
+        "dataset_source": "gcs_managed",
         "train_r2": score,
         "test_r2": test_score,
         "features": list(X.columns),
@@ -2095,6 +2103,8 @@ def backbreak_predict(
 
     return {
         "prediction": yhat,
+        "dataset_used": DATASETS["backbreak"],
+        "dataset_source": "gcs_managed",
         "features": keep,
         "feature_stats": stats,
         "feature_importance": feat_importance,
@@ -2281,12 +2291,127 @@ def slope_predict(
         "prob_stable": prob,
         "prediction": prob,
         "predicted_class": predicted_class,
+        "dataset_used": DATASETS["slope"],
+        "dataset_source": "gcs_managed",
         "feature_stats": stats,
         "features": list(X.columns),
         "train_accuracy": train_acc,
         "test_accuracy": test_acc,
         "class_balance": class_balance,
     }
+
+
+@app.post("/v1/geomotion/simulate", response_model=GeoMotionResponse)
+def geomotion_simulate(
+    request: GeoMotionRequest,
+    _token: str = Depends(require_auth),
+):
+    """Run the uncalibrated GeoMotion synthetic demonstration engine."""
+    return simulate_geomotion(request)
+
+
+async def _geomotion_request_with_block_model(
+    request_json: str,
+    block_model: UploadFile,
+) -> GeoMotionRequest:
+    try:
+        payload = json.loads(request_json)
+        raw = await block_model.read()
+        if len(raw) > 150 * 1024 * 1024:
+            raise ValueError("Block model exceeds the 150 MB upload limit.")
+        blocks = parse_block_model_csv(raw.decode("utf-8-sig"))
+        if not blocks:
+            raise ValueError("Block model contains no valid cells.")
+        invalid_sizes = [
+            block for block in blocks
+            if any(abs(float(block[key]) - 1.0) > 0.01 for key in ("size_x_m", "size_y_m", "size_z_m"))
+        ]
+        if invalid_sizes:
+            raise ValueError(
+                f"{len(invalid_sizes)} block(s) are not 1 m × 1 m × 1 m. Resample the mining block model before simulation."
+            )
+        payload["block_model"] = blocks
+        request = GeoMotionRequest.model_validate(payload)
+    except (UnicodeDecodeError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return request
+
+
+@app.post("/v1/geomotion/simulate/upload", response_model=GeoMotionResponse)
+async def geomotion_simulate_upload(
+    request_json: str = Form(...),
+    block_model: UploadFile = File(...),
+    _token: str = Depends(require_auth),
+):
+    """Run GeoMotion with a validated measured 1 m × 1 m × 1 m mining block model."""
+    request = await _geomotion_request_with_block_model(request_json, block_model)
+    return simulate_geomotion(request)
+
+
+def _geomotion_export_response(request: GeoMotionRequest):
+    full_request = request.model_copy(
+        update={
+            "assumptions": request.assumptions.model_copy(
+                update={"max_visual_blocks": 500000}
+            )
+        }
+    )
+    result = simulate_geomotion(full_request)
+    buffer = io.StringIO()
+    fields = [
+        "id", "source_x", "source_y", "source_z", "destination_x", "destination_y",
+        "destination_z", "dx", "dy", "dz", "displacement_m", "uncertainty_m",
+        "peak_impulse_m_s", "burden_velocity_m_s", "contributing_event", "facies",
+        "source_class", "destination_class", "grade_cpht", "tonnes", "contained_carats",
+        "provenance",
+    ]
+    writer = csv.DictWriter(buffer, fieldnames=fields)
+    writer.writeheader()
+    for block in result["blocks"]:
+        writer.writerow(
+            {
+                "id": block["id"],
+                "source_x": block["source"][0],
+                "source_y": block["source"][1],
+                "source_z": block["source"][2],
+                "destination_x": block["destination"][0],
+                "destination_y": block["destination"][1],
+                "destination_z": block["destination"][2],
+                "dx": block["vector"][0],
+                "dy": block["vector"][1],
+                "dz": block["vector"][2],
+                **{field: block[field] for field in fields[10:]},
+            }
+        )
+    compressed = gzip.compress(buffer.getvalue().encode("utf-8"), compresslevel=6)
+    return StreamingResponse(
+        io.BytesIO(compressed),
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": 'attachment; filename="geomotion_1m_full_resolution.csv.gz"',
+            "X-GeoMotion-Notice": "Synthetic Demonstration - Uncalibrated - Planning Only",
+        },
+    )
+
+
+@app.post("/v1/geomotion/export")
+def geomotion_export(
+    request: GeoMotionRequest,
+    _token: str = Depends(require_auth),
+):
+    """Recompute and stream the full-resolution movement table as gzip CSV."""
+    return _geomotion_export_response(request)
+
+
+@app.post("/v1/geomotion/export/upload")
+async def geomotion_export_upload(
+    request_json: str = Form(...),
+    block_model: UploadFile = File(...),
+    _token: str = Depends(require_auth),
+):
+    """Export movement vectors for a measured 1 m mining block model."""
+    request = await _geomotion_request_with_block_model(request_json, block_model)
+    return _geomotion_export_response(request)
 
 
 @app.post("/v1/delay/predict")

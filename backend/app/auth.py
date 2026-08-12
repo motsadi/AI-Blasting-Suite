@@ -7,6 +7,11 @@ import httpx
 
 from app.settings import settings
 
+REQUIRED_AUTH_EMAILS = {
+    "smoabi@debswana.bw",
+    "mmoleofe@debswana.bw",
+}
+
 
 def _extract_email(user: dict[str, Any]) -> str:
     for key in ("email", "email_address", "emailAddress"):
@@ -21,7 +26,7 @@ def _normalize_email(email: str) -> str:
 
 
 def _allowed_auth_emails() -> set[str]:
-    return {
+    return REQUIRED_AUTH_EMAILS | {
         _normalize_email(email)
         for email in settings.allowed_auth_emails.split(",")
         if email.strip()

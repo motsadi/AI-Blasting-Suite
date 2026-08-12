@@ -29,7 +29,9 @@ class Settings(BaseSettings):
         "Tgalefete@debswana.bw,"
         "Mhiya@debswana.bw,"
         "Ttshambane@debswana.bw,"
-        "Mgaopelo@debswana.bw"
+        "Mgaopelo@debswana.bw,"
+        "SMoabi@debswana.bw,"
+        "MMoleofe@debswana.bw"
     )
 
 

@@ -1,5 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { DelayDesignPanel } from "./delay/DelayDesignPanel";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+
+const GeoMotionPanel = lazy(() =>
+  import("./geomotion/GeoMotionPanel").then((module) => ({ default: module.GeoMotionPanel }))
+);
 
 type Session = { token: string; email: string };
 type Props = {
@@ -52,7 +56,7 @@ const TAB_META: Record<TabKey, { title: string; desc: string; icon: string }> = 
   backbreak: { title: "Back Break", desc: "RF model from CSV", icon: "🔧" },
   flyrock: { title: "Flyrock (ML + Empirical)", desc: "ML + empirical lines", icon: "🪨" },
   slope: { title: "Slope Stability", desc: "Stable/Failure classifier", icon: "🧱" },
-  delay: { title: "Delay Design & Simulation", desc: "Tie-up design, delay assignment and playback", icon: "⏱️" },
+  delay: { title: "GeoMotion 3D", desc: "Physics-informed ore movement and recovery", icon: "🌐" },
 };
 
 const NAV_GROUPS: Array<{ title: string; items: TabKey[] }> = [
@@ -61,6 +65,68 @@ const NAV_GROUPS: Array<{ title: string; items: TabKey[] }> = [
   { title: "Safety / Geo", items: ["slope", "backbreak", "flyrock"] },
   { title: "Admin", items: ["data"] },
 ];
+
+const MODULE_DATASETS: Record<"flyrock" | "backbreak" | "slope", string> = {
+  flyrock: "flyrock_synth.csv",
+  backbreak: "Backbreak.csv",
+  slope: "slope data.csv",
+};
+
+function ModuleHero({
+  eyebrow,
+  title,
+  description,
+  dataset,
+  children,
+}: {
+  eyebrow: string;
+  title: string;
+  description: string;
+  dataset?: string;
+  children?: ReactNode;
+}) {
+  return (
+    <section className="moduleHero">
+      <div>
+        <div className="moduleEyebrow">{eyebrow}</div>
+        <h1 className="moduleTitle">{title}</h1>
+        <p className="moduleDescription">{description}</p>
+      </div>
+      <div className="moduleHeroActions">
+        {dataset ? (
+          <div className="cloudDataset" title={`Managed dataset: ${dataset}`}>
+            <span className="cloudDatasetIcon">☁</span>
+            <span>
+              <strong>Cloud dataset ready</strong>
+              <small>{dataset}</small>
+            </span>
+          </div>
+        ) : null}
+        {children}
+      </div>
+    </section>
+  );
+}
+
+function ResultStatus({
+  tone,
+  label,
+  detail,
+}: {
+  tone: "safe" | "watch" | "critical" | "neutral";
+  label: string;
+  detail: string;
+}) {
+  return (
+    <div className={`resultStatus resultStatus-${tone}`}>
+      <span className="resultStatusDot" />
+      <div>
+        <strong>{label}</strong>
+        <span>{detail}</span>
+      </div>
+    </div>
+  );
+}
 
 const MODULE_GUIDES: ModuleGuide[] = [
   {
@@ -120,13 +186,13 @@ const MODULE_GUIDES: ModuleGuide[] = [
   },
   {
     tab: "delay",
-    when: "Use for blast timing design, delay assignment, and planning/simulation review.",
-    helps: "It supports transparent row, chevron, V-cut, box-cut, point, line, and manual timing designs from imported hole coordinates.",
-    tasks: "CSV import, timing design, playback review, validation, and draft delay assignment export.",
+    when: "Use after preparing a charged-hole tie-up to model synthetic post-blast material movement.",
+    helps: "It combines a mass-conserving physics baseline with a clearly labelled synthetic ML residual to demonstrate ore loss, dilution, recovery, and mixing.",
+    tasks: "Tie-up validation, assumptions review, 3D movement simulation, ore-control analysis, and planning export.",
     instructions: [
-      "Import blast-hole CSV data and confirm X/Y, Hole ID, depth, and charge mappings.",
-      "Choose a timing pattern, adjust delay settings, and assign delays before simulation.",
-      "Export CSV/report outputs as planning drafts for qualified review only.",
+      "Import a blast-hole CSV or load the 182-hole synthetic diamond demonstration.",
+      "Review site assumptions, then compare the physics-only and hybrid demonstration modes.",
+      "Inspect movement, uncertainty, and the ore/waste mixing matrix before exporting planning-only vectors.",
     ],
   },
   {
@@ -165,6 +231,25 @@ const MODULE_GUIDES: ModuleGuide[] = [
 ];
 
 const authHeaders = (token: string) => ({ authorization: `Bearer ${token}` });
+
+async function readApiJson(res: Response) {
+  const raw = await res.text();
+  let json: any = {};
+  if (raw) {
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      if (!res.ok) {
+        throw new Error(`Cloud service unavailable (${res.status}). Try again when the connection is restored.`);
+      }
+      throw new Error("The cloud service returned an unreadable response.");
+    }
+  }
+  if (!res.ok) {
+    throw new Error(String(json?.detail ?? json?.error ?? `Cloud service unavailable (${res.status}).`));
+  }
+  return json;
+}
 
 const LOCAL_ACTIVITY_STORAGE_KEY = "ai_blasting_suite_activity_v1";
 
@@ -266,7 +351,6 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
   }>({ file: null, rows: [], columns: [] });
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [theme, setTheme] = useState<"System" | "Light" | "Dark">("System");
-  const [accent, setAccent] = useState<"blue" | "green" | "dark-blue">("blue");
 
   async function refreshActivity() {
     if (!apiBaseUrl) return;
@@ -433,10 +517,6 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
     }
   }, [theme]);
 
-  useEffect(() => {
-    document.body.dataset.accent = accent;
-  }, [accent]);
-
   return (
     <div className="container">
       <div className="header">
@@ -446,17 +526,17 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
           </button>
           <div className="headerBrand">
             <button className="headerTitle" onClick={() => setTab("home")} aria-label="Go to home">
-              Blasting Optimization Suite
+              BlastOps
             </button>
             <div className="headerSubtext">
-              AI-driven blast design, cost-aware optimisation and safety analytics in one workspace.
+              Mine blast decision support
             </div>
           </div>
         </div>
 
         <div className="headerControls">
           <label className="selectWrap">
-            <span className="label">Dataset</span>
+            <span className="label">Active site data</span>
             <select
               className="select"
               value={activeCombinedDataset}
@@ -471,31 +551,20 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
               ))}
             </select>
           </label>
-          <label className="selectWrap">
-            <span className="label">Theme</span>
-            <select className="select" value={theme} onChange={(e) => setTheme(e.target.value as typeof theme)}>
-              <option value="System">System</option>
-              <option value="Light">Light</option>
-              <option value="Dark">Dark</option>
-            </select>
-          </label>
-          <label className="selectWrap">
-            <span className="label">Accent</span>
-            <select className="select" value={accent} onChange={(e) => setAccent(e.target.value as typeof accent)}>
-              <option value="blue">blue</option>
-              <option value="green">green</option>
-              <option value="dark-blue">dark-blue</option>
-            </select>
-          </label>
-          <button className="btn" onClick={() => window.location.reload()}>
-            Reload
+          <button
+            className="iconBtn"
+            onClick={() => setTheme((current) => current === "Dark" ? "Light" : "Dark")}
+            aria-label="Toggle colour theme"
+            title="Toggle colour theme"
+          >
+            {theme === "Dark" ? "☀" : "◐"}
           </button>
         </div>
 
         <div className="headerRight">{headerRight}</div>
       </div>
 
-      <div className="activityBar">
+      <div className="activityBar" hidden={tab !== "home"}>
         <div className="activityMeta">
           <span className="pill">Current user: {activity?.current_user?.email ?? session.email}</span>
           <span className="pill">
@@ -525,17 +594,13 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
                         <span>{meta.icon}</span>
                         <span>{meta.title}</span>
                       </div>
-                      <div className="sidebarButtonDesc">{meta.desc}</div>
                     </button>
                   );
                 })}
               </div>
             ))}
 
-            <div className="sidebarFooter">
-              <div className="label">Backend</div>
-              <div className="mono">{apiBaseUrl || "(set VITE_API_BASE_URL)"}</div>
-            </div>
+            <div className="sidebarFooter cloudServiceStatus"><span className="resultStatusDot" /> Cloud services connected</div>
           </aside>
         )}
 
@@ -582,7 +647,9 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
           ) : tab === "slope" ? (
             <SlopePanel apiBaseUrl={apiBaseUrl} token={session.token} />
           ) : tab === "delay" ? (
-            <DelayDesignPanel />
+            <Suspense fallback={<div className="card"><div className="subtitle">Loading GeoMotion 3D…</div></div>}>
+              <GeoMotionPanel apiBaseUrl={apiBaseUrl} token={session.token} />
+            </Suspense>
           ) : (
             <PlaceholderPanel title={TAB_META[tab]?.title ?? "Module"} />
           )}
@@ -705,40 +772,8 @@ function HomePanel({
       </div>
 
       <div className="card">
-        <div className="sectionTitle">Module guide</div>
-        <div className="homeSubtitle">
-          Read how each module is used, what decision it supports, and the kinds of tasks it is best suited for.
-        </div>
-        <div className="guideGrid" style={{ marginTop: 14 }}>
-          {MODULE_GUIDES.map((guide) => (
-            <div key={guide.tab} className="guideCard">
-              <div className="guideHeader">
-                <div className="homeCardIcon">{TAB_META[guide.tab].icon}</div>
-                <div>
-                  <div className="homeCardTitle">{TAB_META[guide.tab].title}</div>
-                  <div className="guideMeta">{TAB_META[guide.tab].desc}</div>
-                </div>
-              </div>
-              <div className="guideRow"><strong>When to use:</strong> {guide.when}</div>
-              <div className="guideRow"><strong>How it helps:</strong> {guide.helps}</div>
-              <div className="guideRow"><strong>Best for:</strong> {guide.tasks}</div>
-              <div className="guideSteps">
-                {guide.instructions.map((step) => (
-                  <div key={step} className="guideStep">{step}</div>
-                ))}
-              </div>
-              <div className="homeCardActions">
-                <button className="btn btnPrimary" onClick={() => onOpen(guide.tab)}>
-                  Open module
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="sectionTitle">Quick access</div>
+        <div className="sectionTitle">Start a task</div>
+        <div className="homeSubtitle">Choose a common operational workflow. Every module remains available in the navigation.</div>
         <div className="homeGrid">
           <div className="homeCard">
             <div className="homeCardIcon">{TAB_META.predict.icon}</div>
@@ -856,7 +891,7 @@ function DataPanel({
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/data/default`, {
         headers: { ...authHeaders(token) },
       });
-      const json = await res.json();
+      const json = await readApiJson(res);
       if (!res.ok) throw new Error(json?.error ?? "Preview failed");
       const rows = json.sample ?? [];
       const cols = json.columns ?? [];
@@ -1362,7 +1397,7 @@ function PredictPanel({
           }),
         });
       }
-      const json = await res.json();
+      const json = await readApiJson(res);
       if (!res.ok || json?.error) {
         throw new Error(json?.detail ?? json?.error ?? `HTTP ${res.status}`);
       }
@@ -1705,7 +1740,6 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [inputs, setInputs] = useState<Record<string, number>>({});
-  const [file, setFile] = useState<File | null>(null);
   const [xAxis, setXAxis] = useState("");
   const [yAxis, setYAxis] = useState("");
   const [surface, setSurface] = useState<any>(null);
@@ -1716,14 +1750,13 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
     setErr(null);
     try {
       const fd = new FormData();
-      if (file) fd.append("file", file);
       if (Object.keys(inputs).length) fd.append("inputs_json", JSON.stringify(inputs));
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/flyrock/predict`, {
         method: "POST",
         headers: { ...authHeaders(token) },
         body: fd,
       });
-      const json = await res.json();
+      const json = await readApiJson(res);
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Flyrock failed");
       setResp(json);
       if (json?.feature_stats && !Object.keys(inputs).length) {
@@ -1750,24 +1783,12 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
     const y = yName ?? yAxis;
     if (!x || !y || x === y) return;
     try {
-      let res: Response;
-      if (file) {
-        const fd = new FormData();
-        fd.append("file", file);
-        fd.append("payload_json", JSON.stringify({ x_name: x, y_name: y, inputs_json: inputs }));
-        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/flyrock/surface/upload`, {
-          method: "POST",
-          headers: { ...authHeaders(token) },
-          body: fd,
-        });
-      } else {
-        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/flyrock/surface`, {
-          method: "POST",
-          headers: { "content-type": "application/json", ...authHeaders(token) },
-          body: JSON.stringify({ x_name: x, y_name: y, inputs_json: inputs }),
-        });
-      }
-      const json = await res.json();
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/flyrock/surface`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...authHeaders(token) },
+        body: JSON.stringify({ x_name: x, y_name: y, inputs_json: inputs }),
+      });
+      const json = await readApiJson(res);
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Surface failed");
       setSurface(json);
     } catch (e: any) {
@@ -1797,6 +1818,10 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
   }, [xAxis, yAxis]);
 
   useEffect(() => {
+    void run();
+  }, [apiBaseUrl, token]);
+
+  useEffect(() => {
     if (!resp?.feature_stats || !Object.keys(inputs).length) return;
     const t = window.setTimeout(() => {
       run();
@@ -1806,33 +1831,45 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
   }, [inputs]);
 
   return (
-    <div className="card">
+    <div className="modulePage">
+      <ModuleHero
+        eyebrow="Safety screening"
+        title="Flyrock risk"
+        description="Estimate throw distance, compare the ML result with an empirical check, and review the operating envelope before approving an exclusion zone."
+        dataset={MODULE_DATASETS.flyrock}
+      >
+        <button className="btn btnPrimary" onClick={run} disabled={busy}>
+          {busy ? "Updating…" : "Update assessment"}
+        </button>
+      </ModuleHero>
+      <div className="card">
       <div className="grid2">
         <div>
-          <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Flyrock — ML + Empirical</div>
-          <div className="subtitle">Load a CSV to train and explore the surface.</div>
+          <div className="sectionTitle">Current assessment</div>
+          {resp?.prediction != null ? (
+            <ResultStatus
+              tone={Number(resp.prediction) >= 300 ? "critical" : Number(resp.prediction) >= 150 ? "watch" : "safe"}
+              label={Number(resp.prediction) >= 300 ? "High throw potential" : Number(resp.prediction) >= 150 ? "Review controls" : "Lower predicted throw"}
+              detail="Screening result only — apply the mine's approved exclusion-zone standard."
+            />
+          ) : (
+            <ResultStatus tone="neutral" label={busy ? "Loading cloud model" : "Assessment not available"} detail="The managed flyrock dataset is loaded automatically." />
+          )}
 
-          <div style={{ marginTop: 10 }}>
-            <label className="label">Load CSV</label>
-            <input className="input" type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-          </div>
-
-          <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-            <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict"}</button>
-            <button className="btn" onClick={() => runSurface()} disabled={!resp?.features?.length}>Redraw surface</button>
-          </div>
-
-          <div className="kpi" style={{ marginTop: 12 }}>
+          <div className="kpi kpiFeatured" style={{ marginTop: 12 }}>
             <div className="kpiTitle">Predicted flyrock</div>
-            <div className="kpiValue">{resp?.prediction != null ? formatNum(resp.prediction) : "—"}</div>
-            {resp?.train_r2 != null && <div className="label">Train R²: {Number(resp.train_r2).toFixed(3)}</div>}
-            {resp?.test_r2 != null && <div className="label">Test R²: {Number(resp.test_r2).toFixed(3)}</div>}
+            <div className="kpiValue">{resp?.prediction != null ? `${formatNum(resp.prediction)} m` : "—"}</div>
           </div>
 
-          <div className="kpi" style={{ marginTop: 10 }}>
-            <div className="kpiTitle">Empirical estimate</div>
-            <div className="kpiValue">{empiricalAuto ? formatNum(empiricalAuto.value) : "—"} m</div>
-            {empiricalAuto?.method && <div className="label">{empiricalAuto.method}</div>}
+          <div className="grid2" style={{ marginTop: 10 }}>
+            <div className="kpi">
+              <div className="kpiTitle">Empirical check</div>
+              <div className="kpiValue">{empiricalAuto ? `${formatNum(empiricalAuto.value)} m` : "—"}</div>
+            </div>
+            <div className="kpi">
+              <div className="kpiTitle">Model validation R²</div>
+              <div className="kpiValue">{resp?.test_r2 != null ? Number(resp.test_r2).toFixed(2) : "—"}</div>
+            </div>
           </div>
 
           {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
@@ -1849,7 +1886,8 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
 
           {resp?.feature_stats && (
             <div style={{ marginTop: 12, maxHeight: 420, overflow: "auto" }}>
-              <div className="label">Adjust Inputs</div>
+              <div className="sectionTitle">Scenario inputs</div>
+              <div className="subtitle">Move only the parameters being assessed; all other values remain at the cloud dataset median.</div>
               {Object.entries(resp.feature_stats).map(([k, stat]: any) => (
                 <div key={k} style={{ marginTop: 10 }}>
                   <div style={{ display: "flex", justifyContent: "space-between" }}>
@@ -1873,7 +1911,8 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
 
         <div>
           <div className="card">
-            <div className="label">Surface axes</div>
+            <div className="sectionTitle">Operating envelope</div>
+            <div className="subtitle">Choose two parameters to see where predicted throw increases.</div>
             <div className="grid2" style={{ marginTop: 8 }}>
               <select className="input" value={xAxis} onChange={(e) => setXAxis(e.target.value)}>
                 {(resp?.features ?? []).map((f: string) => (
@@ -1900,11 +1939,10 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
                 Run prediction to enable the flyrock surface.
               </div>
             )}
-            <div className="subtitle" style={{ marginTop: 8 }}>
-              Empirical: auto-chooses Lundborg (1981), McKenzie/SDoB, or legacy d-only.
-            </div>
+            {empiricalAuto?.method ? <div className="subtitle" style={{ marginTop: 8 }}>Empirical reference: {empiricalAuto.method}</div> : null}
           </div>
         </div>
+      </div>
       </div>
     </div>
   );
@@ -1914,7 +1952,6 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   const [resp, setResp] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [file, setFile] = useState<File | null>(null);
   const [params, setParams] = useState({
     H: 10,
     beta: 30,
@@ -1927,7 +1964,6 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
   const modelReadyRef = useRef(false);
   const seededFromDataRef = useRef(false);
   const backendUnavailableRef = useRef(false);
-  const fileKey = file?.name ?? "__default__";
   const probStable = useMemo(() => {
     const direct = toNum(resp?.prob_stable ?? resp?.prediction_probability ?? resp?.probability ?? resp?.prediction);
     if (Number.isFinite(direct)) {
@@ -2008,7 +2044,6 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
         return;
       }
       const fd = new FormData();
-      if (file) fd.append("file", file);
       fd.append("inputs_json", JSON.stringify(buildInputsFromParams()));
       const urls = slopeUrls();
       let lastErr: any = null;
@@ -2097,7 +2132,8 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     backendUnavailableRef.current = false;
     setResp(null);
     setErr(null);
-  }, [fileKey]);
+    void run();
+  }, [apiBaseUrl, token]);
 
   useEffect(() => {
     if (!modelReadyRef.current || busy) return;
@@ -2107,41 +2143,37 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
     return () => window.clearTimeout(id);
   }, [params]);
   return (
-    <div className="card">
+    <div className="modulePage">
+      <ModuleHero
+        eyebrow="Geotechnical screening"
+        title="Slope stability"
+        description="Assess the likelihood of stable conditions from bench geometry, material strength, unit weight, and pore-pressure ratio."
+        dataset={MODULE_DATASETS.slope}
+      >
+        <button className="btn btnPrimary" onClick={() => run()} disabled={busy}>
+          {busy ? "Assessing…" : "Reassess slope"}
+        </button>
+      </ModuleHero>
+      <div className="card">
       <div className="grid2">
         <div>
-          <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Slope Stability — Stable / Failure (ML)</div>
+          <div className="sectionTitle">Stability result</div>
+          <ResultStatus
+            tone={probStable == null ? "neutral" : probStable >= 0.7 ? "safe" : probStable >= 0.5 ? "watch" : "critical"}
+            label={probStable == null ? (busy ? "Assessing cloud dataset" : "Assessment not available") : probStable >= 0.7 ? "Stable indication" : probStable >= 0.5 ? "Marginal indication" : "Failure indication"}
+            detail={probStable == null ? "Site reference data is loaded automatically." : `${(probStable * 100).toFixed(1)}% model probability of stable conditions.`}
+          />
 
-          <div style={{ marginTop: 14, fontWeight: 700, fontSize: 15 }}>Data</div>
-          <div style={{ marginTop: 6 }}>
-            <label className="label">Load CSV</label>
-            <input className="input" type="file" accept=".csv,.xlsx,.xls" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-          </div>
-
-          <div style={{ marginTop: 8 }}>
-            <button className="btn btnPrimary" onClick={() => run()} disabled={busy}>
-              {busy ? "Running..." : "Load & Predict"}
-            </button>
-          </div>
-
-          <div style={{ marginTop: 14, fontWeight: 700, fontSize: 15 }}>Parameters</div>
+          <div className="sectionTitle" style={{ marginTop: 18 }}>Slope parameters</div>
+          <div className="subtitle">Adjust measured or design values. The result updates automatically.</div>
           <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-            <SliderField label="H (m)" value={params.H} min={1} max={50} step={0.5} onChange={(v) => setParams({ ...params, H: v })} />
-            <SliderField label="β (deg)" value={params.beta} min={5} max={80} step={0.5} onChange={(v) => setParams({ ...params, beta: v })} />
-            <SliderField label="c (kPa)" value={params.c} min={1} max={200} step={0.5} onChange={(v) => setParams({ ...params, c: v })} />
-            <SliderField label="φ (deg)" value={params.phi} min={5} max={60} step={0.5} onChange={(v) => setParams({ ...params, phi: v })} />
-            <SliderField label="γ (kN/m³)" value={params.gamma} min={14} max={28} step={0.1} onChange={(v) => setParams({ ...params, gamma: v })} />
-            <SliderField label="ru (–)" value={params.ru} min={0} max={1} step={0.01} onChange={(v) => setParams({ ...params, ru: v })} />
-            <SliderField label="B (m) — sketch only" value={params.B} min={0} max={30} step={0.5} onChange={(v) => setParams({ ...params, B: v })} />
-          </div>
-
-          <div className="kpi" style={{ marginTop: 12 }}>
-            <div className="kpiTitle">Prediction</div>
-            <div className="kpiValue" style={{ fontSize: 20 }}>
-              {probStable != null
-                ? `${probStable >= 0.5 ? "Stable" : "Failure"} (${(probStable * 100).toFixed(1)}%)`
-                : "—"}
-            </div>
+            <SliderField label="Bench height H (m)" value={params.H} min={1} max={50} step={0.5} onChange={(v) => setParams({ ...params, H: v })} />
+            <SliderField label="Slope angle β (°)" value={params.beta} min={5} max={80} step={0.5} onChange={(v) => setParams({ ...params, beta: v })} />
+            <SliderField label="Cohesion c (kPa)" value={params.c} min={1} max={200} step={0.5} onChange={(v) => setParams({ ...params, c: v })} />
+            <SliderField label="Friction angle φ (°)" value={params.phi} min={5} max={60} step={0.5} onChange={(v) => setParams({ ...params, phi: v })} />
+            <SliderField label="Unit weight γ (kN/m³)" value={params.gamma} min={14} max={28} step={0.1} onChange={(v) => setParams({ ...params, gamma: v })} />
+            <SliderField label="Pore-pressure ratio ru" value={params.ru} min={0} max={1} step={0.01} onChange={(v) => setParams({ ...params, ru: v })} />
+            <SliderField label="Bench width B (m)" value={params.B} min={0} max={30} step={0.5} onChange={(v) => setParams({ ...params, B: v })} />
           </div>
           {err ? <div className="error" style={{ marginTop: 10 }}>{err}</div> : null}
           {probStable != null && (
@@ -2167,6 +2199,8 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
         </div>
 
         <div className="card">
+          <div className="sectionTitle">Bench profile</div>
+          <div className="subtitle">Visual geometry check; not a limit-equilibrium analysis.</div>
           <SlopeSketch
             H={params.H}
             beta={params.beta}
@@ -2174,6 +2208,7 @@ function SlopePanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string }
             prob={probStable ?? undefined}
           />
         </div>
+      </div>
       </div>
     </div>
   );
@@ -2587,7 +2622,7 @@ function FeaturePanel({
           headers: { ...authHeaders(token) },
         });
       }
-      const json = await res.json();
+      const json = await readApiJson(res);
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Failed");
       setResp(json);
       if (json?.outputs?.length) {
@@ -2791,7 +2826,6 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
   const [surfaceBusy, setSurfaceBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [inputs, setInputs] = useState<Record<string, number>>({});
-  const [file, setFile] = useState<File | null>(null);
   const [xAxis, setXAxis] = useState("");
   const [yAxis, setYAxis] = useState("");
   const [surface, setSurface] = useState<any>(null);
@@ -2836,14 +2870,13 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
     setErr(null);
     try {
       const fd = new FormData();
-      if (file) fd.append("file", file);
       if (Object.keys(inputs).length) fd.append("inputs_json", JSON.stringify(inputs));
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/backbreak/predict`, {
         method: "POST",
         headers: { ...authHeaders(token) },
         body: fd,
       });
-      const json = await res.json();
+      const json = await readApiJson(res);
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Backbreak failed");
       setResp(json);
       if (json?.feature_stats && !Object.keys(inputs).length) {
@@ -2877,23 +2910,11 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
     if (!x || !y || x === y) return;
     setSurfaceBusy(true);
     try {
-      let res: Response;
-      if (file) {
-        const fd = new FormData();
-        fd.append("file", file);
-        fd.append("payload_json", JSON.stringify({ x_name: x, y_name: y, inputs_json: inputs }));
-        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/backbreak/surface/upload`, {
-          method: "POST",
-          headers: { ...authHeaders(token) },
-          body: fd,
-        });
-      } else {
-        res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/backbreak/surface`, {
-          method: "POST",
-          headers: { "content-type": "application/json", ...authHeaders(token) },
-          body: JSON.stringify({ x_name: x, y_name: y, inputs_json: inputs }),
-        });
-      }
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/backbreak/surface`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...authHeaders(token) },
+        body: JSON.stringify({ x_name: x, y_name: y, inputs_json: inputs }),
+      });
       const raw = await res.text();
       let json: any = {};
       try {
@@ -2938,30 +2959,38 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
   }, [inputs]);
 
   useEffect(() => {
+    void run();
+  }, [apiBaseUrl, token]);
+
+  useEffect(() => {
     if (!resp?.features?.length || !xAxis || !yAxis || xAxis === yAxis) return;
     void runSurface(xAxis, yAxis);
   }, [xAxis, yAxis]);
 
   return (
-    <div className="card">
+    <div className="modulePage">
+      <ModuleHero
+        eyebrow="Wall control"
+        title="Backbreak assessment"
+        description="Screen perimeter damage, test the most influential design variables, and compare alternatives before final-wall blast review."
+        dataset={MODULE_DATASETS.backbreak}
+      >
+        <button className="btn btnPrimary" onClick={run} disabled={busy}>
+          {busy ? "Updating…" : "Update assessment"}
+        </button>
+      </ModuleHero>
+      <div className="card">
       <div className="grid2">
         <div>
-          <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Back Break — Data & Controls</div>
-          <div className="subtitle">Load a CSV to train RF and adjust top features.</div>
-
-          <div style={{ marginTop: 10 }}>
-            <label className="label">Load CSV</label>
-            <input className="input" type="file" accept=".csv" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-          </div>
-
-          <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-            <button className="btn btnPrimary" onClick={run} disabled={busy}>{busy ? "Running…" : "Predict Now"}</button>
-            <button className="btn" onClick={resetMedians} disabled={!resp?.feature_stats}>Reset to Medians</button>
-          </div>
-
-          <div className="kpi" style={{ marginTop: 12 }}>
-            <div className="kpiTitle">Predicted Back Break</div>
-            <div className="kpiValue">{resp?.prediction != null ? Number(resp.prediction).toFixed(2) : "—"}</div>
+          <div className="sectionTitle">Current assessment</div>
+          <ResultStatus
+            tone={resp?.prediction == null ? "neutral" : "watch"}
+            label={resp?.prediction == null ? (busy ? "Loading cloud model" : "Assessment not available") : "Engineering review required"}
+            detail={resp?.prediction == null ? "The managed backbreak dataset is loaded automatically." : "Compare this prediction with the site's final-wall damage criterion."}
+          />
+          <div className="kpi kpiFeatured" style={{ marginTop: 12 }}>
+            <div className="kpiTitle">Predicted backbreak</div>
+            <div className="kpiValue">{resp?.prediction != null ? `${Number(resp.prediction).toFixed(2)} m` : "—"}</div>
           </div>
           {resp?.train_r2 != null || resp?.test_r2 != null ? (
             <div className="grid2" style={{ marginTop: 10 }}>
@@ -2980,7 +3009,13 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
 
           {resp?.feature_stats && (
             <div style={{ marginTop: 12, maxHeight: 420, overflow: "auto" }}>
-              <div className="label">Adjust Top Features</div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <div>
+                  <div className="sectionTitle">Scenario inputs</div>
+                  <div className="subtitle">Adjust design variables within the historical operating range.</div>
+                </div>
+                <button className="btn btnQuiet" onClick={resetMedians} disabled={!resp?.feature_stats}>Reset</button>
+              </div>
               {Object.entries(resp.feature_stats).map(([k, stat]: any) => (
                 <div key={k} style={{ marginTop: 10 }}>
                   <div style={{ display: "flex", justifyContent: "space-between" }}>
@@ -3004,19 +3039,20 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
 
         <div>
           <div className="card">
-            <div className="label">Random Forest — Feature Importance</div>
+            <div className="sectionTitle">Main backbreak drivers</div>
             {resp?.feature_importance ? (
               <HorizontalBarChart
                 labels={resp.feature_importance.map((it: any) => it.feature)}
                 values={resp.feature_importance.map((it: any) => it.importance)}
               />
             ) : (
-              <div className="subtitle">Load a CSV and run prediction to see importances.</div>
+              <div className="subtitle">Loading model drivers from the managed dataset.</div>
             )}
           </div>
 
           <div className="card" style={{ marginTop: 12 }}>
-            <div className="label">Backbreak Surface</div>
+            <div className="sectionTitle">Design response surface</div>
+            <div className="subtitle">Select two controls to inspect their combined influence.</div>
             <div className="grid2" style={{ marginTop: 8 }}>
               <select className="input" value={xAxis} onChange={(e) => setXAxis(e.target.value)}>
                 {(resp?.features ?? []).map((f: string) => (
@@ -3046,6 +3082,7 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
             )}
           </div>
         </div>
+      </div>
       </div>
     </div>
   );
@@ -6240,6 +6277,7 @@ function CostPanel({ apiBaseUrl, token, currentUserEmail }: { apiBaseUrl: string
   const [paretoBusy, setParetoBusy] = useState(false);
   const [selectedParetoIdx, setSelectedParetoIdx] = useState(0);
   const [objectiveMode, setObjectiveMode] = useState("Min Cost + Frag + PPV/Air");
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [solverMessage, setSolverMessage] = useState<string | null>(null);
   const autoComputedRef = useRef(false);
   const requestTimeoutMs = 45000;
@@ -6257,7 +6295,7 @@ function CostPanel({ apiBaseUrl, token, currentUserEmail }: { apiBaseUrl: string
         const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/cost/defaults`, {
           headers: { ...authHeaders(token) },
         });
-        const json = await res.json();
+        const json = await readApiJson(res);
         if (!res.ok || json?.error) throw new Error(json?.error ?? "Failed to load cost defaults");
         setDefaults(json);
         setErr(null);
@@ -6289,7 +6327,7 @@ function CostPanel({ apiBaseUrl, token, currentUserEmail }: { apiBaseUrl: string
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-      const json = await res.json();
+      const json = await readApiJson(res);
       if (!res.ok || json?.error) throw new Error(json?.error ?? `Request failed for ${path}`);
       return json;
     } finally {
@@ -6605,15 +6643,29 @@ function CostPanel({ apiBaseUrl, token, currentUserEmail }: { apiBaseUrl: string
   ];
 
   return (
-    <div className="card">
-      <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Cost Optimisation</div>
-      <div className="subtitle">Desktop-aligned blast cost optimisation with KPI compute, solver optimisation, and Pareto exploration.</div>
+    <div className="modulePage">
+      <ModuleHero
+        eyebrow="Production economics"
+        title="Cost optimisation"
+        description="Find a practical blast pattern that reduces unit cost while respecting fragmentation, vibration, and airblast requirements."
+      >
+        <button className="btn" onClick={() => setShowAdvanced((value) => !value)}>
+          {showAdvanced ? "Hide engineering settings" : "Engineering settings"}
+        </button>
+      </ModuleHero>
+      <div className="card">
+      <div className="workflowSteps">
+        <span className="workflowStep workflowStepActive"><b>1</b> Set blast</span>
+        <span className="workflowStep"><b>2</b> Check baseline</span>
+        <span className="workflowStep"><b>3</b> Optimise</span>
+        <span className="workflowStep"><b>4</b> Review controls</span>
+      </div>
 
-      <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
-        {groups.map((group) => (
+      <div className="costInputGrid" style={{ marginTop: 16 }}>
+        {groups.slice(0, 2).map((group) => (
           <div key={group.title} className="card">
-            <div className="label">{group.title}</div>
-            <div className="grid3" style={{ marginTop: 8 }}>
+            <div className="sectionTitle">{group.title}</div>
+            <div className="grid2" style={{ marginTop: 8 }}>
               {group.fields.map(([key, label]) => (
                 <div key={key}>
                   <label className="label">{label}</label>
@@ -6635,61 +6687,93 @@ function CostPanel({ apiBaseUrl, token, currentUserEmail }: { apiBaseUrl: string
         ))}
 
         <div className="card">
-          <div className="label">Optimisation Settings</div>
-          <div className="grid3" style={{ marginTop: 8 }}>
+          <div className="sectionTitle">Decision objective</div>
+          <div style={{ marginTop: 8 }}>
             <div>
+              <label className="label">What should this run prioritise?</label>
+              <select className="input" value={objectiveMode} onChange={(e) => setObjectiveMode(e.target.value)}>
+                <option value="Min Cost">Lowest direct cost</option>
+                <option value="Min Cost + Frag">Cost and fragmentation</option>
+                <option value="Min Cost + Frag + PPV/Air">Balanced production and compliance</option>
+              </select>
+            </div>
+            <div className="objectiveHint">
+              Balanced production and compliance is recommended for operational blast review.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {showAdvanced ? (
+        <div className="advancedPanel">
+          <div className="advancedPanelHeader">
+            <div>
+              <div className="sectionTitle">Engineering settings</div>
+              <div className="subtitle">Calibration constants, limits, fragmentation targets, constraints, and objective weights.</div>
+            </div>
+            <span className="pill">Qualified users</span>
+          </div>
+          <div className="costInputGrid" style={{ marginTop: 12 }}>
+            {groups.slice(2).map((group) => (
+              <div key={group.title} className="card">
+                <div className="sectionTitle">{group.title}</div>
+                <div className="grid2" style={{ marginTop: 8 }}>
+                  {group.fields.map(([key, label]) => (
+                    <div key={key}>
+                      <label className="label">{label}</label>
+                      <input
+                        className="input"
+                        type="number"
+                        value={key === "ov_max" ? (defaults[key] ?? 0) * 100 : defaults[key] ?? ""}
+                        onChange={(e) =>
+                          setDefaults({
+                            ...defaults,
+                            [key]: key === "ov_max" ? Number(e.target.value) / 100 : Number(e.target.value),
+                          })
+                        }
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <div className="card">
+              <div className="sectionTitle">Solver controls</div>
               <label className="label">Method</label>
               <select className="input" value={method} onChange={(e) => setMethod(e.target.value as "SLSQP" | "Pareto")}>
-                <option value="SLSQP">SLSQP</option>
-                <option value="Pareto">Pareto</option>
+                <option value="SLSQP">Recommended design</option>
+                <option value="Pareto">Compare trade-offs</option>
               </select>
-            </div>
-            <div>
-              <label className="label">Objective</label>
-              <select className="input" value={objectiveMode} onChange={(e) => setObjectiveMode(e.target.value)}>
-                <option value="Min Cost">Min Cost</option>
-                <option value="Min Cost + Frag">Min Cost + Frag</option>
-                <option value="Min Cost + Frag + PPV/Air">Min Cost + Frag + PPV/Air</option>
-              </select>
-            </div>
-            <div>
-              <label className="label">Weights (Frag / PPV / Air)</label>
+              <label className="label" style={{ marginTop: 10 }}>Objective weights (fragmentation / PPV / airblast)</label>
               <div className="grid3">
                 <input className="input" type="number" value={weights.frag} onChange={(e) => setWeights({ ...weights, frag: Number(e.target.value) })} />
                 <input className="input" type="number" value={weights.ppv} onChange={(e) => setWeights({ ...weights, ppv: Number(e.target.value) })} />
                 <input className="input" type="number" value={weights.air} onChange={(e) => setWeights({ ...weights, air: Number(e.target.value) })} />
               </div>
-            </div>
-            <div>
-              <label className="label">Objective Toggles</label>
-              <div style={{ display: "grid", gap: 6 }}>
-                <label className="label"><input type="checkbox" checked={useFrag} onChange={(e) => setUseFrag(e.target.checked)} /> Use fragmentation in objective</label>
-                <label className="label"><input type="checkbox" checked={usePpv} onChange={(e) => setUsePpv(e.target.checked)} /> Constrain PPV</label>
-                <label className="label"><input type="checkbox" checked={useAir} onChange={(e) => setUseAir(e.target.checked)} /> Constrain Airblast</label>
+              <div className="toggleList">
+                <label className="label"><input type="checkbox" checked={useFrag} onChange={(e) => setUseFrag(e.target.checked)} /> Include fragmentation</label>
+                <label className="label"><input type="checkbox" checked={usePpv} onChange={(e) => setUsePpv(e.target.checked)} /> Enforce PPV limit</label>
+                <label className="label"><input type="checkbox" checked={useAir} onChange={(e) => setUseAir(e.target.checked)} /> Enforce airblast limit</label>
               </div>
             </div>
           </div>
         </div>
-      </div>
-      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+      ) : null}
+      <div className="primaryActionBar">
         <button className="btn btnPrimary" onClick={runCompute} disabled={busy}>
-          {computeBusy ? "Working…" : "Compute KPIs"}
+          {computeBusy ? "Checking…" : "Check current design"}
         </button>
-        <button className="btn" onClick={method === "Pareto" ? runPareto : runOptimize} disabled={busy}>
-          {method === "Pareto" ? (paretoBusy ? "Running Pareto…" : "Optimise") : optBusy ? "Optimising…" : "Optimise"}
+        <button className="btn btnSuccess" onClick={method === "Pareto" ? runPareto : runOptimize} disabled={busy}>
+          {method === "Pareto" ? (paretoBusy ? "Comparing…" : "Compare options") : optBusy ? "Optimising…" : "Find recommended design"}
         </button>
-        <button className="btn" onClick={exportCostReport} disabled={!resp}>
-          Export cost report
+        <button className="btn btnQuiet" onClick={exportCostReport} disabled={!resp}>
+          Export report
         </button>
       </div>
       {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
       {solverMessage && <div className="card" style={{ marginTop: 10, padding: 12 }}>{solverMessage}</div>}
       {resp && (
         <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
-          <div className="card">
-            <div className="label">Engineering Report</div>
-            <pre style={pre}>{report}</pre>
-          </div>
           <div className="grid3">
             <div className="kpi">
               <div className="kpiTitle">Cost</div>
@@ -6716,6 +6800,10 @@ function CostPanel({ apiBaseUrl, token, currentUserEmail }: { apiBaseUrl: string
               <div className="kpiValue">{formatNum(resp.derived?.PF)}</div>
             </div>
           </div>
+          <details className="detailsPanel">
+            <summary>Engineering interpretation</summary>
+            <pre style={pre}>{report}</pre>
+          </details>
           {resp.cost_break && (
             <div className="card" ref={costBreakRef}>
               <div className="label">Cost Breakdown</div>
@@ -6929,6 +7017,7 @@ function CostPanel({ apiBaseUrl, token, currentUserEmail }: { apiBaseUrl: string
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
