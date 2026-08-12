@@ -1911,6 +1911,8 @@ def flyrock_predict(
 
     return {
         "prediction": yhat,
+        "dataset_used": DATASETS["flyrock"],
+        "dataset_source": "gcs_managed",
         "train_r2": score,
         "test_r2": test_score,
         "features": list(X.columns),
@@ -2095,6 +2097,8 @@ def backbreak_predict(
 
     return {
         "prediction": yhat,
+        "dataset_used": DATASETS["backbreak"],
+        "dataset_source": "gcs_managed",
         "features": keep,
         "feature_stats": stats,
         "feature_importance": feat_importance,
@@ -2281,6 +2285,8 @@ def slope_predict(
         "prob_stable": prob,
         "prediction": prob,
         "predicted_class": predicted_class,
+        "dataset_used": DATASETS["slope"],
+        "dataset_source": "gcs_managed",
         "feature_stats": stats,
         "features": list(X.columns),
         "train_accuracy": train_acc,
