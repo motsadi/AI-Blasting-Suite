@@ -229,6 +229,25 @@ const MODULE_GUIDES: ModuleGuide[] = [
 
 const authHeaders = (token: string) => ({ authorization: `Bearer ${token}` });
 
+async function readApiJson(res: Response) {
+  const raw = await res.text();
+  let json: any = {};
+  if (raw) {
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      if (!res.ok) {
+        throw new Error(`Cloud service unavailable (${res.status}). Try again when the connection is restored.`);
+      }
+      throw new Error("The cloud service returned an unreadable response.");
+    }
+  }
+  if (!res.ok) {
+    throw new Error(String(json?.detail ?? json?.error ?? `Cloud service unavailable (${res.status}).`));
+  }
+  return json;
+}
+
 const LOCAL_ACTIVITY_STORAGE_KEY = "ai_blasting_suite_activity_v1";
 
 function readLocalActivitySnapshot(): { last_activity: ActivityEntry | null; recent: ActivityEntry[] } {
@@ -899,7 +918,7 @@ function DataPanel({
       const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/data/default`, {
         headers: { ...authHeaders(token) },
       });
-      const json = await res.json();
+      const json = await readApiJson(res);
       if (!res.ok) throw new Error(json?.error ?? "Preview failed");
       const rows = json.sample ?? [];
       const cols = json.columns ?? [];
@@ -1405,7 +1424,7 @@ function PredictPanel({
           }),
         });
       }
-      const json = await res.json();
+      const json = await readApiJson(res);
       if (!res.ok || json?.error) {
         throw new Error(json?.detail ?? json?.error ?? `HTTP ${res.status}`);
       }
@@ -1764,7 +1783,7 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
         headers: { ...authHeaders(token) },
         body: fd,
       });
-      const json = await res.json();
+      const json = await readApiJson(res);
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Flyrock failed");
       setResp(json);
       if (json?.feature_stats && !Object.keys(inputs).length) {
@@ -1796,7 +1815,7 @@ function FlyrockPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: string
         headers: { "content-type": "application/json", ...authHeaders(token) },
         body: JSON.stringify({ x_name: x, y_name: y, inputs_json: inputs }),
       });
-      const json = await res.json();
+      const json = await readApiJson(res);
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Surface failed");
       setSurface(json);
     } catch (e: any) {
@@ -2630,7 +2649,7 @@ function FeaturePanel({
           headers: { ...authHeaders(token) },
         });
       }
-      const json = await res.json();
+      const json = await readApiJson(res);
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Failed");
       setResp(json);
       if (json?.outputs?.length) {
@@ -2884,7 +2903,7 @@ function BackbreakPanel({ apiBaseUrl, token }: { apiBaseUrl: string; token: stri
         headers: { ...authHeaders(token) },
         body: fd,
       });
-      const json = await res.json();
+      const json = await readApiJson(res);
       if (!res.ok || json?.error) throw new Error(json?.error ?? "Backbreak failed");
       setResp(json);
       if (json?.feature_stats && !Object.keys(inputs).length) {
@@ -6303,7 +6322,7 @@ function CostPanel({ apiBaseUrl, token, currentUserEmail }: { apiBaseUrl: string
         const res = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/cost/defaults`, {
           headers: { ...authHeaders(token) },
         });
-        const json = await res.json();
+        const json = await readApiJson(res);
         if (!res.ok || json?.error) throw new Error(json?.error ?? "Failed to load cost defaults");
         setDefaults(json);
         setErr(null);
@@ -6335,7 +6354,7 @@ function CostPanel({ apiBaseUrl, token, currentUserEmail }: { apiBaseUrl: string
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-      const json = await res.json();
+      const json = await readApiJson(res);
       if (!res.ok || json?.error) throw new Error(json?.error ?? `Request failed for ${path}`);
       return json;
     } finally {
