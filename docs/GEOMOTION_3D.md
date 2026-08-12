@@ -32,11 +32,11 @@ The importer preserves cumulative delay and simulates `Delay - minimum Delay`. I
 
 Editable synthetic rock defaults include UCS, tensile strength, Young's modulus, Poisson ratio, damping, fragmentation index and joint orientation/spacing/persistence. These are sensitivity assumptions, not measured mine properties.
 
-## Required mining block model
+## Optional mining block model
 
-Production-mode runs require a CSV block model containing `X,Y,Z,Density`, with `Block ID,Grade,Facies` recommended. Optional `Size X,Size Y,Size Z` fields must each equal 1 m; non-unit blocks are rejected with an instruction to resample. The model's measured density, grade and facies drive tonnes, ore/waste classification, contained grade, movement and mixing outputs.
+GeoMotion can run from the delay-bearing tie-up alone by generating a clearly labelled simulated 1 m block model around the blast. This supports workflow evaluation before mine geology is available; its recovery and dilution outputs are uncalibrated.
 
-The built-in demonstration can generate synthetic 1 m cells when no measured block model is available. This fallback is explicitly labelled and is not used after a block-model upload.
+When available, users can upload a CSV block model containing `X,Y,Z,Density`, with `Block ID,Grade,Facies` recommended. Optional `Size X,Size Y,Size Z` fields must each equal 1 m; non-unit blocks are rejected with an instruction to resample. The model's measured density, grade and facies then replace the simulated geology and drive tonnes, ore/waste classification, contained grade, movement and mixing outputs.
 
 ## Other optional measured datasets
 
