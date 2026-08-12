@@ -105,6 +105,43 @@ class GeoMotionEngineTests(unittest.TestCase):
         self.assertEqual(blocks[0]["provenance"], "measured")
         self.assertEqual(monitors[0]["dx"], 4.0)
 
+    def test_measured_one_metre_block_model_drives_simulation(self):
+        payload = request("physics").model_dump()
+        payload["block_model"] = [
+            {
+                "id": f"B{index}",
+                "x": -5402.0 + x,
+                "y": 4578.0 + y,
+                "z": 665.5 + z,
+                "density_t_m3": 2.4,
+                "grade_cpht": 20.0 if x < 2 else 0.0,
+                "facies": "VK" if x < 2 else "WASTE",
+                "provenance": "measured",
+            }
+            for index, (x, y, z) in enumerate(
+                (x, y, z) for x in range(4) for y in range(4) for z in range(3)
+            )
+        ]
+        result = simulate(GeoMotionRequest(**payload))
+        self.assertEqual(result["metrics"]["cells"], 48)
+        self.assertEqual(result["provenance"]["geology_rock_surfaces_and_grade"], "measured_block_model")
+        self.assertTrue(all(block["provenance"] == "measured_block_model" for block in result["blocks"]))
+
+    def test_non_unit_block_dimensions_are_rejected(self):
+        payload = request().model_dump()
+        payload["block_model"] = [
+            {
+                "id": "B1",
+                "x": 1,
+                "y": 2,
+                "z": 3,
+                "size_x_m": 2,
+                "density_t_m3": 2.4,
+            }
+        ]
+        with self.assertRaises(ValidationError):
+            GeoMotionRequest(**payload)
+
     def test_remap_has_unique_destination_cells(self):
         positions = np.array([[0.1, 0.1, 0.5], [0.2, 0.2, 0.6], [0.1, 0.1, 1.5]])
         result = settle_and_remap(

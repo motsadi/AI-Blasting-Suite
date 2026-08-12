@@ -58,9 +58,14 @@ def _validation(request: GeoMotionRequest) -> dict[str, Any]:
         warnings.append(
             f"Defaults imputed for {missing_depth} depth, {missing_charge} charge, and {missing_z} elevation values."
         )
-    warnings.append(
-        "Synthetic geology and ML calibration are demonstration data, not measured mine evidence."
-    )
+    if request.block_model:
+        warnings.append(
+            f"Measured 1 m block model accepted ({len(request.block_model):,} cells); movement calibration remains unvalidated."
+        )
+    else:
+        warnings.append(
+            "Synthetic geology and ML calibration are demonstration data, not measured mine evidence."
+        )
     return {
         "status": "review" if duplicate_ids or close_pairs else "synthetic",
         "warnings": warnings,
@@ -412,7 +417,7 @@ def simulate(request: GeoMotionRequest) -> dict[str, Any]:
                 "burden_velocity_m_s": _round(visual_burden_velocity[group_index]),
                 "contributing_event": int(physics.contributing_event[first_index]),
                 "size_m": a.cell_size_m * lod_factor,
-                "provenance": "synthetic",
+                "provenance": "measured_block_model" if request.block_model else "synthetic",
             }
         )
 
@@ -465,16 +470,18 @@ def simulate(request: GeoMotionRequest) -> dict[str, Any]:
         "max_burden_velocity_m_s": _round(float(np.max(physics.burden_velocity_m_s)), 3),
         "mean_peak_impulse_m_s": _round(float(np.mean(physics.peak_impulse_m_s)), 3),
     }
-    validation["warnings"].extend(
-        [
-            "S135B pressure and gas expansion use a reduced-order surrogate, not product-certified JWL constants.",
-            "Rock, geology, grade-control and loader inputs are synthetic until replaced by measured files.",
-        ]
+    validation["warnings"].append(
+        "S135B pressure and gas expansion use a reduced-order surrogate, not product-certified JWL constants."
     )
-    registered_datasets = {dataset.kind: dataset for dataset in request.site_data.datasets}
-    if registered_datasets:
+    if not request.block_model:
         validation["warnings"].append(
-            "Measured dataset metadata was registered; this request did not include validated dataset contents, so synthetic providers remained active."
+            "Rock, geology, grade-control and loader inputs are synthetic until replaced by measured files."
+        )
+    registered_datasets = {dataset.kind: dataset for dataset in request.site_data.datasets}
+    metadata_only_datasets = set(registered_datasets) - ({"grade_control_blocks"} if request.block_model else set())
+    if metadata_only_datasets:
+        validation["warnings"].append(
+            "Some measured dataset metadata was registered without validated contents; those providers remained synthetic."
         )
     return {
         "engine": {
@@ -482,7 +489,7 @@ def simulate(request: GeoMotionRequest) -> dict[str, Any]:
             "version": "0.2.0-event-physics",
             "mode": request.mode,
             "model_kind": "reduced-order timed detonation, burden velocity, dynamic relief and conservative voxel remap",
-            "calibration": "synthetic_unvalidated",
+            "calibration": "measured_block_model_uncalibrated_movement" if request.block_model else "synthetic_unvalidated",
             "notice": "Synthetic Demonstration / Uncalibrated — Planning Only",
             "seed": request.seed,
         },
@@ -514,7 +521,7 @@ def simulate(request: GeoMotionRequest) -> dict[str, Any]:
             "tie_up": "site_supplied",
             "explosive_density_rws_and_booster": "site_supplied",
             "vod_range": "manufacturer_range_assumption",
-            "geology_rock_surfaces_and_grade": "synthetic",
+            "geology_rock_surfaces_and_grade": "measured_block_model" if request.block_model else "synthetic",
             "movement_monitors": "not_supplied",
             "registered_dataset_kinds": ",".join(sorted(registered_datasets)) or "none",
         },

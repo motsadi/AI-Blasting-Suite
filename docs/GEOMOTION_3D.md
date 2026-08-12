@@ -1,6 +1,6 @@
 # GeoMotion 3D Engine
 
-GeoMotion 3D is an independent, reduced-order event-physics blast-movement demonstration. It transforms a delay-bearing charged-hole tie-up and a contiguous 1 m diamond block model into a mass-conserving post-blast material model.
+GeoMotion 3D is an independent, reduced-order event-physics blast-movement module. It transforms a delay-bearing charged-hole tie-up and a contiguous 1 m mining block model into a mass-conserving post-blast material model.
 
 ## Status and safety
 
@@ -32,16 +32,22 @@ The importer preserves cumulative delay and simulates `Delay - minimum Delay`. I
 
 Editable synthetic rock defaults include UCS, tensile strength, Young's modulus, Poisson ratio, damping, fragmentation index and joint orientation/spacing/persistence. These are sensitivity assumptions, not measured mine properties.
 
-## Optional measured datasets
+## Required mining block model
 
-The UI can register grade-control blocks, geological structures, pre/post-blast surfaces, movement monitors, dig limits and loader/MMU geometry. Backend CSV adapters validate:
+Production-mode runs require a CSV block model containing `X,Y,Z,Density`, with `Block ID,Grade,Facies` recommended. Optional `Size X,Size Y,Size Z` fields must each equal 1 m; non-unit blocks are rejected with an instruction to resample. The model's measured density, grade and facies drive tonnes, ore/waste classification, contained grade, movement and mixing outputs.
+
+The built-in demonstration can generate synthetic 1 m cells when no measured block model is available. This fallback is explicitly labelled and is not used after a block-model upload.
+
+## Other optional measured datasets
+
+The UI can also register geological structures, pre/post-blast surfaces, movement monitors, dig limits and loader/MMU geometry. Backend CSV adapters validate:
 
 - Block model: `X,Y,Z,Density,Grade,Facies`, with optional block dimensions.
 - Surface: `X,Y,Z`.
 - Movement monitors: `X,Y,Z,dX,dY,dZ`.
 - Dig limits: polygon ID, vertex sequence, `X,Y`, destination.
 
-Registered metadata alone does not alter a simulation. Until validated contents are supplied to a provider, the result says that synthetic providers remained active.
+Registered metadata alone does not alter a simulation. The uploaded mining block model is the exception: its validated contents directly replace the synthetic geology provider.
 
 ## Contiguous one-metre source model
 

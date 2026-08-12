@@ -17,6 +17,7 @@ from app.assets import LoadedAssets, assets_status, load_local_assets
 from app.core_imports import add_core_bundle_to_path
 from app.gcs import REQUIRED_DATASET_FILES, sync_assets_from_gcs
 from app.geomotion import GeoMotionRequest, GeoMotionResponse, simulate as simulate_geomotion
+from app.geomotion.io import parse_block_model_csv
 from app.schemas import AssetsStatus, PredictRequest, PredictResponse
 from app.settings import settings
 
@@ -2309,12 +2310,45 @@ def geomotion_simulate(
     return simulate_geomotion(request)
 
 
-@app.post("/v1/geomotion/export")
-def geomotion_export(
-    request: GeoMotionRequest,
+async def _geomotion_request_with_block_model(
+    request_json: str,
+    block_model: UploadFile,
+) -> GeoMotionRequest:
+    try:
+        payload = json.loads(request_json)
+        raw = await block_model.read()
+        if len(raw) > 150 * 1024 * 1024:
+            raise ValueError("Block model exceeds the 150 MB upload limit.")
+        blocks = parse_block_model_csv(raw.decode("utf-8-sig"))
+        if not blocks:
+            raise ValueError("Block model contains no valid cells.")
+        invalid_sizes = [
+            block for block in blocks
+            if any(abs(float(block[key]) - 1.0) > 0.01 for key in ("size_x_m", "size_y_m", "size_z_m"))
+        ]
+        if invalid_sizes:
+            raise ValueError(
+                f"{len(invalid_sizes)} block(s) are not 1 m × 1 m × 1 m. Resample the mining block model before simulation."
+            )
+        payload["block_model"] = blocks
+        request = GeoMotionRequest.model_validate(payload)
+    except (UnicodeDecodeError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return request
+
+
+@app.post("/v1/geomotion/simulate/upload", response_model=GeoMotionResponse)
+async def geomotion_simulate_upload(
+    request_json: str = Form(...),
+    block_model: UploadFile = File(...),
     _token: str = Depends(require_auth),
 ):
-    """Recompute and stream the full-resolution movement table as gzip CSV."""
+    """Run GeoMotion with a validated measured 1 m × 1 m × 1 m mining block model."""
+    request = await _geomotion_request_with_block_model(request_json, block_model)
+    return simulate_geomotion(request)
+
+
+def _geomotion_export_response(request: GeoMotionRequest):
     full_request = request.model_copy(
         update={
             "assumptions": request.assumptions.model_copy(
@@ -2358,6 +2392,26 @@ def geomotion_export(
             "X-GeoMotion-Notice": "Synthetic Demonstration - Uncalibrated - Planning Only",
         },
     )
+
+
+@app.post("/v1/geomotion/export")
+def geomotion_export(
+    request: GeoMotionRequest,
+    _token: str = Depends(require_auth),
+):
+    """Recompute and stream the full-resolution movement table as gzip CSV."""
+    return _geomotion_export_response(request)
+
+
+@app.post("/v1/geomotion/export/upload")
+async def geomotion_export_upload(
+    request_json: str = Form(...),
+    block_model: UploadFile = File(...),
+    _token: str = Depends(require_auth),
+):
+    """Export movement vectors for a measured 1 m mining block model."""
+    request = await _geomotion_request_with_block_model(request_json, block_model)
+    return _geomotion_export_response(request)
 
 
 @app.post("/v1/delay/predict")

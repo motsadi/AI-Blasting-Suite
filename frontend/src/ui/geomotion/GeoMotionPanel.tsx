@@ -298,6 +298,8 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
   const [cameraPreset, setCameraPreset] = useState<"perspective" | "plan" | "section">("perspective");
   const [seamPercent, setSeamPercent] = useState(1);
   const [datasetRefs, setDatasetRefs] = useState<GeoMotionRequest["site_data"]["datasets"]>([]);
+  const [blockModelFile, setBlockModelFile] = useState<File | null>(null);
+  const [demoMode, setDemoMode] = useState(false);
 
   useEffect(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(assumptions)), [assumptions]);
 
@@ -307,7 +309,7 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
     return { charge, averageDepth: depths.length ? depths.reduce((sum, value) => sum + value, 0) / depths.length : 0 };
   }, [holes]);
 
-  function loadCsv(text: string, name: string) {
+  function loadCsv(text: string, name: string, isDemo = false) {
     const parsed = parseBlastCsv(text);
     const nextIssues = [...parsed.issues];
     const rejected = parsed.holes.filter(
@@ -345,17 +347,22 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
     setInputErrors(errors);
     setResult(null);
     setError("");
+    setDemoMode(isDemo);
   }
 
   async function handleFile(file: File | null) {
     if (!file) return;
-    loadCsv(await file.text(), file.name);
+    loadCsv(await file.text(), file.name, false);
   }
 
   async function registerDataset(kind: GeoMotionRequest["site_data"]["datasets"][number]["kind"], file: File | null) {
     if (!file) return;
     const text = await file.text();
     const records = Math.max(0, text.split(/\r?\n/).filter((line) => line.trim()).length - 1);
+    if (kind === "grade_control_blocks") {
+      setBlockModelFile(file);
+      setResult(null);
+    }
     setDatasetRefs((current) => [
       ...current.filter((dataset) => dataset.kind !== kind),
       { kind, filename: file.name, records, provenance: "measured", metadata: { status: "registered_for_backend_import" } },
@@ -369,7 +376,7 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
       mode,
       holes: toGeoMotionHoles(holes),
       assumptions,
-      site_data: { datasets: datasetRefs, synthetic_defaults_enabled: true },
+      site_data: { datasets: datasetRefs, synthetic_defaults_enabled: demoMode && !blockModelFile },
     };
   }
 
@@ -382,17 +389,32 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
       setError(inputErrors[0] || "Every hole requires a valid cumulative Delay.");
       return;
     }
+    if (!blockModelFile && !demoMode) {
+      setError("Upload the mine's 1 m × 1 m × 1 m block model before running GeoMotion.");
+      return;
+    }
     setRunning(true);
     setError("");
     try {
       const request = buildRequest();
-      const response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/geomotion/simulate`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-        body: JSON.stringify(request),
-      });
+      const response = blockModelFile
+        ? await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/geomotion/simulate/upload`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+            body: (() => {
+              const form = new FormData();
+              form.append("request_json", JSON.stringify(request));
+              form.append("block_model", blockModelFile);
+              return form;
+            })(),
+          })
+        : await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/geomotion/simulate`, {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+            body: JSON.stringify(request),
+          });
       const payload = await response.json().catch(() => null);
-      if (response.status === 404 || response.status === 405) {
+      if ((response.status === 404 || response.status === 405) && demoMode && !blockModelFile) {
         const previewRequest: GeoMotionRequest = {
           ...request,
           assumptions: { ...request.assumptions, cell_size_m: 3, max_visual_blocks: 20000 },
@@ -432,11 +454,23 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
   async function exportFullResolution() {
     setError("");
     try {
-      const response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/geomotion/export`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-        body: JSON.stringify(buildRequest()),
-      });
+      const request = buildRequest();
+      const response = blockModelFile
+        ? await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/geomotion/export/upload`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+            body: (() => {
+              const form = new FormData();
+              form.append("request_json", JSON.stringify(request));
+              form.append("block_model", blockModelFile);
+              return form;
+            })(),
+          })
+        : await fetch(`${apiBaseUrl.replace(/\/$/, "")}/v1/geomotion/export`, {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+            body: JSON.stringify(request),
+          });
       if (!response.ok) throw new Error(response.status === 404 ? "Deploy the GeoMotion Cloud Run backend to enable full 1 m exports." : `Full export failed (${response.status}).`);
       const url = URL.createObjectURL(await response.blob());
       const anchor = document.createElement("a");
@@ -469,27 +503,40 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
     <div className="geomotionWorkspace">
       <section className="geomotionHero">
         <div>
-          <div className="geomotionEyebrow">PHYSICS-INFORMED ORE MOVEMENT</div>
-          <h2>GeoMotion 3D Engine</h2>
-          <p>Mass-conserving blast movement, synthetic diamond geology, and post-blast ore-control intelligence.</p>
+          <div className="geomotionEyebrow">BLAST MOVEMENT • DILUTION • RECOVERY</div>
+          <h2>GeoMotion 3D</h2>
+          <p>Move the mine's 1 m block model through the delay sequence, then identify ore loss, waste dilution, and practical post-blast dig outcomes.</p>
         </div>
         <div className="geomotionNotice">{NOTICE}</div>
       </section>
 
       <div className="geomotionWorkflow">
-        {["1  Tie-up", "2  Assumptions", "3  Physics + AI", "4  Ore control"].map((step, index) => (
-          <div key={step} className={`geomotionStep ${index === 0 && !holes.length ? "active" : index === 2 && running ? "active" : result && index === 3 ? "active" : ""}`}>{step}</div>
+        {["1  Upload tie-up", "2  Add 1 m block model", "3  Run movement", "4  Review ore control"].map((step, index) => (
+          <div
+            key={step}
+            className={`geomotionStep ${
+              (index === 0 && !holes.length) ||
+              (index === 1 && holes.length && !blockModelFile && !demoMode) ||
+              (index === 2 && running) ||
+              (index === 3 && result)
+                ? "active"
+                : ""
+            }`}
+          >
+            {step}
+          </div>
         ))}
       </div>
 
       <div className="geomotionTopGrid">
         <section className="card">
-          <div className="sectionTitle">Blast input</div>
+          <div className="sectionTitle">1. Tie-up with cumulative delays</div>
+          <div className="subtitle">Required columns: Hole ID, X, Y, Z, Depth, Charge, Delay (ms). Every hole needs a unique firing time.</div>
           <label className="label">Project</label>
           <input className="input" value={projectName} onChange={(event) => setProjectName(event.target.value)} />
           <label className="label" style={{ marginTop: 10 }}>Delay-bearing charged-hole CSV</label>
           <input className="input" type="file" accept=".csv" onChange={(event) => handleFile(event.target.files?.[0] ?? null)} />
-          <button className="btn" style={{ marginTop: 8 }} onClick={() => loadCsv(diamondReferenceCsv(), "680-665QS32-33_synthetic_reference.csv")}>
+          <button className="btn" style={{ marginTop: 8 }} onClick={() => loadCsv(diamondReferenceCsv(), "680-665QS32-33_synthetic_reference.csv", true)}>
             Load 182-hole diamond demonstration
           </button>
           <div className="geomotionMiniGrid">
@@ -505,10 +552,22 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
               Timing normalized to first firing: 0–{format(Math.max(...holes.map((hole) => hole.delayMs ?? 0)), 1)} ms. Original cumulative values are preserved.
             </div>
           ) : null}
+
+          <div className="geomotionDivider" />
+          <div className="sectionTitle">2. Mining block model</div>
+          <div className="subtitle">CSV at 1 m × 1 m × 1 m resolution. Required: X, Y, Z, Density. Recommended: Block ID, Grade, Facies.</div>
+          <label className="geomotionDropzone">
+            <span>{blockModelFile ? "Measured block model ready" : "Choose 1 m block model CSV"}</span>
+            <small>{blockModelFile ? blockModelFile.name : "Blocks with any other dimensions are rejected."}</small>
+            <input type="file" accept=".csv" onChange={(event) => registerDataset("grade_control_blocks", event.target.files?.[0] ?? null)} />
+          </label>
+          {demoMode && !blockModelFile ? (
+            <div className="geomotionModelNote">Demonstration mode will create a synthetic 1 m block model. Upload a mine block model to replace it.</div>
+          ) : null}
         </section>
 
         <section className="card">
-          <div className="sectionTitle">Diamond blast assumptions</div>
+          <div className="sectionTitle">Movement assumptions</div>
           <div className="geomotionAssumptions">
             {numberField("Burden", "burden_m", "m")}
             {numberField("Spacing", "spacing_m", "m")}
@@ -548,7 +607,6 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
           <details className="geomotionAdvanced">
             <summary>Optional measured mine datasets</summary>
             {[
-              ["grade_control_blocks", "Grade-control blocks"],
               ["geological_structures", "Geological structures/joints"],
               ["preblast_surface", "Pre-blast surface"],
               ["postblast_surface", "Post-blast surface"],
@@ -567,7 +625,8 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
         </section>
 
         <section className="card geomotionRunCard">
-          <div className="sectionTitle">Simulation</div>
+          <div className="sectionTitle">3. Run movement model</div>
+          <div className="subtitle">GeoMotion follows the firing sequence, moves every block, conserves tonnes and contained grade, then remaps the post-blast model.</div>
           <label className="label">Engine mode</label>
           <select className="input" value={mode} onChange={(event) => setMode(event.target.value as GeoMotionMode)}>
             <option value="physics">Event physics baseline</option>
@@ -578,7 +637,11 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
               ? "Reduced-order timed detonation, gas impulse, burden velocity, dynamic relief, joints and conservative settlement with synthetic uncertainty."
               : "Reduced-order event physics without a site-calibrated residual. This is not FEM/DEM or certified S135B JWL modelling."}
           </div>
-          <button className="btn btnPrimary geomotionRunButton" disabled={running || holes.length < 3 || !!inputErrors.length} onClick={runSimulation}>
+          <button
+            className="btn btnPrimary geomotionRunButton"
+            disabled={running || holes.length < 3 || !!inputErrors.length || (!blockModelFile && !demoMode)}
+            onClick={runSimulation}
+          >
             {running ? "Computing 1 m event physics…" : "Run GeoMotion 3D"}
           </button>
           {error ? <div className="error">{error}</div> : null}

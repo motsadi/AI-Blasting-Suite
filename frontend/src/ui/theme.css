@@ -56,6 +56,25 @@ body{
   margin:12px 0; padding:10px; border-radius:10px; background:#eff6ff;
   border:1px solid #bfdbfe; color:#1e3a8a; font-size:11px; line-height:1.45;
 }
+.geomotionDivider{
+  height:1px;
+  margin:18px 0;
+  background:var(--border);
+}
+.geomotionDropzone{
+  display:grid;
+  gap:4px;
+  margin-top:10px;
+  padding:16px;
+  border:1.5px dashed rgba(37,99,235,.38);
+  border-radius:15px;
+  color:var(--brand);
+  background:rgba(37,99,235,.05);
+  cursor:pointer;
+}
+.geomotionDropzone span{ font-size:13px; font-weight:800; }
+.geomotionDropzone small{ color:var(--muted); line-height:1.4; }
+.geomotionDropzone input{ margin-top:8px; color:var(--text); }
 .geomotionMiniGrid{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; margin-top:10px; }
 .geomotionAssumptions{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px 10px; margin-top:9px; }
 .geomotionField{ display:grid; gap:4px; color:var(--muted); font-size:11px; font-weight:700; }

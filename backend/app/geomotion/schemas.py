@@ -99,6 +99,20 @@ class GeoMotionDatasetRef(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class GeoMotionBlockInput(BaseModel):
+    id: str
+    x: float
+    y: float
+    z: float
+    size_x_m: float = Field(default=1.0, ge=0.99, le=1.01)
+    size_y_m: float = Field(default=1.0, ge=0.99, le=1.01)
+    size_z_m: float = Field(default=1.0, ge=0.99, le=1.01)
+    density_t_m3: float = Field(gt=0.5, le=6.0)
+    grade_cpht: float = Field(default=0.0, ge=0)
+    facies: str = "UNKNOWN"
+    provenance: Provenance = "measured"
+
+
 class GeoMotionSiteData(BaseModel):
     datasets: list[GeoMotionDatasetRef] = Field(default_factory=list)
     synthetic_defaults_enabled: bool = True
@@ -111,6 +125,7 @@ class GeoMotionRequest(BaseModel):
     holes: list[GeoMotionHole] = Field(min_length=3, max_length=1000)
     assumptions: GeoMotionAssumptions = Field(default_factory=GeoMotionAssumptions)
     site_data: GeoMotionSiteData = Field(default_factory=GeoMotionSiteData)
+    block_model: list[GeoMotionBlockInput] = Field(default_factory=list, max_length=500_000)
 
     @field_validator("holes")
     @classmethod

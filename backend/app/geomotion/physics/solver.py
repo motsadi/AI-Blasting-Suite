@@ -43,6 +43,26 @@ class EventPhysicsResult:
 def build_synthetic_voxels(request: GeoMotionRequest) -> VoxelField:
     holes = request.holes
     a = request.assumptions
+    if request.block_model:
+        blocks = request.block_model
+        positions = np.array([[block.x, block.y, block.z] for block in blocks], dtype=float)
+        density = np.array([block.density_t_m3 for block in blocks], dtype=float)
+        grade = np.array([block.grade_cpht for block in blocks], dtype=float)
+        tonnes = density.copy()  # Validated 1 m × 1 m × 1 m cells.
+        facies = np.array([block.facies for block in blocks], dtype=object)
+        source_class = np.where(grade >= a.cutoff_grade_cpht, "ORE", "WASTE")
+        return VoxelField(
+            positions=positions,
+            density=density,
+            grade=grade,
+            tonnes=tonnes,
+            facies=facies,
+            source_class=source_class,
+            center=np.mean(positions[:, :2], axis=0),
+            floor_rl=float(np.min(positions[:, 2]) - 0.5),
+            collar_rl=float(np.max(positions[:, 2]) + 0.5),
+        )
+
     rng = np.random.default_rng(request.seed)
     xs = np.asarray([hole.x for hole in holes], dtype=float)
     ys = np.asarray([hole.y for hole in holes], dtype=float)
