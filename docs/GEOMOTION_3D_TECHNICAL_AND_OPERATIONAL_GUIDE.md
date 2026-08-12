@@ -2,8 +2,8 @@
 
 ## Technical and Operational Study Guide
 
-**Document status:** Synthetic Demonstration / Uncalibrated — Planning Only  
-**Engine version described:** GeoMotion 0.2 Event Physics  
+**Document status:** Synthetic Demonstration / Uncalibrated — Planning Only
+**Engine version described:** GeoMotion 0.2 Event Physics
 **Primary application:** Open-pit diamond-mine blast movement and ore-control studies
 
 ---
