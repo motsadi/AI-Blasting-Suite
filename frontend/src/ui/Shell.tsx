@@ -767,40 +767,8 @@ function HomePanel({
       </div>
 
       <div className="card">
-        <div className="sectionTitle">Module guide</div>
-        <div className="homeSubtitle">
-          Read how each module is used, what decision it supports, and the kinds of tasks it is best suited for.
-        </div>
-        <div className="guideGrid" style={{ marginTop: 14 }}>
-          {MODULE_GUIDES.map((guide) => (
-            <div key={guide.tab} className="guideCard">
-              <div className="guideHeader">
-                <div className="homeCardIcon">{TAB_META[guide.tab].icon}</div>
-                <div>
-                  <div className="homeCardTitle">{TAB_META[guide.tab].title}</div>
-                  <div className="guideMeta">{TAB_META[guide.tab].desc}</div>
-                </div>
-              </div>
-              <div className="guideRow"><strong>When to use:</strong> {guide.when}</div>
-              <div className="guideRow"><strong>How it helps:</strong> {guide.helps}</div>
-              <div className="guideRow"><strong>Best for:</strong> {guide.tasks}</div>
-              <div className="guideSteps">
-                {guide.instructions.map((step) => (
-                  <div key={step} className="guideStep">{step}</div>
-                ))}
-              </div>
-              <div className="homeCardActions">
-                <button className="btn btnPrimary" onClick={() => onOpen(guide.tab)}>
-                  Open module
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="sectionTitle">Quick access</div>
+        <div className="sectionTitle">Start a task</div>
+        <div className="homeSubtitle">Choose a common operational workflow. Every module remains available in the navigation.</div>
         <div className="homeGrid">
           <div className="homeCard">
             <div className="homeCardIcon">{TAB_META.predict.icon}</div>
