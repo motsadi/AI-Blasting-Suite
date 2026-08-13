@@ -63,6 +63,12 @@ def set_repeat_table_header(row) -> None:
     tr_pr.append(tbl_header)
 
 
+def prevent_row_split(row) -> None:
+    tr_pr = row._tr.get_or_add_trPr()
+    cant_split = OxmlElement("w:cantSplit")
+    tr_pr.append(cant_split)
+
+
 def add_page_field(paragraph, field: str) -> None:
     run = paragraph.add_run()
     begin = OxmlElement("w:fldChar")
@@ -123,6 +129,7 @@ def add_table(document: Document, headers: list[str], rows: Iterable[Iterable[ob
     table.autofit = True
     header = table.rows[0]
     set_repeat_table_header(header)
+    prevent_row_split(header)
     for idx, text in enumerate(headers):
         cell = header.cells[idx]
         set_cell_shading(cell, BLUE)
@@ -137,7 +144,9 @@ def add_table(document: Document, headers: list[str], rows: Iterable[Iterable[ob
         if widths:
             cell.width = widths[idx]
     for row_data in rows:
-        cells = table.add_row().cells
+        row = table.add_row()
+        prevent_row_split(row)
+        cells = row.cells
         for idx, value in enumerate(row_data):
             cell = cells[idx]
             set_cell_margins(cell)
