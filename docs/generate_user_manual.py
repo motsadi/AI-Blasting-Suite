@@ -380,6 +380,12 @@ def build_manual() -> Document:
     )
     add_callout(
         document,
+        "PROPRIETARY USE NOTICE",
+        "This application is proprietary Debswana software. Use and distribution are restricted to authorised internal business purposes and remain subject to the repository licence and organisational information-governance requirements.",
+        "warning",
+    )
+    add_callout(
+        document,
         "OWNER REVIEW REQUIRED",
         "Yellow boxes identify information or screenshots that could not be authoritatively confirmed from the application and repository. The software owner should complete these items before releasing this manual as a controlled document.",
         "action",
