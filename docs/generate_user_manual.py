@@ -87,20 +87,36 @@ def keep_with_next(paragraph) -> None:
 
 
 def add_toc(document: Document) -> None:
-    paragraph = document.add_paragraph()
-    run = paragraph.add_run()
-    begin = OxmlElement("w:fldChar")
-    begin.set(qn("w:fldCharType"), "begin")
-    instr = OxmlElement("w:instrText")
-    instr.set(qn("xml:space"), "preserve")
-    instr.text = 'TOC \\o "1-3" \\h \\z \\u'
-    separate = OxmlElement("w:fldChar")
-    separate.set(qn("w:fldCharType"), "separate")
-    placeholder = OxmlElement("w:t")
-    placeholder.text = "Right-click this table and select Update Field to refresh the contents."
-    end = OxmlElement("w:fldChar")
-    end.set(qn("w:fldCharType"), "end")
-    run._r.extend([begin, instr, separate, placeholder, end])
+    sections = [
+        "1. About this manual",
+        "2. Access, sign-in and sign-out",
+        "3. Workspace orientation",
+        "4. Data Manager",
+        "5. Prediction",
+        "6. Feature Importance & Explainable AI",
+        "7. Parameter Optimisation",
+        "8. Cost Optimisation",
+        "9. Delay Design & Simulation",
+        "10. Slope Stability",
+        "11. Back Break",
+        "12. Flyrock (ML + Empirical)",
+        "13. File formats and output handling",
+        "14. Troubleshooting",
+        "15. Glossary",
+        "16. Owner completion checklist",
+    ]
+    table = document.add_table(rows=8, cols=2)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    for index, entry in enumerate(sections):
+        row = index % 8
+        column = index // 8
+        cell = table.cell(row, column)
+        set_cell_margins(cell, top=65, start=100, bottom=65, end=100)
+        paragraph = cell.paragraphs[0]
+        paragraph.paragraph_format.space_after = Pt(0)
+        run = paragraph.add_run(entry)
+        run.font.size = Pt(9)
+        run.font.color.rgb = RGBColor.from_string(BLUE)
 
 
 def add_table(document: Document, headers: list[str], rows: Iterable[Iterable[object]], widths=None):
@@ -166,8 +182,12 @@ def add_bullets(document: Document, items: Iterable[str], level: int = 0) -> Non
 
 
 def add_steps(document: Document, items: Iterable[str]) -> None:
-    for item in items:
-        paragraph = document.add_paragraph(style="List Number")
+    for index, item in enumerate(items, start=1):
+        paragraph = document.add_paragraph()
+        paragraph.paragraph_format.left_indent = Cm(0.5)
+        paragraph.paragraph_format.first_line_indent = Cm(-0.5)
+        number = paragraph.add_run(f"{index}. ")
+        number.bold = True
         paragraph.add_run(item)
 
 
@@ -215,9 +235,10 @@ def add_screenshot(
                 with Image.open(path) as image:
                     image.convert("RGB").save(image_stream, format="PNG")
                 image_stream.seek(0)
-                run.add_picture(image_stream, width=Inches(width))
+                shape = run.add_picture(image_stream, width=Inches(width))
             else:
-                run.add_picture(str(path), width=Inches(width))
+                shape = run.add_picture(str(path), width=Inches(width))
+            shape._inline.docPr.set("descr", caption)
             caption_paragraph = document.add_paragraph(caption, style="Caption")
             caption_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
             return
@@ -241,6 +262,9 @@ def add_module_intro(document: Document, purpose: str, use_when: str, outputs: s
 
 def configure_document() -> Document:
     document = Document()
+    update_fields = OxmlElement("w:updateFields")
+    update_fields.set(qn("w:val"), "true")
+    document.settings._element.append(update_fields)
     section = document.sections[0]
     section.top_margin = Cm(1.9)
     section.bottom_margin = Cm(1.8)
@@ -423,6 +447,9 @@ def build_manual() -> Document:
         ],
     )
     document.add_heading("1.5 Conventions and common units", level=2)
+    document.add_paragraph(
+        "Screenshots in this manual were captured in a local demonstration environment with sample data and authentication disabled. Production URLs, user identity, available datasets and calculated values can differ; the controls and workflow remain representative of the documented baseline."
+    )
     add_table(
         document,
         ["Symbol/term", "Meaning", "Unit or format"],
@@ -625,8 +652,20 @@ def build_manual() -> Document:
     add_screenshot(
         document,
         "Figure 3 — Data Manager table and tabs.",
-        ("data", "manager"),
+        ("data", "manager", "table", "loaded"),
         "Insert Data Manager after loading an approved non-sensitive sample CSV, showing row/column count and the main tabs.",
+    )
+    add_screenshot(
+        document,
+        "Figure 3A — Data Manager descriptive statistics and quick audits.",
+        ("data", "manager", "summary"),
+        "Insert the Data Manager Summary tab with approved example limits and no sensitive site data.",
+    )
+    add_screenshot(
+        document,
+        "Figure 3B — Data Manager correlation heatmap.",
+        ("data", "manager", "correlations"),
+        "Insert the Data Manager Correlations tab using an approved sample dataset.",
     )
 
     # 5 Prediction
@@ -705,8 +744,14 @@ def build_manual() -> Document:
     add_screenshot(
         document,
         "Figure 4 — Prediction inputs and empirical/ML output comparison.",
-        ("prediction",),
+        ("prediction", "results", "chart"),
         "Insert Prediction after a successful sample run. Show the dataset source, key inputs and empirical-versus-ML output chart without sensitive operational data.",
+    )
+    add_screenshot(
+        document,
+        "Figure 4A — Prediction Rosin–Rammler fragmentation curve.",
+        ("prediction", "fragmentation", "curve"),
+        "Insert the Prediction Fragmentation (RR Curve) tab after a successful approved sample run.",
     )
 
     # 6 Feature Importance
@@ -748,7 +793,7 @@ def build_manual() -> Document:
     add_screenshot(
         document,
         "Figure 5 — Feature importance and explainability results.",
-        ("feature", "importance"),
+        ("feature", "importance", "fragmentation"),
         "Insert a successful Feature Importance run showing mapping diagnostics and at least one ranking or explainability chart.",
     )
 
@@ -796,7 +841,7 @@ def build_manual() -> Document:
     )
     add_screenshot(
         document,
-        "Figure 6 — Parameter optimisation controls and surface explorer.",
+        "Figure 6 — Parameter Optimisation module and run controls.",
         ("parameter", "optimisation"),
         "Insert a completed Parameter Optimisation run showing objective, axes, optimisation summary and the surface explorer.",
     )
@@ -852,9 +897,15 @@ def build_manual() -> Document:
     )
     add_screenshot(
         document,
-        "Figure 7 — Cost Optimisation inputs, KPIs and constraint checks.",
+        "Figure 7 — Cost Optimisation input groups and controls.",
         ("cost", "optimisation"),
         "Insert Cost Optimisation after Compute KPIs, showing representative inputs, output KPI cards and constraint checks.",
+    )
+    add_screenshot(
+        document,
+        "Figure 7A — Cost Optimisation settings and engineering report.",
+        ("cost", "optimisation", "results"),
+        "Insert the Cost Optimisation engineering report after Compute KPIs using approved example values.",
     )
 
     # 9 delay
@@ -956,8 +1007,8 @@ def build_manual() -> Document:
     )
     add_screenshot(
         document,
-        "Figure 8 — Delay Design & Simulation with sample holes and assigned delays.",
-        ("delay", "design"),
+        "Figure 8 — Delay Design & Simulation workspace.",
+        ("delay", "design", "populated"),
         "Insert the Delay Design & Simulation module after loading sample CSV and assigning row-by-row delays. Show the plan, timing controls and validation summary.",
     )
 
@@ -1005,8 +1056,8 @@ def build_manual() -> Document:
     )
     add_screenshot(
         document,
-        "Figure 9 — Slope Stability inputs, classification and sketch.",
-        ("slope",),
+        "Figure 9 — Slope Stability inputs and slope sketch.",
+        ("slope", "stability", "results"),
         "Insert a Slope Stability sample result showing all parameter units, classification probability and slope sketch.",
     )
 
@@ -1045,8 +1096,8 @@ def build_manual() -> Document:
     )
     add_screenshot(
         document,
-        "Figure 10 — Back Break prediction, feature importance and surface.",
-        ("back", "break"),
+        "Figure 10 — Back Break data and prediction controls.",
+        ("back", "break", "results"),
         "Insert Back Break after running the approved sample dataset, with predicted value, R² and the response surface visible.",
     )
 
@@ -1093,8 +1144,8 @@ def build_manual() -> Document:
     )
     add_screenshot(
         document,
-        "Figure 11 — Flyrock ML and empirical estimates with response surface.",
-        ("flyrock",),
+        "Figure 11 — Flyrock ML and empirical analysis controls.",
+        ("flyrock", "results"),
         "Insert a successful Flyrock run showing predicted and empirical distance, model quality and response surface.",
     )
 
