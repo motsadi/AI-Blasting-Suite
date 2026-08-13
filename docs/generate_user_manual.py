@@ -895,7 +895,7 @@ def build_manual() -> Document:
     )
     add_callout(
         document,
-        "SYNTHETIC DEMONSTRATION / UNCALIBRATED — PLANNING ONLY",
+        "Synthetic Demonstration / Uncalibrated — Planning Only",
         "Current movement, geology, grade, recovery, dilution and uncertainty outputs are synthetic unless their provenance explicitly states measured. Do not use GeoMotion for field execution, firing, dig-limit control, resource reporting or production decisions. It is not a detonation hydrocode or a validated site movement predictor.",
         "danger",
     )
