@@ -3,24 +3,21 @@
 from __future__ import annotations
 
 from datetime import date
-from io import BytesIO
 from pathlib import Path
 from typing import Iterable
 
 from docx import Document
-from docx.enum.section import WD_SECTION
 from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK, WD_COLOR_INDEX
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Cm, Inches, Pt, RGBColor
-from PIL import Image
+from docx.shared import Cm, Pt, RGBColor
 
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "docs" / "AI_Blasting_Suite_User_Manual.docx"
-SCREENSHOT_DIR = ROOT / "docs" / "manual-screenshots"
+DEPLOYMENT_URL = "https://ai-blasting-kvzex3f0i-navan-labs.vercel.app"
 
 BLUE = "1D4ED8"
 DARK = "172033"
@@ -96,7 +93,7 @@ def add_toc(document: Document) -> None:
         "6. Feature Importance & Explainable AI",
         "7. Parameter Optimisation",
         "8. Cost Optimisation",
-        "9. Delay Design & Simulation",
+        "9. GeoMotion 3D",
         "10. Slope Stability",
         "11. Back Break",
         "12. Flyrock (ML + Empirical)",
@@ -191,32 +188,6 @@ def add_steps(document: Document, items: Iterable[str]) -> None:
         paragraph.add_run(item)
 
 
-def screenshot_candidates() -> list[Path]:
-    if not SCREENSHOT_DIR.exists():
-        return []
-    return sorted(
-        [
-            path
-            for path in SCREENSHOT_DIR.iterdir()
-            if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
-        ]
-    )
-
-
-def find_screenshot(*keywords: str) -> Path | None:
-    candidates = screenshot_candidates()
-    normalized = [keyword.lower().replace(" ", "-") for keyword in keywords]
-    for path in candidates:
-        stem = path.stem.lower().replace("_", "-")
-        if all(keyword in stem for keyword in normalized):
-            return path
-    for path in candidates:
-        stem = path.stem.lower().replace("_", "-")
-        if any(keyword in stem for keyword in normalized):
-            return path
-    return None
-
-
 def add_screenshot(
     document: Document,
     caption: str,
@@ -224,32 +195,23 @@ def add_screenshot(
     owner_instruction: str,
     width: float = 6.35,
 ) -> None:
-    path = find_screenshot(*keywords)
-    if path:
-        paragraph = document.add_paragraph()
-        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = paragraph.add_run()
-        try:
-            if path.suffix.lower() == ".webp":
-                image_stream = BytesIO()
-                with Image.open(path) as image:
-                    image.convert("RGB").save(image_stream, format="PNG")
-                image_stream.seek(0)
-                shape = run.add_picture(image_stream, width=Inches(width))
-            else:
-                shape = run.add_picture(str(path), width=Inches(width))
-            shape._inline.docPr.set("descr", caption)
-            caption_paragraph = document.add_paragraph(caption, style="Caption")
-            caption_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            return
-        except Exception:
-            pass
-    add_callout(
-        document,
-        "OWNER ACTION REQUIRED — SCREENSHOT",
-        owner_instruction,
-        "action",
-    )
+    del keywords, width
+    table = document.add_table(rows=1, cols=1)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    cell = table.cell(0, 0)
+    set_cell_shading(cell, "F8FAFC")
+    set_cell_margins(cell, top=420, start=180, bottom=420, end=180)
+    paragraph = cell.paragraphs[0]
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    label = paragraph.add_run("FIGURE PLACEHOLDER")
+    label.bold = True
+    label.font.color.rgb = RGBColor.from_string(BLUE)
+    label.font.size = Pt(11)
+    detail = cell.add_paragraph(owner_instruction)
+    detail.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    detail.runs[0].font.color.rgb = RGBColor.from_string(GREY)
+    caption_paragraph = document.add_paragraph(caption, style="Caption")
+    caption_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
 
 def add_module_intro(document: Document, purpose: str, use_when: str, outputs: str) -> None:
@@ -366,7 +328,8 @@ def build_manual() -> Document:
         ["Document field", "Value"],
         [
             ["Software", "AI Blasting Suite — React/FastAPI web application"],
-            ["Manual version", "1.0 — repository baseline"],
+            ["Deployment", DEPLOYMENT_URL],
+            ["Manual version", "1.1 — GeoMotion 3D deployment"],
             ["Prepared", date.today().strftime("%d %B %Y")],
             ["Intended users", "Blasting engineers, reviewers, planners, analysts, trainers and authorised students"],
             ["Status", "Draft for owner review and site-specific completion"],
@@ -387,7 +350,7 @@ def build_manual() -> Document:
     add_callout(
         document,
         "OWNER REVIEW REQUIRED",
-        "Yellow boxes identify information or screenshots that could not be authoritatively confirmed from the application and repository. The software owner should complete these items before releasing this manual as a controlled document.",
+        "Yellow boxes identify owner-supplied governance information that still requires completion. Labelled figure placeholders are intentionally empty so the document owner can insert approved deployment screenshots.",
         "action",
     )
     document.add_page_break()
@@ -407,12 +370,15 @@ def build_manual() -> Document:
     add_table(
         document,
         ["Version", "Date", "Author/owner", "Change"],
-        [["1.0", date.today().isoformat(), "Generated from the current application baseline", "Initial comprehensive user manual"]],
+        [
+            ["1.0", date.today().isoformat(), "Generated from repository baseline", "Initial comprehensive user manual"],
+            ["1.1", date.today().isoformat(), "Updated from deployed GeoMotion branch", "Set production deployment, add GeoMotion 3D and replace screenshots with figure labels"],
+        ],
     )
     add_callout(
         document,
         "OWNER ACTION REQUIRED — DOCUMENT METADATA",
-        "Add the production URL, organisation name/logo, document identifier, software release/build number, support contact, formal approval names and next review date.",
+        "Add the organisation name/logo, document identifier, software release/build number, support contact, formal approval names and next review date. Verify that the deployment URL remains current.",
         "action",
     )
 
@@ -424,11 +390,11 @@ def build_manual() -> Document:
     document.add_heading("1. About this manual", level=1)
     document.add_heading("1.1 Purpose", level=2)
     document.add_paragraph(
-        "This manual explains how authorised users sign in, prepare data, run each analysis or planning module, interpret its outputs and export results. It covers the web application currently represented by the repository baseline."
+        f"This manual explains how authorised users sign in, prepare data, run each analysis or planning module, interpret its outputs and export results. It covers the deployment at {DEPLOYMENT_URL}, based on the GeoMotion 3D deployment branch."
     )
     document.add_heading("1.2 What the suite does", level=2)
     document.add_paragraph(
-        "AI Blasting Suite combines dataset quality checks, empirical calculations, machine-learning predictions, explainability, design optimisation and blast-timing simulation in one workspace. Its modules share the active combined dataset where indicated."
+        "AI Blasting Suite combines dataset quality checks, empirical calculations, machine-learning predictions, explainability, design optimisation, safety screening and three-dimensional blast-movement analysis in one workspace. Its modules share the active combined dataset where indicated."
     )
     document.add_heading("1.3 Intended audience", level=2)
     add_bullets(
@@ -448,13 +414,13 @@ def build_manual() -> Document:
             "Predictions and optimised recipes are decision-support outputs, not approvals or firing instructions.",
             "Machine-learning quality depends on the relevance, size and quality of the training dataset.",
             "Empirical constants and acceptance limits must be calibrated for the site.",
-            "The Delay Design & Simulation module is a planning draft tool and cannot control explosives or initiation hardware.",
+            "GeoMotion 3D is an uncalibrated planning and study tool. It cannot control explosives or initiation hardware and must not be used for field execution, dig-limit control, resource reporting or production decisions.",
             "A low predicted risk or a model classification never replaces engineering judgement, inspections, statutory controls or exclusion-zone procedures.",
         ],
     )
     document.add_heading("1.5 Conventions and common units", level=2)
     document.add_paragraph(
-        "Screenshots in this manual were captured in a local demonstration environment with sample data and authentication disabled. Production URLs, user identity, available datasets and calculated values can differ; the controls and workflow remain representative of the documented baseline."
+        "Figures are intentionally labelled placeholders. The document owner can insert approved screenshots from the deployment without changing the operating instructions. Values shown in examples are demonstration values unless their provenance is explicitly identified as measured."
     )
     add_table(
         document,
@@ -474,6 +440,9 @@ def build_manual() -> Document:
             ["Delay", "Time from initiation reference", "ms"],
             ["Coordinates", "X/easting, Y/northing and optional Z/elevation", "Project coordinate units; normally m, confirm site system"],
             ["Cost", "Initiation, explosive, drilling and total cost", "BWP in the current interface"],
+            ["cpht", "Diamond grade", "carats per hundred tonnes"],
+            ["VOD", "Velocity of detonation", "m/s"],
+            ["Voxel", "Three-dimensional material cell", "1 m × 1 m × 1 m in the authoritative GeoMotion model"],
         ],
     )
 
@@ -493,12 +462,14 @@ def build_manual() -> Document:
             ["Mhiya@debswana.bw"],
             ["Ttshambane@debswana.bw"],
             ["Mgaopelo@debswana.bw"],
+            ["SMoabi@debswana.bw"],
+            ["MMoleofe@debswana.bw"],
         ],
     )
     add_callout(
         document,
         "CONFIGURATION NOTE",
-        "The deployed environment can override this default list through VITE_ALLOWED_LOGIN_EMAILS and BLAST_ALLOWED_AUTH_EMAILS. Treat the table above as the repository baseline, not proof of the live production allowlist.",
+        "Deployment configuration can add frontend addresses or replace backend defaults through VITE_ALLOWED_LOGIN_EMAILS and BLAST_ALLOWED_AUTH_EMAILS. Treat the table above as the deployment-branch baseline, not proof of the live production allowlist.",
         "warning",
     )
     document.add_paragraph(
@@ -514,7 +485,7 @@ def build_manual() -> Document:
     add_steps(
         document,
         [
-            "Open the approved production URL in a current browser.",
+            f"Open {DEPLOYMENT_URL} in a current browser. Vercel Authentication may require an authorised Vercel session before the application sign-in page is displayed.",
             "Enter an authorised work email address.",
             "Select Send magic code.",
             "Retrieve the one-time code from the mailbox and enter it in Verification code.",
@@ -540,7 +511,7 @@ def build_manual() -> Document:
         ["Navigation group", "Modules"],
         [
             ["Analysis", "Prediction; Feature Importance; Parameter Optimisation"],
-            ["Operations", "Cost Optimisation; Delay Design & Simulation"],
+            ["Operations", "Cost Optimisation; GeoMotion 3D"],
             ["Safety / Geo", "Slope Stability; Back Break; Flyrock"],
             ["Admin", "Data Manager"],
         ],
@@ -589,7 +560,7 @@ def build_manual() -> Document:
             "Use Feature Importance to understand influential variables and data structure.",
             "Use Parameter Optimisation or Cost Optimisation to compare scenarios and trade-offs.",
             "Use Slope Stability, Back Break and Flyrock for additional safety screening.",
-            "Use Delay Design & Simulation to create and review a planning draft timing sequence.",
+            "Use GeoMotion 3D to validate a delay-bearing charged-hole tie-up and study synthetic post-blast material movement, recovery, loss and dilution.",
             "Export results, record dataset/version details and obtain qualified review.",
         ],
     )
@@ -914,108 +885,201 @@ def build_manual() -> Document:
         "Insert the Cost Optimisation engineering report after Compute KPIs using approved example values.",
     )
 
-    # 9 delay
-    document.add_heading("9. Delay Design & Simulation", level=1)
+    # 9 GeoMotion
+    document.add_heading("9. GeoMotion 3D", level=1)
     add_module_intro(
         document,
-        "Import hole coordinates, create transparent delay assignments, validate the design, simulate firing order and export planning drafts.",
-        "Planning and reviewing tie-up timing without communicating with initiation hardware.",
-        "Interactive plan, simulation, validation, delay-assignment CSV, project JSON and printable HTML report.",
+        "Move a charged-hole tie-up and optional one-metre mining block model through a reduced-order firing-event simulation, then study post-blast movement, ore loss, dilution, recovery and mixing.",
+        "Evaluating the complete blast-movement workflow, timing sensitivity and ore-control concepts before a calibrated production model is available.",
+        "Interactive 3D voxel model, movement/event diagnostics, ore-control KPIs, mixing matrix, movement CSV, full-resolution CSV.gz and result JSON.",
     )
     add_callout(
         document,
-        "PLANNING DRAFT ONLY",
-        "Do not use this module to arm, fire or directly control explosives. Do not connect it to detonator hardware. Every exported timing design requires qualified review and approval.",
+        "SYNTHETIC DEMONSTRATION / UNCALIBRATED — PLANNING ONLY",
+        "Current movement, geology, grade, recovery, dilution and uncertainty outputs are synthetic unless their provenance explicitly states measured. Do not use GeoMotion for field execution, firing, dig-limit control, resource reporting or production decisions. It is not a detonation hydrocode or a validated site movement predictor.",
         "danger",
     )
-    document.add_heading("9.1 CSV input", level=2)
+    document.add_heading("9.1 Four-stage workflow", level=2)
+    add_steps(
+        document,
+        [
+            "Upload a delay-bearing charged-hole tie-up, or select Load 182-hole diamond demonstration.",
+            "Optionally upload a measured 1 m mining block model. If none is supplied, the module creates a clearly labelled simulated block model.",
+            "Review movement, explosive, rock, joint, loader and timing assumptions, then select Event physics baseline or Event physics + uncertainty realization.",
+            "Select Run GeoMotion 3D, review the model provenance and validation messages, inspect ore-control outcomes, and export planning-only results.",
+        ],
+    )
+    add_screenshot(
+        document,
+        "Figure 8 — GeoMotion 3D upload, assumptions and run workflow.",
+        ("geomotion", "workflow"),
+        "Insert an approved screenshot showing the four GeoMotion stages, tie-up input, optional block-model input and Run GeoMotion 3D control.",
+    )
+
+    document.add_heading("9.2 Required charged-hole tie-up", level=2)
     add_table(
         document,
         ["Column", "Required", "Unit / behaviour"],
         [
-            ["X", "Yes", "Coordinate/easting; normally m, confirm site system"],
-            ["Y", "Yes", "Coordinate/northing; normally m, confirm site system"],
-            ["Hole ID", "No", "Text; blank/N/A values receive H001-style temporary IDs"],
-            ["Z", "No", "Elevation/project coordinate unit; normally m"],
-            ["Depth", "No", "m recommended"],
-            ["Charge", "No", "kg recommended"],
+            ["Hole ID", "Recommended", "Unique text identifier; missing IDs can be generated"],
+            ["X", "Yes", "Projected collar easting in m"],
+            ["Y", "Yes", "Projected collar northing in m"],
+            ["Z", "Yes", "Collar elevation in m RL"],
+            ["Depth", "Yes", "Total drilled depth in m; must be at least 1 m"],
+            ["Charge", "Yes", "Positive explosive mass in kg"],
+            ["Delay", "Yes", "Unique cumulative nominal firing time in ms"],
         ],
     )
     document.add_paragraph("Example:")
     example = document.add_paragraph()
     example.style = document.styles["No Spacing"]
     run = example.add_run(
-        "Hole ID,Depth,Charge,X,Y,Z\n"
-        "N1,14.454,616.027,-5363.884,4603.971,678.454"
+        "Hole ID,Depth,Charge,X,Y,Z,Delay\n"
+        "N1,14.454,616.027,-5363.884,4603.971,678.454,8000"
     )
     run.font.name = "Aptos Mono"
     run.font.size = Pt(8.5)
-    document.add_heading("9.2 Timing controls", level=2)
+    add_callout(
+        document,
+        "TIMING INTERPRETATION",
+        "Delay values must be cumulative firing times, not inter-hole increments. GeoMotion preserves the original values for audit and simulates Delay minus the minimum Delay. Duplicate or missing delays are rejected; the module does not invent a timing pattern.",
+        "note",
+    )
+    document.add_heading("9.3 Input validation", level=2)
+    add_bullets(
+        document,
+        [
+            "Blank or invalid X/Y/Z coordinates.",
+            "Missing, non-positive or implausible depth and charge values.",
+            "Missing or duplicate cumulative firing times.",
+            "Duplicate Hole IDs and near-overlapping collars.",
+            "Trailing empty rows, inferred floor RL and median nearest-hole spacing.",
+            "At least three valid holes and a coordinate footprint spanning both X and Y are required.",
+        ],
+    )
+
+    document.add_heading("9.4 Optional mining block model and measured datasets", level=2)
     add_table(
         document,
-        ["Control", "Default", "Meaning"],
+        ["Dataset", "Required fields / purpose"],
         [
-            ["Pattern", "Row-by-row", "Manual, row-by-row, chevron, V-cut, box-cut/centre-out, point-directional or line-directional"],
-            ["Start delay", "0 ms", "Delay assigned to the first initiation point/group"],
-            ["In-row delay", "17 ms", "Increment between ordered holes in a row/group"],
-            ["Row-to-row delay", "42 ms", "Increment between detected rows/rings"],
-            ["Row tolerance", "Auto; initial 8", "Coordinate bin width used to detect rows; unit follows coordinates"],
-            ["Min / max delay", "0 / 10000 ms", "Allowed validation range"],
-            ["Rounding increment", "1 ms", "Increment used when delay rounding is enabled"],
-            ["Direction", "Left to right", "Coordinate ordering direction"],
-            ["Reverse firing order", "Off", "Reverses computed order"],
-            ["Apply rounding", "On", "Rounds delay to nearest configured increment"],
+            ["Mining block model", "CSV: X, Y, Z, Density; Block ID, Grade and Facies recommended. Optional Size X/Y/Z must each equal 1 m."],
+            ["Geological structures/joints", "Registered measured structure data for future validated backend use."],
+            ["Pre-blast / post-blast surface", "CSV containing X, Y, Z surface points."],
+            ["Movement monitors", "CSV containing X, Y, Z and measured dX, dY, dZ."],
+            ["Dig limits", "Polygon ID, vertex sequence, X, Y and destination."],
+            ["Loader/MMU geometry", "Operational selectivity information for loader-scale review."],
         ],
     )
-    document.add_heading("9.3 Timing patterns", level=2)
-    add_table(
-        document,
-        ["Pattern", "Purpose and selection"],
-        [
-            ["Manual", "Select holes in the intended firing sequence, then assign delays."],
-            ["Row-by-row", "Detected rows fire in order; holes use column order."],
-            ["Chevron", "Select a centre; holes progress centre-out within detected rows."],
-            ["V-cut", "Select an apex; holes progress by distance and V-shape spreading."],
-            ["Box-cut / centre-out", "Select a centre; inner distance rings fire before outer rings."],
-            ["Directional from point", "Select an initiation point; nearer holes fire first."],
-            ["Directional from line", "Select two holes; the last two define the initiation line."],
-        ],
-    )
-    document.add_heading("9.4 Procedure", level=2)
-    add_steps(
-        document,
-        [
-            "Enter a project name and import a CSV, or use Load sample CSV.",
-            "Confirm automatic mapping for Hole ID, X, Y, Z, Depth and Charge; apply corrected mapping if required.",
-            "Review Validation. Fix all X/Y errors and investigate missing IDs, duplicates, missing depth/charge and outliers.",
-            "Choose a timing pattern. Select the required centre, apex, order or two-point line on the plan.",
-            "Enter timing settings and select Assign delays.",
-            "Review the equal-aspect plan, firing order, timing groups and analysis indicators.",
-            "Use Play, Pause, Reset, Step next, timeline and 0.25×–5× speed to inspect the sequence.",
-            "Select holes to inspect or manually edit delay values.",
-            "Use colour modes for delay, row, charge, depth, timing group, fragmentation, PPV, airblast or flyrock screening.",
-            "Resolve validation errors, then export the Planning/Simulation Draft CSV, project JSON or printable report.",
-        ],
-    )
-    document.add_heading("9.5 Output formats", level=2)
-    add_table(
-        document,
-        ["Output", "Filename / contents"],
-        [
-            ["Delay CSV", "<project>_delay_assignment_planning_draft.csv; IDs, coordinates, timing, estimates, warnings and draft note"],
-            ["Project JSON", "<project>_project.json; project settings, holes, timings and timestamps"],
-            ["Printable report", "New browser tab or <project>_delay_report_planning_draft.html if pop-up is blocked"],
-        ],
-    )
-    document.add_heading("9.6 Screening indicators", level=2)
     document.add_paragraph(
-        "The module displays completeness, holes on the same delay, charge summaries, fragmentation X50, PPV, airblast and flyrock screening. These are simplified, uncalibrated planning estimates. They do not guarantee field performance or safety."
+        "A validated uploaded mining block model directly replaces simulated geology. Other optional files are registered and schema-validated, but registration alone does not mean their contents changed the simulation."
+    )
+
+    document.add_heading("9.5 Movement assumptions", level=2)
+    add_table(
+        document,
+        ["Input", "Default", "Unit / purpose"],
+        [
+            ["Burden", "6", "m"],
+            ["Spacing", "7", "m"],
+            ["Hole diameter", "250", "mm"],
+            ["Average stemming", "5.02", "m"],
+            ["Subdrill", "1", "m"],
+            ["Rock density", "2.35", "t/m³"],
+            ["Powder factor", "0.92", "kg/m³"],
+            ["Swell factor", "1.25", "ratio"],
+            ["Cutoff grade", "12", "cpht"],
+            ["Free-face azimuth", "180", "degrees"],
+            ["Model cell", "1", "m; authoritative calculation resolution"],
+            ["Relative energy", "1", "ratio"],
+        ],
+    )
+    document.add_heading("9.6 Explosive, rock, joint and loader defaults", level=2)
+    add_table(
+        document,
+        ["Input", "Default", "Unit / purpose"],
+        [
+            ["S135B density", "1,250.51", "kg/m³"],
+            ["S135B RWS", "115", "%"],
+            ["Nominal VOD / uncertainty", "4,500 / 1,000", "m/s"],
+            ["Electronic timing scatter", "Enabled", "σ = 0.094 + 0.000345 × normalized delay, ms"],
+            ["UCS / tensile strength", "120 / 10", "MPa"],
+            ["Young's modulus", "55", "GPa"],
+            ["Poisson ratio / damping", "0.24 / 0.28", "ratios"],
+            ["Fragmentation index", "0.55", "0–1"],
+            ["Joint dip / direction", "70 / 90", "degrees"],
+            ["Joint spacing / persistence", "2.5 / 0.60", "m / 0–1"],
+            ["Loader bucket", "100", "t"],
+            ["Minimum mining unit", "5", "m"],
+        ],
+    )
+    add_callout(
+        document,
+        "ASSUMPTION CONTROL",
+        "Defaults are synthetic/site assumptions until replaced by signed-off mine files, laboratory measurements or manufacturer records. Record every changed value, source and approver with the exported result.",
+        "warning",
+    )
+
+    document.add_heading("9.7 Engine modes and fallback", level=2)
+    add_table(
+        document,
+        ["Mode/state", "Meaning"],
+        [
+            ["Event physics baseline", "Reduced-order timed event physics without a site-calibrated residual."],
+            ["Event physics + uncertainty realization", "Event physics with repeatable sampled timing and VOD uncertainty; not a validated AI prediction."],
+            ["Authoritative backend", "Computes contiguous 1 m voxels and can provide full-resolution gzip CSV export."],
+            ["Coarse browser preview", "Used only if the GeoMotion backend returns 404/405; runs a clearly labelled 3 m preview and is not the full engine."],
+        ],
+    )
+
+    document.add_heading("9.8 3D review controls", level=2)
+    add_table(
+        document,
+        ["Control", "Options / purpose"],
+        [
+            ["Model view", "In-situ model; Movement timeline; Post-blast model"],
+            ["Colour", "Ore/waste; Kimberlite facies; grade cpht; displacement; uncertainty; burden velocity; peak impulse"],
+            ["Vectors", "Show sampled source-to-destination vectors"],
+            ["Camera", "Perspective; Plan; Section; drag to orbit and scroll to zoom"],
+            ["Z exaggeration", "1×, 2× or 3×"],
+            ["Voxel seam", "Joined or 1%, 2%, 3% separation"],
+            ["Section clip", "0–100% internal clipping"],
+            ["Timeline", "Scrub from in-situ to post-blast and review event number, hole and actual firing time"],
+        ],
     )
     add_screenshot(
         document,
-        "Figure 8 — Delay Design & Simulation workspace.",
-        ("delay", "design", "populated"),
-        "Insert the Delay Design & Simulation module after loading sample CSV and assigning row-by-row delays. Show the plan, timing controls and validation summary.",
+        "Figure 8A — GeoMotion 3D movement model, legend and ore-control KPIs.",
+        ("geomotion", "3d", "results"),
+        "Insert an approved post-run screenshot showing the solid voxel model, selected colour legend, camera/timeline controls and KPI cards.",
+    )
+
+    document.add_heading("9.9 Outputs and interpretation", level=2)
+    add_table(
+        document,
+        ["Output group", "Contents / units"],
+        [
+            ["Ore control", "Ore recovery %, ore loss %, dilution %, carat recovery %, predicted feed grade cpht and tonnes."],
+            ["Movement", "Mean/P95 displacement m, mean heave m, maximum throw m, burden velocity m/s and peak impulse m/s."],
+            ["Uncertainty", "Mean and P95 uncertainty in m, method and out-of-domain status."],
+            ["Mixing matrix", "Ore→ore, ore→waste, waste→ore and waste→waste tonnes and percent of total."],
+            ["Loader scale", "Recovery and dilution using the configured minimum mining unit."],
+            ["Conservation", "Modelled tonnes, contained carats, remap collisions and mass/carat balance flags."],
+            ["Events", "Nominal/actual time, timing error, charge, VOD, pressure proxy, energy, stemming effectiveness, burden velocity and released voxels."],
+        ],
+    )
+    document.add_paragraph(
+        "A zero mass-balance error confirms numerical conservation only; it does not prove that the predicted movement is accurate. Recovery and dilution become decision-relevant only after measured geology, dig limits and movement calibration are validated."
+    )
+    document.add_heading("9.10 Export formats", level=2)
+    add_table(
+        document,
+        ["Action", "File / contents"],
+        [
+            ["Movement CSV", "geomotion_3d_movement_vectors_synthetic.csv; displayed blocks with source/destination, vector, velocity, geology, grade, tonnes, carats, provenance and planning notice."],
+            ["Full 1 m CSV.gz", "geomotion_1m_full_resolution.csv.gz from the authoritative backend."],
+            ["Result JSON", "geomotion_3d_synthetic_result.json; project notice, assumptions, validation, metrics, blocks, events, transport, provenance and remap."],
+        ],
     )
 
     # 10 slope
@@ -1166,7 +1230,7 @@ def build_manual() -> Document:
             ["Feature Importance", "Active dataset; uploaded CSV through Data Manager", "On-screen diagnostics and plots"],
             ["Parameter Optimisation", "Active dataset; uploaded CSV through Data Manager", "param_surface.csv; printable HTML report"],
             ["Cost Optimisation", "Manual numeric inputs", "Cost report HTML; Pareto all/frontier CSV"],
-            ["Delay Design & Simulation", "CSV", "Planning-draft CSV; project JSON; printable HTML report"],
+            ["GeoMotion 3D", "Charged-hole CSV; optional 1 m block-model CSV and measured datasets", "Movement CSV; full-resolution CSV.gz; result JSON; 3D model and KPIs"],
             ["Slope Stability", "CSV, XLSX, XLS", "On-screen classification and sketch"],
             ["Back Break", "CSV", "On-screen prediction, importance and surface"],
             ["Flyrock", "CSV", "On-screen ML/empirical prediction, importance and surface"],
@@ -1186,7 +1250,7 @@ def build_manual() -> Document:
     )
     document.add_heading("13.2 Printable HTML reports", level=2)
     document.add_paragraph(
-        "Prediction, Parameter Optimisation, Cost Optimisation and Delay Design generate printable HTML. The report opens in a browser tab; use the browser Print command to print or Save as PDF. If a pop-up is blocked, allow pop-ups for the approved application or use the downloaded HTML file."
+        "Prediction, Parameter Optimisation and Cost Optimisation generate printable HTML. The report opens in a browser tab; use the browser Print command to print or Save as PDF. GeoMotion exports structured CSV/CSV.gz and JSON rather than a printable HTML report."
     )
     document.add_heading("13.3 Record retention", level=2)
     add_bullets(
@@ -1215,7 +1279,9 @@ def build_manual() -> Document:
             ["Poor/negative test R²", "Weak, small or non-representative dataset.", "Do not rely on the model; improve data and obtain technical review."],
             ["Parameter optimisation times out", "Search workload or backend response time.", "Retry once, use valid distinct axes and review dataset size/ranges."],
             ["Constraint shows Check", "Current or optimised design violates a configured limit.", "Review the specific ratio/limit; do not approve until resolved by qualified personnel."],
-            ["Delay CSV has no holes", "X/Y columns missing or not mapped.", "Map valid numeric X and Y columns and re-import."],
+            ["GeoMotion rejects the tie-up", "Required X/Y/Z/depth/charge/delay data are missing, invalid, or delays are duplicated.", "Correct the source charged-hole file; use unique cumulative Delay values for every valid hole."],
+            ["GeoMotion shows coarse 3 m preview", "The upgraded backend returned 404/405.", "Treat it only as a browser preview; deploy/restore the authoritative backend before expecting 1 m physics or full-resolution export."],
+            ["GeoMotion block model rejected", "Required fields are missing or block dimensions are not 1 m.", "Provide X,Y,Z,Density and resample Size X/Y/Z to 1 m; include Block ID, Grade and Facies where available."],
             ["Printable report does not open", "Browser blocked the new tab.", "Allow pop-ups for the approved site or use the downloaded HTML fallback."],
             ["Excel export will not open correctly", "Current Data Manager export is CSV content with .xlsx name.", "Use Export Filtered → CSV; convert to XLSX in spreadsheet software if required."],
         ],
@@ -1248,8 +1314,13 @@ def build_manual() -> Document:
             ["Back break", "Rock breakage extending behind the intended final wall or last row."],
             ["Empirical model", "Equation fitted or calibrated from observed practice rather than a learned black-box model."],
             ["Flyrock", "Rock projected beyond the intended blast area."],
+            ["cpht", "Carats per hundred tonnes; grade unit used in GeoMotion."],
+            ["Dilution", "Waste entering material classified and routed as ore."],
+            ["Facies", "Geological material subdivision with distinct properties."],
             ["Kuz–Ram", "Empirical fragmentation model used to estimate a characteristic mean size."],
             ["Machine learning (ML)", "Model trained from historical input/output observations."],
+            ["Minimum mining unit (MMU)", "Operational selectivity scale used to calculate loader-scale recovery and dilution."],
+            ["Ore loss", "Source ore ending in a waste-classified destination."],
             ["Pareto frontier", "Solutions for which one objective cannot improve without worsening another."],
             ["PCA", "Principal component analysis; transforms correlated variables into components explaining variance."],
             ["Permutation importance", "Model performance loss when one feature is shuffled."],
@@ -1257,6 +1328,7 @@ def build_manual() -> Document:
             ["Scaled burden", "Burden normalised by a charge-related term for screening confinement/throw risk."],
             ["Scaled distance", "Distance normalised by charge per delay for vibration/airblast relationships."],
             ["Surrogate model", "Faster approximation used to explore or optimise an expensive response."],
+            ["Voxel", "Three-dimensional material cell; GeoMotion's authoritative source model uses contiguous 1 m cells."],
         ],
     )
 
@@ -1269,15 +1341,16 @@ def build_manual() -> Document:
         document,
         ["Item", "Required owner action", "Complete"],
         [
-            ["Production identity", "Add organisation logo/name, production URL, software build/release and document identifier.", "☐"],
+            ["Production identity", f"Add organisation logo/name, software build/release and document identifier; verify {DEPLOYMENT_URL}.", "☐"],
             ["Approval", "Add document owner, technical reviewer, qualified blasting reviewer and release signatures.", "☐"],
             ["Access list", "Verify deployed frontend/backend allowlists and define access review/revocation process.", "☐"],
             ["Support", "Add service desk and escalation details.", "☐"],
             ["Site constants", "Document approved PPV, airblast, fragmentation and flyrock limits and calibrated constants.", "☐"],
             ["Coordinate system", "State the approved X/Y/Z coordinate reference system and units.", "☐"],
             ["Cost basis", "Confirm currency, effective date, tax basis and cost-rate ownership.", "☐"],
-            ["Model governance", "Add model/dataset owners, approved datasets, validation status and retraining controls.", "☐"],
-            ["Screenshots", "Replace any yellow screenshot placeholders with approved production screenshots.", "☐"],
+            ["Model governance", "Add model/dataset owners, approved datasets, GeoMotion calibration status, validation thresholds and retraining/change controls.", "☐"],
+            ["GeoMotion data", "Define approved tie-up, block-model, survey, movement-monitor, dig-limit and reconciliation sources with sign-off responsibilities.", "☐"],
+            ["Figures", "Insert approved deployment screenshots in each labelled figure placeholder.", "☐"],
             ["Excel limitation", "Correct or formally document the nominal XLSX export behaviour.", "☐"],
             ["Training", "Add required competence, induction and refresher requirements.", "☐"],
             ["Retention", "Add the applicable document and blast-record retention period.", "☐"],
@@ -1286,7 +1359,7 @@ def build_manual() -> Document:
     add_callout(
         document,
         "FINAL RELEASE GATE",
-        "A qualified blasting reviewer must confirm that the manual's limits, terminology, units, screenshots and workflows match the deployed software and local procedures before operational use.",
+        "A qualified blasting reviewer must confirm that the manual's limits, terminology, units, figures and workflows match the deployed software and local procedures. GeoMotion must remain planning-only until mine data, calibration and governance acceptance criteria are approved.",
         "danger",
     )
 
@@ -1299,7 +1372,7 @@ def main() -> None:
     document.core_properties.title = "AI Blasting Suite User Manual"
     document.core_properties.subject = "Operating instructions, module inputs, outputs, formats and units"
     document.core_properties.author = "AI Blasting Suite documentation"
-    document.core_properties.keywords = "blasting, user manual, prediction, optimisation, delay design"
+    document.core_properties.keywords = "blasting, user manual, prediction, optimisation, GeoMotion 3D, ore movement"
     document.core_properties.comments = "Draft for owner and qualified blasting review."
     document.save(OUTPUT)
     print(f"Generated {OUTPUT}")
