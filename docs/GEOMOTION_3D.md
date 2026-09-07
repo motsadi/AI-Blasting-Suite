@@ -38,6 +38,8 @@ GeoMotion can run from the delay-bearing tie-up alone by generating a clearly la
 
 When available, users can upload a CSV block model containing `X,Y,Z,Density`, with `Block ID,Grade,Facies` recommended. Optional `Size X,Size Y,Size Z` fields must each equal 1 m, giving a block volume of exactly 1 m³; other dimensions are rejected with an instruction to resample. Tonnes are calculated as `density (t/m³) × block volume (1 m³)`. The model's measured density, grade and facies then replace the simulated geology and drive tonnes, ore/waste classification, contained grade, movement and mixing outputs.
 
+Here, 1 m³ means one cubic metre, not one cubic centimetre. A 1 cm³ mine model would require 1,000,000 cells per cubic metre and is not computationally practical at blast scale.
+
 ## Other optional measured datasets
 
 The UI can also register geological structures, pre/post-blast surfaces, movement monitors, dig limits and loader/MMU geometry. Backend CSV adapters validate:

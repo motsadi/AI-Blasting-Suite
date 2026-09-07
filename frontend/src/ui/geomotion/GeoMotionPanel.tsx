@@ -559,6 +559,7 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
           <div className="geomotionDivider" />
           <div className="sectionTitle">2. Mining block model <span className="pill">Optional</span></div>
           <div className="subtitle">If available, add a 1 m³-cell CSV with X, Y, Z and Density. Every cell must be 1 m × 1 m × 1 m. Otherwise GeoMotion builds a simulated model at the same volume and dimensions.</div>
+          <div className="geomotionModelNote">Engineering basis: 1 m³ means one cubic metre. A literal 1 cm³ cell would require 1,000,000 cells per cubic metre and is not practical for a mine-scale blast model.</div>
           <label className="geomotionDropzone">
             <span>{blockModelFile ? "Measured block model ready" : "Use my mining block model"}</span>
             <small>{blockModelFile ? blockModelFile.name : "Optional CSV · cells not exactly 1 m³ are rejected."}</small>
