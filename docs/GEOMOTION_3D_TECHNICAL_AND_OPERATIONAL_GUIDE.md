@@ -39,7 +39,7 @@ This distinction is essential:
 | Capability | Current status |
 |---|---|
 | Delay-bearing tie-up import | Implemented |
-| One-metre physics calculation | Implemented |
+| 1 m³-cell physics calculation (1 m × 1 m × 1 m) | Implemented |
 | Timed hole/deck event sequence | Implemented |
 | S135B reduced-order energy model | Implemented with assumptions |
 | Dynamic relief approximation | Implemented |
@@ -57,7 +57,7 @@ This distinction is essential:
 2. Validate coordinates, depths, charges and unique timing.
 3. Normalize firing time so the first event occurs at zero milliseconds.
 4. Add hole/deck, explosive, rock, joint and ore-control assumptions.
-5. Construct contiguous 1 × 1 × 1 m source voxels.
+5. Construct contiguous 1 m³ source cells (1 m × 1 m × 1 m).
 6. Process holes/decks in actual sampled firing order.
 7. Apply energy, pressure/impulse, burden velocity, confinement and relief effects.
 8. Advance voxel movement through the firing sequence.
@@ -190,9 +190,9 @@ The editable defaults include:
 
 These are not measured mine properties. Laboratory tests, geotechnical domains and structural mapping should replace them.
 
-## 9. One-metre voxel model
+## 9. One-cubic-metre cell model
 
-The source volume is divided into contiguous 1 × 1 × 1 m cells. Each voxel contains:
+The source volume is divided into contiguous cells measuring 1 m × 1 m × 1 m. Each cell therefore has a volume of exactly 1 m³ and contains:
 
 - source X, Y and Z;
 - density and tonnes;
@@ -202,9 +202,9 @@ The source volume is divided into contiguous 1 × 1 × 1 m cells. Each voxel con
 - contained carats; and
 - provenance.
 
-Voxel tonnes are:
+Cell tonnes are:
 
-`tonnes = density × 1 m³`
+`tonnes = density (t/m³) × cell volume (1 m³)`
 
 Contained carats are:
 
@@ -220,7 +220,7 @@ Each hole or deck becomes an event. Events are sorted by sampled actual firing t
 
 ### 10.2 Spatial influence
 
-A three-dimensional spatial index identifies voxels close enough to be affected by each event. Influence decreases with distance. This avoids calculating every hole against every voxel and makes approximately 200,000-voxel simulations practical.
+A three-dimensional spatial index identifies cells close enough to be affected by each event. Influence decreases with distance. This avoids calculating every hole against every cell and makes approximately 200,000-cell simulations practical.
 
 ### 10.3 Pressure, impulse and burden velocity
 
@@ -234,7 +234,7 @@ For each event, GeoMotion estimates:
 - local impulse velocity; and
 - representative burden velocity.
 
-A voxel’s approximate speed increment follows an energy relationship:
+A cell’s approximate speed increment follows an energy relationship:
 
 `speed ≈ sqrt(2 × allocated movement energy / local voxel mass)`
 
@@ -250,7 +250,7 @@ This reduced-order release field represents the operational concept that a hole 
 
 Between firing events:
 
-- voxel positions advance according to current velocity;
+- cell positions advance according to current velocity;
 - velocity decays according to damping;
 - later events add new impulse; and
 - effective timing is accumulated for each voxel.
@@ -383,7 +383,7 @@ Ore-to-waste is loss. Waste-to-ore contributes dilution.
 
 ### 12.5 Loader-scale metrics
 
-One-metre geological selectivity is not achievable by a production loader. GeoMotion groups destination cells into a configurable minimum mining unit and calculates loader-scale recovery and dilution.
+One-cubic-metre geological-cell selectivity is not achievable by a production loader. GeoMotion groups destination cells into a configurable minimum mining unit and calculates loader-scale recovery and dilution.
 
 This distinction prevents presenting fine voxel selectivity as an operationally achievable result.
 
@@ -401,7 +401,7 @@ The interface provides:
 - vertical exaggeration; and
 - event timeline playback.
 
-The backend computes 1 m voxels. Interactive responses may aggregate contiguous voxels into 2 m level-of-detail cubes for performance. Full-resolution records remain available from the authoritative compressed export.
+The backend computes 1 m³ cells (1 m × 1 m × 1 m). Interactive responses may aggregate contiguous cells into larger level-of-detail cubes for performance. Full-resolution records remain available from the authoritative compressed export.
 
 If the interface warns that it is using a coarse 3 m browser preview, the upgraded Cloud Run endpoint is unavailable. That preview must not be described as the full engine.
 
@@ -563,7 +563,7 @@ Every result should record engine version, assumptions, provenance, input files,
 - Fracture formation and fragment contacts are not explicitly solved.
 - Registered optional-file metadata does not yet mean the contents affected a run.
 - Uncertainty is a sensitivity proxy, not calibrated probability.
-- Level-of-detail visualization may use larger cubes than the 1 m physics grid.
+- Level-of-detail visualization may use larger cubes than the 1 m³ physics cells.
 - Zero mass-balance error confirms conservation, not prediction accuracy.
 - Recovery and dilution are only meaningful when real block models and dig limits are used.
 
@@ -594,4 +594,4 @@ GeoMotion becomes operationally valuable only as the first category grows and th
 - **Residual model:** AI model learning errors remaining after physics prediction.
 - **RWS:** Relative weight strength compared with a reference explosive.
 - **VOD:** Velocity of detonation.
-- **Voxel:** A three-dimensional material cell.
+- **Voxel:** A three-dimensional material cell; GeoMotion physics voxels are exactly 1 m³ (1 m × 1 m × 1 m).

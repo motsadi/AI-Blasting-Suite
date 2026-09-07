@@ -29,15 +29,24 @@ def _number(row: dict[str, str], names: Iterable[str], required: bool = True) ->
 def parse_block_model_csv(text: str) -> list[dict]:
     output = []
     for index, row in enumerate(_rows(text), start=1):
+        size_x = _number(
+            row, ("size x", "size_x_m", "dx", "block size x"), required=False
+        )
+        size_y = _number(
+            row, ("size y", "size_y_m", "dy", "block size y"), required=False
+        )
+        size_z = _number(
+            row, ("size z", "size_z_m", "dz", "block size z"), required=False
+        )
         output.append(
             {
                 "id": row.get("block id") or row.get("id") or f"B{index:07d}",
                 "x": _number(row, ("x", "easting")),
                 "y": _number(row, ("y", "northing")),
                 "z": _number(row, ("z", "rl", "elevation")),
-                "size_x_m": _number(row, ("size x", "dx", "block size x"), required=False) or 1.0,
-                "size_y_m": _number(row, ("size y", "dy", "block size y"), required=False) or 1.0,
-                "size_z_m": _number(row, ("size z", "dz", "block size z"), required=False) or 1.0,
+                "size_x_m": 1.0 if size_x is None else size_x,
+                "size_y_m": 1.0 if size_y is None else size_y,
+                "size_z_m": 1.0 if size_z is None else size_z,
                 "density_t_m3": _number(row, ("density", "density_t_m3")),
                 "grade_cpht": _number(row, ("grade", "grade_cpht", "cpht"), required=False) or 0.0,
                 "facies": row.get("facies") or row.get("material") or "UNKNOWN",

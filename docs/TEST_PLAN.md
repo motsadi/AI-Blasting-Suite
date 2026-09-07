@@ -4,7 +4,7 @@ Use this checklist before deploying changes to the GeoMotion 3D module.
 
 ## GeoMotion demonstration
 
-- Load the built-in delay-bearing 182-hole diamond demonstration and confirm 1 m physics resolution.
+- Load the built-in delay-bearing 182-hole diamond demonstration and confirm every physics cell is exactly 1 m³ (1 m × 1 m × 1 m).
 - Import `Hole_data_v1.csv`; confirm cumulative times are preserved, normalized to zero and its invalid depth/charge rows are explicitly excluded.
 - Confirm a tie-up without Delay, with missing Delay or duplicate firing times cannot run.
 - Run physics mode twice with the same seed and confirm identical results.
@@ -18,7 +18,7 @@ Use this checklist before deploying changes to the GeoMotion 3D module.
 - Switch among in-situ, movement timeline, and post-blast views.
 - Orbit, zoom, clip sections, change camera and Z exaggeration, join/separate voxels, toggle vectors, and colour by all overlays.
 - Export LOD movement CSV, result JSON and authoritative full-resolution CSV.gz; confirm synthetic warnings.
-- Confirm the browser fallback identifies itself as a coarse 3 m preview and never claims a 1 m result.
+- Confirm the browser fallback identifies itself as a coarse preview and never claims an authoritative 1 m³-cell result.
 - Confirm failed API calls and malformed inputs produce visible errors.
 - Confirm the module contains no arming, firing, detonator programming, or hardware controls.
 

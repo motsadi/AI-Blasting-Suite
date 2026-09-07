@@ -7,7 +7,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from ..explosives import S135BProfile
-from ..schemas import GeoMotionRequest
+from ..schemas import GEOMOTION_CELL_VOLUME_M3, GeoMotionRequest
 from .pressure import event_energy
 from .scheduler import BlastEvent, build_event_queue
 
@@ -48,7 +48,11 @@ def build_synthetic_voxels(request: GeoMotionRequest) -> VoxelField:
         positions = np.array([[block.x, block.y, block.z] for block in blocks], dtype=float)
         density = np.array([block.density_t_m3 for block in blocks], dtype=float)
         grade = np.array([block.grade_cpht for block in blocks], dtype=float)
-        tonnes = density.copy()  # Validated 1 m × 1 m × 1 m cells.
+        cell_volumes_m3 = np.array(
+            [block.size_x_m * block.size_y_m * block.size_z_m for block in blocks],
+            dtype=float,
+        )
+        tonnes = density * cell_volumes_m3
         facies = np.array([block.facies for block in blocks], dtype=object)
         source_class = np.where(grade >= a.cutoff_grade_cpht, "ORE", "WASTE")
         return VoxelField(
@@ -107,7 +111,7 @@ def build_synthetic_voxels(request: GeoMotionRequest) -> VoxelField:
         np.where(contact, 3.0 * np.maximum(0.0, 1.12 - radius) / 0.30, 0.0),
     )
     grade = np.maximum(0.0, grade + rng.normal(0, 1.8, len(positions)))
-    tonnes = density * cell**3
+    tonnes = density * GEOMOTION_CELL_VOLUME_M3
     source_class = np.where(grade >= a.cutoff_grade_cpht, "ORE", "WASTE")
     return VoxelField(
         positions=positions,

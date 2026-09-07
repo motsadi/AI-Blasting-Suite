@@ -280,7 +280,9 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
   const [assumptions, setAssumptions] = useState<GeoMotionAssumptions>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
-      return saved ? { ...DIAMOND_DEMO_ASSUMPTIONS, ...JSON.parse(saved) } : DIAMOND_DEMO_ASSUMPTIONS;
+      return saved
+        ? { ...DIAMOND_DEMO_ASSUMPTIONS, ...JSON.parse(saved), cell_size_m: 1 }
+        : DIAMOND_DEMO_ASSUMPTIONS;
     } catch {
       return DIAMOND_DEMO_ASSUMPTIONS;
     }
@@ -436,11 +438,13 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
 
   function exportVectors() {
     if (!result) return;
-    const header = "Block ID,Source X,Source Y,Source Z,Destination X,Destination Y,Destination Z,dX,dY,dZ,Velocity X,Velocity Y,Velocity Z,Displacement m,Uncertainty m,Peak Impulse m/s,Burden Velocity m/s,Contributing Event,Facies,Source Class,Destination Class,Grade cpht,Tonnes,Contained Carats,Provenance,Notice";
+    const header = "Block ID,Source X,Source Y,Source Z,Destination X,Destination Y,Destination Z,dX,dY,dZ,Velocity X,Velocity Y,Velocity Z,Displacement m,Uncertainty m,Peak Impulse m/s,Burden Velocity m/s,Contributing Event,Facies,Source Class,Destination Class,Grade cpht,Tonnes,Contained Carats,Physics Cell X m,Physics Cell Y m,Physics Cell Z m,Physics Cell Volume m3,Represented Cell Count,Provenance,Notice";
     const rows = result.blocks.map((block) => [
       block.id, ...block.source, ...block.destination, ...block.vector, ...block.velocity, block.displacement_m, block.uncertainty_m,
       block.peak_impulse_m_s, block.burden_velocity_m_s, block.contributing_event, block.facies, block.source_class,
-      block.destination_class, block.grade_cpht, block.tonnes, block.contained_carats, block.provenance, `"${NOTICE}"`,
+      block.destination_class, block.grade_cpht, block.tonnes, block.contained_carats,
+      ...(block.physics_cell_dimensions_m ?? [1, 1, 1]),
+      block.physics_cell_volume_m3 ?? 1, block.represented_cell_count ?? 1, block.provenance, `"${NOTICE}"`,
     ].join(","));
     downloadTextFile([header, ...rows].join("\n"), "geomotion_3d_movement_vectors_synthetic.csv", "text/csv");
   }
@@ -465,11 +469,11 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
             headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
             body: JSON.stringify(request),
           });
-      if (!response.ok) throw new Error(response.status === 404 ? "Deploy the GeoMotion Cloud Run backend to enable full 1 m exports." : `Full export failed (${response.status}).`);
+      if (!response.ok) throw new Error(response.status === 404 ? "Deploy the GeoMotion Cloud Run backend to enable full 1 m³ cell exports." : `Full export failed (${response.status}).`);
       const url = URL.createObjectURL(await response.blob());
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = "geomotion_1m_full_resolution.csv.gz";
+      anchor.download = "geomotion_1m3_full_resolution.csv.gz";
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (caught) {
@@ -492,6 +496,11 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
       </span>
     </label>
   );
+  const physicsCellEdgeM = result?.metrics.voxel_edge_length_m ?? result?.metrics.voxel_size_m ?? 1;
+  const physicsCellDimensions = result?.blocks[0]?.physics_cell_dimensions_m
+    ?? [physicsCellEdgeM, physicsCellEdgeM, physicsCellEdgeM];
+  const physicsCellVolumeM3 = result?.metrics.voxel_volume_m3
+    ?? physicsCellDimensions[0] * physicsCellDimensions[1] * physicsCellDimensions[2];
 
   return (
     <div className="geomotionWorkspace">
@@ -499,7 +508,7 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
         <div>
           <div className="geomotionEyebrow">BLAST MOVEMENT • DILUTION • RECOVERY</div>
           <h2>GeoMotion 3D</h2>
-          <p>Move the mine's 1 m block model through the delay sequence, then identify ore loss, waste dilution, and practical post-blast dig outcomes.</p>
+          <p>Move the mine's 1 m³ block model (1 m × 1 m × 1 m cells) through the delay sequence, then identify ore loss, waste dilution, and practical post-blast dig outcomes.</p>
         </div>
         <div className="geomotionNotice">{NOTICE}</div>
       </section>
@@ -549,14 +558,14 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
 
           <div className="geomotionDivider" />
           <div className="sectionTitle">2. Mining block model <span className="pill">Optional</span></div>
-          <div className="subtitle">If available, add a 1 m × 1 m × 1 m CSV with X, Y, Z and Density. Otherwise GeoMotion builds a simulated 1 m model around the blast.</div>
+          <div className="subtitle">If available, add a 1 m³-cell CSV with X, Y, Z and Density. Every cell must be 1 m × 1 m × 1 m. Otherwise GeoMotion builds a simulated model at the same volume and dimensions.</div>
           <label className="geomotionDropzone">
             <span>{blockModelFile ? "Measured block model ready" : "Use my mining block model"}</span>
-            <small>{blockModelFile ? blockModelFile.name : "Optional CSV · non-unit blocks are rejected."}</small>
+            <small>{blockModelFile ? blockModelFile.name : "Optional CSV · cells not exactly 1 m³ are rejected."}</small>
             <input type="file" accept=".csv" onChange={(event) => registerDataset("grade_control_blocks", event.target.files?.[0] ?? null)} />
           </label>
           {!blockModelFile && holes.length ? (
-            <div className="geomotionModelNote">Simulated 1 m block model selected. Results remain uncalibrated until mine geology is supplied.</div>
+            <div className="geomotionModelNote">Simulated 1 m³ block model selected (1 m × 1 m × 1 m per cell). Results remain uncalibrated until mine geology is supplied.</div>
           ) : null}
         </section>
 
@@ -573,7 +582,13 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
             {numberField("Swell factor", "swell_factor", "ratio")}
             {numberField("Cutoff grade", "cutoff_grade_cpht", "cpht")}
             {numberField("Free-face azimuth", "free_face_azimuth_deg", "°")}
-            {numberField("Model cell", "cell_size_m", "m")}
+            <label className="geomotionField">
+              <span>Model cell</span>
+              <span className="geomotionInputWithUnit">
+                <input className="input" type="text" value="1 m × 1 m × 1 m" readOnly aria-label="Fixed model cell dimensions" />
+                <small>1 m³</small>
+              </span>
+            </label>
             {numberField("Relative energy", "explosive_relative_energy", "ratio")}
           </div>
           <details className="geomotionAdvanced">
@@ -636,7 +651,7 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
             disabled={running || holes.length < 3 || !!inputErrors.length}
             onClick={runSimulation}
           >
-            {running ? "Computing 1 m event physics…" : "Run GeoMotion 3D"}
+            {running ? "Computing 1 m³ cell physics…" : "Run GeoMotion 3D"}
           </button>
           {error ? <div className="error">{error}</div> : null}
         </section>
@@ -738,7 +753,11 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
                 {metric("Max burden velocity", `${format(result.metrics.max_burden_velocity_m_s, 3)} m/s`)}
                 {metric("Loader recovery", `${format(result.metrics.loader_recovery_percent, 2)}%`)}
                 {metric("Loader dilution", `${format(result.metrics.loader_dilution_percent, 2)}%`)}
-                {metric("Physics voxels", format(result.metrics.cells, 0), `${format(result.metrics.voxel_size_m, 1)} m resolution`)}
+                {metric(
+                  "Physics cells",
+                  format(result.metrics.cells, 0),
+                  `${format(physicsCellVolumeM3, 2)} m³ each (${format(physicsCellDimensions[0], 1)} m × ${format(physicsCellDimensions[1], 1)} m × ${format(physicsCellDimensions[2], 1)} m)`
+                )}
                 {metric("Mean uncertainty", `${format(result.uncertainty.mean_m, 2)} m`)}
                 {metric("P95 uncertainty", `${format(result.uncertainty.p95_m, 2)} m`)}
               </div>
@@ -758,7 +777,7 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
               {result.validation.warnings.map((warning) => <div key={warning} className="warningBox">{warning}</div>)}
               <div className="geomotionExportButtons">
                 <button className="btn btnPrimary" onClick={exportVectors}>Movement CSV</button>
-                <button className="btn" onClick={exportFullResolution}>Full 1 m CSV.gz</button>
+                <button className="btn" onClick={exportFullResolution}>Full 1 m³-cell CSV.gz</button>
                 <button className="btn" onClick={exportJson}>Result JSON</button>
               </div>
             </section>
