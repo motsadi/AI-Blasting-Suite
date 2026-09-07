@@ -136,6 +136,9 @@ export function simulateGeoMotionLocally(request: GeoMotionRequest): GeoMotionRe
           burden_velocity_m_s: round(displacement * 0.22),
           contributing_event: -1,
           size_m: cell,
+          physics_cell_dimensions_m: [cell, cell, levelHeight],
+          physics_cell_volume_m3: round(cell * cell * levelHeight),
+          represented_cell_count: 1,
           provenance: "synthetic",
         });
       }
@@ -195,7 +198,7 @@ export function simulateGeoMotionLocally(request: GeoMotionRequest): GeoMotionRe
     validation: {
       status: duplicateIds.length || overlaps.length ? "review" : "synthetic",
       warnings: [
-        "The Cloud backend did not yet expose GeoMotion; this is a coarse 3 m browser preview, not the 1 m event-physics result.",
+        "The Cloud backend did not yet expose GeoMotion; this browser preview uses coarse cells and is not the authoritative 1 m³ (1 m × 1 m × 1 m) event-physics result.",
         "Synthetic geology and calibration are demonstration data, not measured mine evidence.",
       ],
       duplicate_ids: duplicateIds,
@@ -205,6 +208,9 @@ export function simulateGeoMotionLocally(request: GeoMotionRequest): GeoMotionRe
     },
     metrics: {
       cells: blocks.length,
+      voxel_size_m: cell,
+      voxel_edge_length_m: cell,
+      voxel_volume_m3: round(cell * cell * levelHeight),
       total_tonnes: round(totalTonnes, 1),
       mass_balance_error_percent: 0,
       contained_carats: round(totalCarats, 1),

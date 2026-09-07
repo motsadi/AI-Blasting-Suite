@@ -9,7 +9,7 @@ from sklearn.ensemble import RandomForestRegressor
 
 from .physics.remap import settle_and_remap
 from .physics.solver import run_event_physics
-from .schemas import GeoMotionRequest
+from .schemas import GEOMOTION_CELL_EDGE_M, GEOMOTION_CELL_VOLUME_M3, GeoMotionRequest
 
 
 def _round(value: float, digits: int = 3) -> float:
@@ -60,7 +60,7 @@ def _validation(request: GeoMotionRequest) -> dict[str, Any]:
         )
     if request.block_model:
         warnings.append(
-            f"Measured 1 m block model accepted ({len(request.block_model):,} cells); movement calibration remains unvalidated."
+            f"Measured 1 m³ block model accepted ({len(request.block_model):,} cells, each 1 m × 1 m × 1 m); movement calibration remains unvalidated."
         )
     else:
         warnings.append(
@@ -417,6 +417,13 @@ def simulate(request: GeoMotionRequest) -> dict[str, Any]:
                 "burden_velocity_m_s": _round(visual_burden_velocity[group_index]),
                 "contributing_event": int(physics.contributing_event[first_index]),
                 "size_m": a.cell_size_m * lod_factor,
+                "physics_cell_dimensions_m": [
+                    GEOMOTION_CELL_EDGE_M,
+                    GEOMOTION_CELL_EDGE_M,
+                    GEOMOTION_CELL_EDGE_M,
+                ],
+                "physics_cell_volume_m3": GEOMOTION_CELL_VOLUME_M3,
+                "represented_cell_count": int(counts[group_index]),
                 "provenance": "measured_block_model" if request.block_model else "synthetic",
             }
         )
@@ -445,7 +452,9 @@ def simulate(request: GeoMotionRequest) -> dict[str, Any]:
     metrics = {
         "cells": total_blocks,
         "visual_cells": len(block_rows),
-        "voxel_size_m": a.cell_size_m,
+        "voxel_size_m": GEOMOTION_CELL_EDGE_M,
+        "voxel_edge_length_m": GEOMOTION_CELL_EDGE_M,
+        "voxel_volume_m3": GEOMOTION_CELL_VOLUME_M3,
         "total_tonnes": _round(float(np.sum(tonnes)), 1),
         "mass_balance_error_percent": 0.0,
         "contained_carats": _round(total_carats, 1),
@@ -526,7 +535,7 @@ def simulate(request: GeoMotionRequest) -> dict[str, Any]:
             "registered_dataset_kinds": ",".join(sorted(registered_datasets)) or "none",
         },
         "remap": {
-            "method": "conservative one-metre column settlement",
+            "method": "conservative 1 m³ cell column settlement",
             "collision_count": remap.collision_count,
             "occupied_cells": remap.occupied_cells,
             "mass_preserved": True,

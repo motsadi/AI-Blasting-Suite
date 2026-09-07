@@ -7,6 +7,9 @@ from pydantic import BaseModel, Field, field_validator
 
 Provenance = Literal["synthetic", "site_supplied", "manufacturer_supplied", "measured"]
 
+GEOMOTION_CELL_EDGE_M = 1.0
+GEOMOTION_CELL_VOLUME_M3 = GEOMOTION_CELL_EDGE_M**3
+
 
 class GeoMotionPrimer(BaseModel):
     explosive: str = "Pentolite"
@@ -59,7 +62,12 @@ class GeoMotionAssumptions(BaseModel):
     swell_factor: float = Field(default=1.25, ge=1.0, le=2.0)
     cutoff_grade_cpht: float = Field(default=12.0, ge=0, le=1000)
     free_face_azimuth_deg: float = Field(default=180.0, ge=0, lt=360)
-    cell_size_m: float = Field(default=1.0, ge=1.0, le=5.0)
+    cell_size_m: float = Field(
+        default=GEOMOTION_CELL_EDGE_M,
+        ge=GEOMOTION_CELL_EDGE_M,
+        le=GEOMOTION_CELL_EDGE_M,
+        description="Fixed edge length for a 1 m³ (1 m × 1 m × 1 m) physics cell.",
+    )
     explosive_relative_energy: float = Field(default=1.0, gt=0.2, le=2.5)
     explosive_density_kg_m3: float = Field(default=1250.51, ge=500, le=2000)
     explosive_rws_percent: float = Field(default=115.0, ge=25, le=250)
@@ -104,9 +112,9 @@ class GeoMotionBlockInput(BaseModel):
     x: float
     y: float
     z: float
-    size_x_m: float = Field(default=1.0, ge=0.99, le=1.01)
-    size_y_m: float = Field(default=1.0, ge=0.99, le=1.01)
-    size_z_m: float = Field(default=1.0, ge=0.99, le=1.01)
+    size_x_m: float = Field(default=GEOMOTION_CELL_EDGE_M, ge=GEOMOTION_CELL_EDGE_M, le=GEOMOTION_CELL_EDGE_M)
+    size_y_m: float = Field(default=GEOMOTION_CELL_EDGE_M, ge=GEOMOTION_CELL_EDGE_M, le=GEOMOTION_CELL_EDGE_M)
+    size_z_m: float = Field(default=GEOMOTION_CELL_EDGE_M, ge=GEOMOTION_CELL_EDGE_M, le=GEOMOTION_CELL_EDGE_M)
     density_t_m3: float = Field(gt=0.5, le=6.0)
     grade_cpht: float = Field(default=0.0, ge=0)
     facies: str = "UNKNOWN"

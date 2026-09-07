@@ -59,6 +59,9 @@ export interface GeoMotionBlock {
   burden_velocity_m_s: number;
   contributing_event: number;
   size_m: number;
+  physics_cell_dimensions_m?: [number, number, number];
+  physics_cell_volume_m3?: number;
+  represented_cell_count?: number;
   provenance: string;
 }
 

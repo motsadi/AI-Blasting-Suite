@@ -41,6 +41,10 @@ class GeoMotionEngineTests(unittest.TestCase):
         self.assertEqual(first["metrics"]["mass_balance_error_percent"], 0.0)
         self.assertGreater(first["metrics"]["total_tonnes"], 0)
         self.assertEqual(first["metrics"]["voxel_size_m"], 1.0)
+        self.assertEqual(first["metrics"]["voxel_edge_length_m"], 1.0)
+        self.assertEqual(first["metrics"]["voxel_volume_m3"], 1.0)
+        self.assertEqual(first["blocks"][0]["physics_cell_dimensions_m"], [1.0, 1.0, 1.0])
+        self.assertEqual(first["blocks"][0]["physics_cell_volume_m3"], 1.0)
         self.assertTrue(first["remap"]["mass_preserved"])
         self.assertTrue(first["events"])
 
@@ -100,12 +104,19 @@ class GeoMotionEngineTests(unittest.TestCase):
             GeoMotionRequest(**payload)
 
     def test_measured_csv_adapters(self):
-        blocks = parse_block_model_csv("X,Y,Z,Density,Grade,Facies\n1,2,3,2.4,20,VK\n")
+        blocks = parse_block_model_csv(
+            "X,Y,Z,Density,Grade,Facies,size_x_m,size_y_m,size_z_m\n"
+            "1,2,3,2.4,20,VK,1,1,1\n"
+        )
         monitors = parse_movement_monitors_csv("X,Y,Z,dX,dY,dZ\n1,2,3,4,5,6\n")
         self.assertEqual(blocks[0]["provenance"], "measured")
+        self.assertEqual(
+            [blocks[0]["size_x_m"], blocks[0]["size_y_m"], blocks[0]["size_z_m"]],
+            [1.0, 1.0, 1.0],
+        )
         self.assertEqual(monitors[0]["dx"], 4.0)
 
-    def test_measured_one_metre_block_model_drives_simulation(self):
+    def test_measured_one_cubic_metre_block_model_drives_simulation(self):
         payload = request("physics").model_dump()
         payload["block_model"] = [
             {
@@ -124,10 +135,12 @@ class GeoMotionEngineTests(unittest.TestCase):
         ]
         result = simulate(GeoMotionRequest(**payload))
         self.assertEqual(result["metrics"]["cells"], 48)
+        self.assertAlmostEqual(result["metrics"]["total_tonnes"], 48 * 2.4, places=1)
+        self.assertEqual(result["metrics"]["voxel_volume_m3"], 1.0)
         self.assertEqual(result["provenance"]["geology_rock_surfaces_and_grade"], "measured_block_model")
         self.assertTrue(all(block["provenance"] == "measured_block_model" for block in result["blocks"]))
 
-    def test_non_unit_block_dimensions_are_rejected(self):
+    def test_dimensions_other_than_exactly_one_cubic_metre_are_rejected(self):
         payload = request().model_dump()
         payload["block_model"] = [
             {
@@ -139,6 +152,11 @@ class GeoMotionEngineTests(unittest.TestCase):
                 "density_t_m3": 2.4,
             }
         ]
+        with self.assertRaises(ValidationError):
+            GeoMotionRequest(**payload)
+
+        payload = request().model_dump()
+        payload["assumptions"]["cell_size_m"] = 0.01
         with self.assertRaises(ValidationError):
             GeoMotionRequest(**payload)
 

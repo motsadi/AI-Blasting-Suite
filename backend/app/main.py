@@ -2324,11 +2324,11 @@ async def _geomotion_request_with_block_model(
             raise ValueError("Block model contains no valid cells.")
         invalid_sizes = [
             block for block in blocks
-            if any(abs(float(block[key]) - 1.0) > 0.01 for key in ("size_x_m", "size_y_m", "size_z_m"))
+            if any(abs(float(block[key]) - 1.0) > 1e-9 for key in ("size_x_m", "size_y_m", "size_z_m"))
         ]
         if invalid_sizes:
             raise ValueError(
-                f"{len(invalid_sizes)} block(s) are not 1 m × 1 m × 1 m. Resample the mining block model before simulation."
+                f"{len(invalid_sizes)} block(s) are not exactly 1 m × 1 m × 1 m (1 m³). Resample the mining block model before simulation."
             )
         payload["block_model"] = blocks
         request = GeoMotionRequest.model_validate(payload)
@@ -2343,7 +2343,7 @@ async def geomotion_simulate_upload(
     block_model: UploadFile = File(...),
     _token: str = Depends(require_auth),
 ):
-    """Run GeoMotion with a validated measured 1 m × 1 m × 1 m mining block model."""
+    """Run GeoMotion with a validated measured 1 m³ (1 m × 1 m × 1 m) block model."""
     request = await _geomotion_request_with_block_model(request_json, block_model)
     return simulate_geomotion(request)
 
@@ -2363,7 +2363,7 @@ def _geomotion_export_response(request: GeoMotionRequest):
         "destination_z", "dx", "dy", "dz", "displacement_m", "uncertainty_m",
         "peak_impulse_m_s", "burden_velocity_m_s", "contributing_event", "facies",
         "source_class", "destination_class", "grade_cpht", "tonnes", "contained_carats",
-        "provenance",
+        "physics_cell_volume_m3", "represented_cell_count", "provenance",
     ]
     writer = csv.DictWriter(buffer, fieldnames=fields)
     writer.writeheader()
@@ -2388,7 +2388,7 @@ def _geomotion_export_response(request: GeoMotionRequest):
         io.BytesIO(compressed),
         media_type="application/gzip",
         headers={
-            "Content-Disposition": 'attachment; filename="geomotion_1m_full_resolution.csv.gz"',
+            "Content-Disposition": 'attachment; filename="geomotion_1m3_full_resolution.csv.gz"',
             "X-GeoMotion-Notice": "Synthetic Demonstration - Uncalibrated - Planning Only",
         },
     )
@@ -2409,7 +2409,7 @@ async def geomotion_export_upload(
     block_model: UploadFile = File(...),
     _token: str = Depends(require_auth),
 ):
-    """Export movement vectors for a measured 1 m mining block model."""
+    """Export movement vectors for a measured 1 m³ mining block model."""
     request = await _geomotion_request_with_block_model(request_json, block_model)
     return _geomotion_export_response(request)
 
