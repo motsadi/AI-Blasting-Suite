@@ -429,7 +429,7 @@ function GeoMotionScene({
           pointOnPit(
             (ACTIVE_BENCH.innerRadius + ACTIVE_BENCH.outerRadius) / 2,
             (ACTIVE_BENCH.startAngle + ACTIVE_BENCH.endAngle) / 2,
-            ACTIVE_BENCH.elevation + 16,
+            ACTIVE_BENCH.elevation + 52,
           ),
           verticalExaggeration,
         ),
@@ -462,11 +462,9 @@ function GeoMotionScene({
       return delayTimes[Math.floor(clamp(timelineProgress, 0, 1) * Math.max(0, delayTimes.length - 1))];
     };
 
-    const holeGeometry = new THREE.SphereGeometry(3.1, 12, 8);
-    const holeMaterial = new THREE.MeshStandardMaterial({
+    const holeGeometry = new THREE.SphereGeometry(4.1, 12, 8);
+    const holeMaterial = new THREE.MeshBasicMaterial({
       color: "#ffffff",
-      roughness: 0.42,
-      metalness: 0.08,
       vertexColors: true,
     });
     const holeMesh = new THREE.InstancedMesh(holeGeometry, holeMaterial, holePoints.length);
