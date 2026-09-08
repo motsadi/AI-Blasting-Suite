@@ -293,7 +293,7 @@ function cameraFrame(
     if (preset === "section") {
       return { target, position: target.clone().add(new THREE.Vector3(320, 55, 0)) };
     }
-    return { target, position: target.clone().add(new THREE.Vector3(140, 125, 180)) };
+    return { target, position: target.clone().add(new THREE.Vector3(180, 145, 55)) };
   }
 
   const target = new THREE.Vector3(0, -42 * verticalExaggeration, 0);
@@ -352,8 +352,8 @@ function mapToActiveBench(
 ) {
   const u = clamp((x - bounds.xmin) / Math.max(bounds.xmax - bounds.xmin, 1), 0, 1);
   const v = clamp((y - bounds.ymin) / Math.max(bounds.ymax - bounds.ymin, 1), 0, 1);
-  const angleInset = 0.025;
-  const radiusInset = 0.007;
+  const angleInset = 0.012;
+  const radiusInset = 0.002;
   const angle =
     ACTIVE_BENCH.startAngle +
     angleInset +
@@ -588,7 +588,7 @@ function GeoMotionScene({
       return delayTimes[Math.floor(clamp(timelineProgress, 0, 1) * Math.max(0, delayTimes.length - 1))];
     };
 
-    const holeGeometry = new THREE.SphereGeometry(3.1, 12, 8);
+    const holeGeometry = new THREE.SphereGeometry(1.1, 10, 7);
     const holeMaterial = new THREE.MeshBasicMaterial({
       color: "#ffffff",
       vertexColors: true,
