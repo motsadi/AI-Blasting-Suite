@@ -90,16 +90,84 @@ body{
   margin-top:8px; padding:8px 10px; border-radius:9px; border:1px solid #fde68a;
   background:#fffbeb; color:#854d0e; font-size:11px; line-height:1.4;
 }
-.geomotionViewerCard{ padding:12px; overflow:hidden; }
-.geomotionViewerHeader{ display:flex; justify-content:space-between; align-items:center; gap:12px; padding:2px 3px 10px; }
-.geomotionViewerControls{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-.geomotionViewerControls .input{ width:auto; min-width:145px; }
+.geomotionViewerCard{
+  position:relative; display:flex; flex-direction:column; gap:10px; min-width:0;
+  padding:14px; overflow:hidden; background:var(--panel);
+}
+.geomotionViewerHeader{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; padding:2px 3px 0; }
+.geomotionViewerActions{ display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
+.geomotionContextRow{ display:flex; align-items:center; gap:7px; overflow-x:auto; padding:1px 2px 2px; scrollbar-width:thin; }
+.geomotionContextRow span{
+  flex:0 0 auto; padding:6px 9px; border:1px solid var(--border); border-radius:999px;
+  color:var(--muted); background:var(--bg-soft); font-size:10px; font-weight:800;
+}
+.geomotionContextRow span.active{ border-color:rgba(245,158,11,.48); color:#92400e; background:#fffbeb; }
+.geomotionViewerControls{
+  display:grid; grid-template-columns:repeat(5,minmax(125px,1fr)) auto; align-items:end; gap:8px;
+  padding:10px; border:1px solid var(--border); border-radius:13px; background:var(--bg-soft);
+}
+.geomotionViewerControls label{ display:grid; gap:4px; min-width:0; color:var(--muted); font-size:10px; font-weight:800; }
+.geomotionViewerControls label > span{ padding-left:2px; }
+.geomotionViewerControls .input{ width:100%; min-width:0; }
+.geomotionViewerControls .input:disabled,.geomotionViewerControls input:disabled{ cursor:not-allowed; opacity:.55; }
+.geomotionCheckbox{ display:flex!important; grid-auto-flow:column; align-items:center; justify-content:center; min-height:38px; padding:8px; border:1px solid var(--border); border-radius:10px; background:var(--panel); }
+.geomotionCheckbox input{ margin:0; }
 .geomotionTimeline{ display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:center; padding:6px 8px 10px; color:var(--muted); font-size:11px; font-weight:700; }
 .geomotionLegend{ display:flex; align-items:center; justify-content:flex-end; gap:12px; flex-wrap:wrap; padding:0 8px 9px; color:var(--muted); font-size:11px; font-weight:750; }
 .geomotionLegend span{ display:inline-flex; align-items:center; gap:5px; }
 .geomotionLegend i{ display:inline-block; width:13px; height:13px; border-radius:3px; border:1px solid rgba(15,23,42,.18); }
 .geomotionGradient{ width:90px; height:10px; border-radius:999px; background:linear-gradient(90deg,#2563eb,#22c55e,#f59e0b,#ef4444); border:1px solid rgba(15,23,42,.12); }
-.geomotionScene{ width:100%; min-height:560px; height:min(68vh,720px); border:1px solid var(--border); border-radius:14px; overflow:hidden; background:#f8fafc; }
+.geomotionPitLegend{
+  display:flex; align-items:center; gap:8px 13px; flex-wrap:wrap; min-height:26px; padding:0 4px;
+  color:var(--muted); font-size:10px; font-weight:750;
+}
+.geomotionPitLegend span{ display:inline-flex; align-items:center; gap:5px; }
+.geomotionPitLegend i{ display:inline-block; width:11px; height:11px; border:1px solid rgba(15,23,42,.22); border-radius:3px; }
+.geomotionPitLegend i.active{ background:#f59e0b; box-shadow:0 0 0 2px rgba(245,158,11,.16); }
+.geomotionPitLegend i.tie{ width:17px; height:0; border:0; border-top:2px solid #22d3ee; border-radius:0; }
+.geomotionLegendNote{ margin-left:auto; font-weight:650!important; }
+.geomotionPlayback{ display:grid; grid-template-columns:auto auto minmax(220px,1fr) auto; align-items:center; gap:8px; padding:8px; border:1px solid var(--border); border-radius:12px; background:var(--bg-soft); }
+.geomotionPlayback .geomotionTimeline{ padding:0; }
+.geomotionSceneFrame{
+  position:relative; width:100%; min-height:560px; height:min(68vh,720px); overflow:hidden;
+  border:1px solid rgba(148,163,184,.28); border-radius:15px; background:#07101c;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.025),0 16px 36px rgba(2,6,23,.18);
+}
+.geomotionScene{ width:100%; height:100%; min-height:0; overflow:hidden; background:#07101c; touch-action:none; }
+.geomotionScene canvas{ display:block; width:100%; height:100%; cursor:grab; touch-action:none; }
+.geomotionScene canvas:active{ cursor:grabbing; }
+.geomotionSceneHud{
+  position:absolute; z-index:2; top:14px; display:grid; gap:3px; max-width:min(290px,calc(50% - 24px));
+  padding:10px 11px; border:1px solid rgba(148,163,184,.25); border-radius:12px;
+  color:#e2e8f0; background:rgba(5,12,23,.82); box-shadow:0 12px 28px rgba(2,6,23,.22);
+  backdrop-filter:blur(10px); pointer-events:none;
+}
+.geomotionSceneHudLeft{ left:14px; }
+.geomotionSceneHudRight{ right:14px; text-align:right; }
+.geomotionSceneHud strong{ color:#7dd3fc; font-size:9px; font-weight:900; letter-spacing:.12em; }
+.geomotionSceneHud span{ color:rgba(226,232,240,.78); font-size:10px; line-height:1.35; }
+.geomotionSceneHud small{ color:#fcd34d; font-size:9px; line-height:1.35; }
+.geomotionSceneButtons{ position:absolute; z-index:3; top:116px; right:14px; display:grid; gap:5px; }
+.geomotionSceneButtons button{
+  min-width:36px; height:34px; border:1px solid rgba(148,163,184,.34); border-radius:9px;
+  color:#e2e8f0; background:rgba(5,12,23,.86); font-weight:900; cursor:pointer;
+  box-shadow:0 8px 18px rgba(2,6,23,.2);
+}
+.geomotionSceneButtons button:focus-visible,.geomotionSceneButtons button:hover{ outline:2px solid rgba(125,211,252,.42); outline-offset:1px; border-color:#7dd3fc; }
+.geomotionOrbitHint{
+  position:absolute; z-index:2; left:50%; bottom:14px; max-width:calc(100% - 150px); padding:6px 10px;
+  transform:translateX(-50%); border:1px solid rgba(148,163,184,.2); border-radius:999px;
+  color:rgba(226,232,240,.72); background:rgba(5,12,23,.74); font-size:9px; font-weight:750;
+  text-align:center; white-space:nowrap; pointer-events:none;
+}
+.geomotionViewerFooter{ display:flex; align-items:center; justify-content:space-between; gap:8px 16px; flex-wrap:wrap; color:var(--muted); font-size:10px; }
+.geomotionSrOnly{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+.geomotionViewerCard:fullscreen,.geomotionViewerFallbackFullscreen{
+  width:100%; height:100%; max-width:none; margin:0; padding:14px; border:0; border-radius:0;
+  overflow:auto; color:var(--text); background:var(--panel);
+}
+.geomotionViewerFallbackFullscreen{ position:fixed; inset:0; z-index:10000; width:100vw; height:100dvh; }
+.geomotionViewerCard:fullscreen .geomotionSceneFrame,.geomotionViewerFallbackFullscreen .geomotionSceneFrame{ flex:1 1 auto; height:auto; min-height:360px; }
 .geomotionResultsGrid{ display:grid; grid-template-columns:1.2fr .85fr 1fr; gap:12px; }
 .geomotionTable{ width:100%; border-collapse:collapse; margin-top:10px; font-size:12px; }
 .geomotionTable th,.geomotionTable td{ padding:8px; text-align:right; border-bottom:1px solid var(--border); }
@@ -119,12 +187,24 @@ body{
 @media (max-width:1100px){
   .geomotionTopGrid,.geomotionResultsGrid{ grid-template-columns:1fr; }
   .geomotionAssumptions{ grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .geomotionViewerControls{ grid-template-columns:repeat(3,minmax(125px,1fr)); }
 }
 @media (max-width:680px){
   .geomotionWorkflow{ grid-template-columns:repeat(2,1fr); }
   .geomotionAssumptions{ grid-template-columns:1fr; }
   .geomotionViewerHeader{ align-items:flex-start; flex-direction:column; }
-  .geomotionScene{ min-height:460px; }
+  .geomotionViewerActions{ width:100%; justify-content:stretch; }
+  .geomotionViewerActions .btn{ flex:1; }
+  .geomotionViewerControls{ grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .geomotionPlayback{ grid-template-columns:1fr 1fr; }
+  .geomotionPlayback .geomotionTimeline,.geomotionPlayback .subtitle{ grid-column:1/-1; }
+  .geomotionSceneFrame{ min-height:480px; height:68vh; }
+  .geomotionSceneHud{ top:10px; max-width:calc(100% - 64px); }
+  .geomotionSceneHudLeft{ left:10px; }
+  .geomotionSceneHudRight{ top:auto; right:10px; bottom:46px; }
+  .geomotionSceneButtons{ top:10px; right:10px; }
+  .geomotionOrbitHint{ left:10px; bottom:10px; max-width:calc(100% - 20px); transform:none; }
+  .geomotionLegendNote{ width:100%; margin-left:0; }
 }
 
 a{ color:inherit; }
@@ -1313,6 +1393,20 @@ body[data-theme="dark"] .loginProgressStepActive{
 
 body[data-theme="dark"] .loginLinkButton{
   color: #7dd3fc;
+}
+body[data-theme="dark"] .geomotionViewerControls,
+body[data-theme="dark"] .geomotionPlayback,
+body[data-theme="dark"] .geomotionContextRow span{
+  background:rgba(15,23,42,.88);
+  border-color:var(--border);
+}
+body[data-theme="dark"] .geomotionContextRow span.active{
+  color:#fde68a;
+  background:rgba(180,83,9,.22);
+  border-color:rgba(251,191,36,.42);
+}
+body[data-theme="dark"] .geomotionCheckbox{
+  background:rgba(17,27,47,.96);
 }
 body[data-accent="green"]{
   --brand: #16a34a;

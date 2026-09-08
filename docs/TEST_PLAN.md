@@ -4,6 +4,13 @@ Use this checklist before deploying changes to the GeoMotion 3D module.
 
 ## GeoMotion demonstration
 
+- Open GeoMotion without importing data and confirm the complete seven-bench stepped pit plus deterministic 182-hole tie-up are visible by default.
+- Confirm the tie-up and movement cells remain confined to Bench 680 / East 04 while the whole pit stays visible as context.
+- Replace the demonstration with an uploaded blast CSV and confirm only the active tie-up changes; the whole-pit context remains.
+- Test native Fullscreen API entry/exit and Escape, then disable/reject the API and confirm the viewport fallback exits safely with Escape.
+- Orbit, pan, wheel-zoom, use the accessible +/- controls, and reset/fit the whole pit.
+- Play, pause, scrub, and reset the firing timeline; confirm fired/current/queued state changes are limited to the active bench.
+- Check desktop/mobile layouts and both light/dark application themes.
 - Load the built-in delay-bearing 182-hole diamond demonstration and confirm every physics cell is exactly 1 m³ (1 m × 1 m × 1 m).
 - Import `Hole_data_v1.csv`; confirm cumulative times are preserved, normalized to zero and its invalid depth/charge rows are explicitly excluded.
 - Confirm a tie-up without Delay, with missing Delay or duplicate firing times cannot run.
