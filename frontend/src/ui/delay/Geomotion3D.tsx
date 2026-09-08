@@ -566,12 +566,19 @@ export function Geomotion3D({
             </g>
           ) : null}
 
-          {projectedHoles.map((item) => {
+          {projectedHoles.map((item, holeIndex) => {
             if (!visibleHoleIds.has(item.hole.id)) return null;
             const state = stateFor(item.hole, currentTime);
             const selected = selectedIds.includes(item.hole.id) || selectedHoleId === item.hole.id;
             const fill = state === "unfired" ? "#94a3b8" : state === "fired" ? "#34d399" : colourFor(item.hole);
             const radius = selected ? 7.5 : state === "active" ? 8.5 : 5.8;
+            const showHoleLabel =
+              showLabels &&
+              (holes.length <= 24 ||
+                camera.zoom >= 1.45 ||
+                selected ||
+                state === "active" ||
+                (Number.isFinite(item.hole.columnIndex) ? item.hole.columnIndex === 0 : holeIndex === 0));
             return (
               <g
                 key={item.hole.id}
@@ -645,7 +652,7 @@ export function Geomotion3D({
                     {item.hole.firingOrder}
                   </text>
                 ) : null}
-                {showLabels ? (
+                {showHoleLabel ? (
                   <text x={item.screen.x + radius + 4} y={item.screen.y - radius - 2} className="geomotion-hole-label">
                     {item.hole.id}
                   </text>
@@ -788,7 +795,7 @@ Depth ${item.hole.depth ?? "-"} m · Charge ${item.hole.charge ?? "-"} kg`}</tit
           </div>
         ) : null}
 
-        <div className="geomotion-orbit-hint">Drag to orbit · Wheel or +/− to zoom · Double-click to fit</div>
+        <div className="geomotion-orbit-hint">Drag to orbit · Wheel or +/− to zoom · Zoom in for all hole IDs</div>
         <div className="geomotion-sr-only" aria-live="polite">
           {fullscreen ? "Geomotion 3D fullscreen view active." : "Geomotion 3D embedded view active."}
         </div>
