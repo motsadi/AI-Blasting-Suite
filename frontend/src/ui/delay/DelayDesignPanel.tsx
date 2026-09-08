@@ -13,6 +13,8 @@ import { assignTiming } from "../../lib/timingAlgorithms";
 import { designCompleteness, validateBlastDesign } from "../../lib/validation";
 import type { BlastHole, BlastProject, ColorMode, ColumnMapping, TimingLine, TimingPattern, TimingSettings, ValidationIssue } from "../../types/blast";
 import { DEFAULT_TIMING_SETTINGS, TIMING_PATTERN_LABELS } from "../../types/blast";
+import { Geomotion3D } from "./Geomotion3D";
+import { createDemoBlastHoles } from "./geomotionData";
 
 const STORAGE_KEY = "blast_timing_studio_project_v1";
 const SAFETY_DISCLAIMER =
@@ -31,11 +33,11 @@ function safeName(name: string) {
 function createProject(overrides: Partial<BlastProject> = {}): BlastProject {
   const now = new Date().toISOString();
   return {
-    projectName: "Blast Timing Design",
-    importedFileName: "",
-    holes: [],
+    projectName: "Geomotion North Pit — Bench 680",
+    importedFileName: "geomotion_demo_bench_680.csv",
+    holes: createDemoBlastHoles(),
     timingPattern: "rowByRow",
-    settings: DEFAULT_TIMING_SETTINGS,
+    settings: { ...DEFAULT_TIMING_SETTINGS, rowTolerance: 2.4 },
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -174,6 +176,31 @@ export function DelayDesignPanel() {
     });
   }
 
+  function loadDemoProject() {
+    const parsed = parseBlastCsv(sampleCsv);
+    const rowTolerance = defaultRowTolerance(parsed.holes);
+    const settings = { ...project.settings, rowTolerance };
+    const holes = assignTiming(parsed.holes, {
+      pattern: "rowByRow",
+      settings,
+    });
+    setColumns(parsed.columns);
+    setRawRows(parsed.rows);
+    setMapping(parsed.mapping);
+    setParseIssues(parsed.issues);
+    setSelectedIds([]);
+    setSelectedHoleId(null);
+    setStepIndex(0);
+    setPlaying(false);
+    updateProject({
+      projectName: "Geomotion North Pit — Bench 680",
+      importedFileName: "geomotion_demo_bench_680.csv",
+      holes,
+      timingPattern: "rowByRow",
+      settings,
+    });
+  }
+
   async function handleFile(file: File | null) {
     if (!file) return;
     const text = await file.text();
@@ -257,8 +284,8 @@ export function DelayDesignPanel() {
       <div className="card">
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div>
-            <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Delay Design & Simulation</div>
-            <div className="subtitle">Integrated planning module for CSV import, transparent delay assignment, sequence simulation, and draft export.</div>
+            <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.02em" }}>Delay Design & Simulation · Geomotion 3D</div>
+            <div className="subtitle">Whole-mine 3D context with localized active-bench tie-up, CSV import, transparent delay assignment, playback, and draft export.</div>
           </div>
           <div className="pill">Planning/Simulation Draft</div>
         </div>
@@ -274,9 +301,9 @@ export function DelayDesignPanel() {
         {kpi("Pattern", TIMING_PATTERN_LABELS[project.timingPattern])}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: focusCanvas ? "1fr" : "minmax(0, 1fr) minmax(280px, 330px)", gap: 12, alignItems: "start" }}>
+      <div className={focusCanvas ? "delay-design-layout delay-design-layout-wide" : "delay-design-layout"}>
         <div style={{ display: "grid", gap: 12 }}>
-          <BlastCanvas
+          <Geomotion3D
             holes={displayHoles}
             pattern={project.timingPattern}
             selectedIds={selectedIds}
@@ -290,6 +317,12 @@ export function DelayDesignPanel() {
             showUnfired={showUnfired}
             showWavefront={showWavefront}
             focusCanvas={focusCanvas}
+            playing={playing}
+            onPlaying={setPlaying}
+            onResetSimulation={() => {
+              setPlaying(false);
+              setStepIndex(0);
+            }}
             onSelect={toggleSelected}
             onFocusToggle={() => setFocusCanvas((value) => !value)}
           />
@@ -323,7 +356,7 @@ export function DelayDesignPanel() {
                     mapping={mapping}
                     onProjectName={(projectName) => updateProject({ projectName })}
                     onFile={handleFile}
-                    onLoadSample={() => importCsvText(sampleCsv, "sample.csv")}
+                    onLoadSample={loadDemoProject}
                     onMappingChange={(next) => setMapping(next)}
                     onApplyMapping={() => applyMapping()}
                   />
@@ -375,7 +408,7 @@ export function DelayDesignPanel() {
                 <option value="flyrock">Flyrock risk</option>
               </select>
               <div className="subtitle" style={{ marginTop: 8 }}>
-                Click holes to select them. For directional-from-line, select two holes; the last two selected holes define the initiation line shown on the plan.
+                Click holes in Geomotion 3D to select them. For directional-from-line, the last two selected holes define the highlighted initiation line.
               </div>
             </div>
             <CollapsibleSection title="Selected Hole" collapsed={collapsed.details} onToggle={() => toggleCollapsed("details")}>
@@ -426,7 +459,10 @@ function ProjectSetup({
       <input className="input" value={project.projectName} onChange={(e) => onProjectName(e.target.value)} />
       <label className="label" style={{ marginTop: 10 }}>Import CSV</label>
       <input className="input" type="file" accept=".csv" onChange={(e) => onFile(e.target.files?.[0] ?? null)} />
-      <button className="btn" style={{ marginTop: 8 }} onClick={onLoadSample}>Load sample CSV</button>
+      <button className="btn" style={{ marginTop: 8 }} onClick={onLoadSample}>Restore Geomotion demo tie-up</button>
+      <div className="subtitle" style={{ marginTop: 8 }}>
+        Imported holes define the active bench tie-up; the synthetic whole-mine block model remains as spatial context.
+      </div>
       {columns.length ? (
         <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
           <div className="subtitle">Imported: {project.importedFileName || "CSV"}. Confirm mapping if needed.</div>
@@ -538,7 +574,7 @@ function SimulationControls(props: {
           <div className="sectionTitle">Simulation Controls</div>
           <div className="subtitle">{props.delayTimes.length ? `Step ${props.stepIndex + 1}/${props.delayTimes.length} at ${formatNum(current, 0)} ms` : "Assign delays to enable simulation."}</div>
         </div>
-        {props.compact ? <div className="pill">Focus mode</div> : null}
+        {props.compact ? <div className="pill">Wide workspace</div> : null}
       </div>
       <input className="input" type="range" min={0} max={Math.max(0, props.delayTimes.length - 1)} value={Math.min(props.stepIndex, Math.max(0, props.delayTimes.length - 1))} onChange={(e) => props.onStep(Number(e.target.value))} />
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8, alignItems: "center" }}>
@@ -781,7 +817,7 @@ function HoleDetailsPanel({ hole, onDelayChange, onClear }: { hole: BlastHole | 
           <button className="btn" onClick={onClear}>Clear selected delay</button>
         </div>
       ) : (
-        <div className="subtitle">Click a hole in the plan view to inspect and manually edit it.</div>
+        <div className="subtitle">Click a hole in the Geomotion 3D view to inspect and manually edit it.</div>
       )}
     </div>
   );
