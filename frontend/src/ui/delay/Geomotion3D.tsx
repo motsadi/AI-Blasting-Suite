@@ -579,8 +579,9 @@ export function Geomotion3D({
                 selected ||
                 state === "active" ||
                 (Number.isFinite(item.hole.columnIndex) ? item.hole.columnIndex === 0 : holeIndex === 0));
-            const holeLabel =
-              holes.length > 24 && camera.zoom < 1.45 ? item.hole.id.replace(/^B\d+-/, "") : item.hole.id;
+            const overviewLabel = holes.length > 24 && camera.zoom < 1.45;
+            const holeLabel = overviewLabel ? item.hole.id.replace(/^B\d+-/, "") : item.hole.id;
+            const labelRowOffset = overviewLabel ? (item.hole.rowIndex ?? 0) * 4 : 0;
             return (
               <g
                 key={item.hole.id}
@@ -655,7 +656,12 @@ export function Geomotion3D({
                   </text>
                 ) : null}
                 {showHoleLabel ? (
-                  <text x={item.screen.x + radius + 4} y={item.screen.y - radius - 2} className="geomotion-hole-label">
+                  <text
+                    x={overviewLabel ? item.screen.x - radius - 4 : item.screen.x + radius + 4}
+                    y={item.screen.y - radius - 2 - labelRowOffset}
+                    className="geomotion-hole-label"
+                    textAnchor={overviewLabel ? "end" : undefined}
+                  >
                     {holeLabel}
                   </text>
                 ) : null}
