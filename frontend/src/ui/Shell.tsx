@@ -1,9 +1,6 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-
-const GeoMotionPanel = lazy(() =>
-  import("./geomotion/GeoMotionPanel").then((module) => ({ default: module.GeoMotionPanel }))
-);
+import { geoMotionStandaloneUrl } from "./geomotion/standalone";
 
 type Session = { token: string; email: string };
 type Props = {
@@ -105,6 +102,62 @@ function ModuleHero({
         {children}
       </div>
     </section>
+  );
+}
+
+function GeoMotionLaunchPanel({
+  url,
+  message,
+  popupBlocked,
+  onOpen,
+}: {
+  url: string;
+  message: string;
+  popupBlocked: boolean;
+  onOpen: () => void;
+}) {
+  return (
+    <div className="modulePage geomotionLaunchPage">
+      <ModuleHero
+        eyebrow="Dedicated spatial workspace"
+        title="GeoMotion 3D"
+        description="GeoMotion opens separately so the complete pit and active blast section can use the full browser viewport without the application sidebar."
+      >
+        <button className="btn btnPrimary" type="button" onClick={onOpen}>
+          Open GeoMotion in new window
+        </button>
+      </ModuleHero>
+      <section className="card geomotionLaunchCard">
+        <div className="geomotionLaunchIcon" aria-hidden="true">3D</div>
+        <div>
+          <div className="sectionTitle">Full-viewport mine context</div>
+          <p className="subtitle">
+            The dedicated view starts with the complete concave open pit, then provides a focused
+            active-bench view for tie-up and delay playback. Sign-in remains required when
+            authentication is enabled.
+          </p>
+        </div>
+        <button
+          className="btn btnPrimary"
+          type="button"
+          data-testid="open-geomotion-window"
+          onClick={onOpen}
+        >
+          Open GeoMotion in new window
+        </button>
+        <a className="btn" href={url} target="_blank" rel="noopener">
+          Open as a browser tab
+        </a>
+        {message ? (
+          <div
+            className={popupBlocked ? "error" : "geomotionLaunchStatus"}
+            role={popupBlocked ? "alert" : "status"}
+          >
+            {message}
+          </div>
+        ) : null}
+      </section>
+    </div>
   );
 }
 
@@ -351,6 +404,49 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
   }>({ file: null, rows: [], columns: [] });
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [theme, setTheme] = useState<"System" | "Light" | "Dark">("System");
+  const [geoMotionLaunchMessage, setGeoMotionLaunchMessage] = useState("");
+  const [geoMotionPopupBlocked, setGeoMotionPopupBlocked] = useState(false);
+  const geoMotionWindowRef = useRef<Window | null>(null);
+  const geoMotionUrl = useMemo(() => geoMotionStandaloneUrl(), []);
+
+  function openGeoMotionWindow() {
+    setTab("delay");
+    const existing = geoMotionWindowRef.current;
+    if (existing && !existing.closed) {
+      try {
+        if (existing.location.href !== geoMotionUrl) existing.location.assign(geoMotionUrl);
+        existing.focus();
+        setGeoMotionPopupBlocked(false);
+        setGeoMotionLaunchMessage("GeoMotion is open in its dedicated window.");
+        return;
+      } catch {
+        geoMotionWindowRef.current = null;
+      }
+    }
+
+    const width = Math.max(320, window.screen.availWidth || window.innerWidth);
+    const height = Math.max(480, window.screen.availHeight || window.innerHeight);
+    const left = Math.max(0, window.screenX || 0);
+    const top = Math.max(0, window.screenY || 0);
+    const popup = window.open(
+      geoMotionUrl,
+      "blastops-geomotion-3d",
+      `popup=yes,width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`,
+    );
+
+    if (!popup) {
+      setGeoMotionPopupBlocked(true);
+      setGeoMotionLaunchMessage(
+        "The browser blocked the GeoMotion window. Allow popups for this site, retry, or use “Open as a browser tab”.",
+      );
+      return;
+    }
+
+    geoMotionWindowRef.current = popup;
+    popup.focus();
+    setGeoMotionPopupBlocked(false);
+    setGeoMotionLaunchMessage("GeoMotion opened in a dedicated full-viewport window.");
+  }
 
   async function refreshActivity() {
     if (!apiBaseUrl) return;
@@ -587,7 +683,7 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
                   return (
                     <button
                       key={key}
-                      onClick={() => setTab(key)}
+                      onClick={() => key === "delay" ? openGeoMotionWindow() : setTab(key)}
                       className={`sidebarButton ${tab === key ? "sidebarButtonActive" : ""}`}
                     >
                       <div className="sidebarButtonLabel">
@@ -647,9 +743,12 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
           ) : tab === "slope" ? (
             <SlopePanel apiBaseUrl={apiBaseUrl} token={session.token} />
           ) : tab === "delay" ? (
-            <Suspense fallback={<div className="card"><div className="subtitle">Loading GeoMotion 3D…</div></div>}>
-              <GeoMotionPanel apiBaseUrl={apiBaseUrl} token={session.token} />
-            </Suspense>
+            <GeoMotionLaunchPanel
+              url={geoMotionUrl}
+              message={geoMotionLaunchMessage}
+              popupBlocked={geoMotionPopupBlocked}
+              onOpen={openGeoMotionWindow}
+            />
           ) : (
             <PlaceholderPanel title={TAB_META[tab]?.title ?? "Module"} />
           )}

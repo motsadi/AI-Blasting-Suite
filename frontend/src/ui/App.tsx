@@ -1,7 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { LoginCard } from "./LoginCard";
 import { Shell } from "./Shell";
 import { getDb, REQUIRE_AUTH } from "../instant";
+import { isGeoMotionStandalone } from "./geomotion/standalone";
+
+const GeoMotionPanel = lazy(() =>
+  import("./geomotion/GeoMotionPanel").then((module) => ({ default: module.GeoMotionPanel }))
+);
 
 type Session = {
   token: string;
@@ -13,6 +18,7 @@ export function App() {
     REQUIRE_AUTH ? null : { token: "local", email: "Local" }
   );
   const [booting, setBooting] = useState(REQUIRE_AUTH);
+  const standaloneGeoMotion = useMemo(() => isGeoMotionStandalone(), []);
 
   const apiBaseUrl = useMemo(() => {
     const fromEnv = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
@@ -44,9 +50,31 @@ export function App() {
     })();
   }, []);
 
+  useEffect(() => {
+    if (!standaloneGeoMotion) return;
+    const previousTitle = document.title;
+    document.title = "GeoMotion 3D · BlastOps";
+    document.body.classList.add("geomotionStandaloneBody");
+    return () => {
+      document.title = previousTitle;
+      document.body.classList.remove("geomotionStandaloneBody");
+    };
+  }, [standaloneGeoMotion]);
+
+  function logout() {
+    localStorage.removeItem("instant_refresh_token");
+    localStorage.removeItem("instant_email");
+    setSession(null);
+  }
+
   if (booting) {
     return (
-      <div className="container" style={{ display: "grid", placeItems: "center" }}>Loading…</div>
+      <div
+        className={standaloneGeoMotion ? "geomotionStandaloneLoading" : "container"}
+        style={{ display: "grid", placeItems: "center" }}
+      >
+        Loading…
+      </div>
     );
   }
 
@@ -59,15 +87,27 @@ export function App() {
     );
   }
 
+  if (standaloneGeoMotion) {
+    return (
+      <div className="geomotionStandaloneShell" data-testid="geomotion-standalone">
+        <Suspense fallback={<div className="geomotionStandaloneLoading">Loading GeoMotion 3D…</div>}>
+          <GeoMotionPanel
+            apiBaseUrl={apiBaseUrl}
+            token={session.token}
+            standalone
+            userEmail={session.email}
+            onLogout={logout}
+          />
+        </Suspense>
+      </div>
+    );
+  }
+
   return (
     <Shell
       apiBaseUrl={apiBaseUrl}
       session={session}
-      onLogout={() => {
-        localStorage.removeItem("instant_refresh_token");
-        localStorage.removeItem("instant_email");
-        setSession(null);
-      }}
+      onLogout={logout}
     />
   );
 }
