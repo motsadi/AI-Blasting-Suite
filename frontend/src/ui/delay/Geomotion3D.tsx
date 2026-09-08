@@ -436,8 +436,9 @@ export function Geomotion3D({
         <svg
           className="geomotion-svg"
           viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`}
-          role="img"
-          aria-labelledby="geomotion-scene-title geomotion-scene-description"
+          role="group"
+          aria-labelledby="geomotion-scene-title"
+          aria-describedby="geomotion-scene-description"
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerEnd}
@@ -787,7 +788,7 @@ Depth ${item.hole.depth ?? "-"} m · Charge ${item.hole.charge ?? "-"} kg`}</tit
           </div>
         ) : null}
 
-        <div className="geomotion-orbit-hint">Drag to orbit · Wheel/pinch to zoom · Double-click to fit</div>
+        <div className="geomotion-orbit-hint">Drag to orbit · Wheel or +/− to zoom · Double-click to fit</div>
         <div className="geomotion-sr-only" aria-live="polite">
           {fullscreen ? "Geomotion 3D fullscreen view active." : "Geomotion 3D embedded view active."}
         </div>
