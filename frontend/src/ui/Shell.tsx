@@ -426,8 +426,8 @@ export function Shell({ apiBaseUrl, session, onLogout }: Props) {
 
     const width = Math.max(320, window.screen.availWidth || window.innerWidth);
     const height = Math.max(480, window.screen.availHeight || window.innerHeight);
-    const left = window.screen.availLeft ?? 0;
-    const top = window.screen.availTop ?? 0;
+    const left = Math.max(0, window.screenX || 0);
+    const top = Math.max(0, window.screenY || 0);
     const popup = window.open(
       geoMotionUrl,
       "blastops-geomotion-3d",
