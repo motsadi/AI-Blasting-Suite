@@ -288,12 +288,12 @@ function cameraFrame(
       verticalExaggeration,
     );
     if (preset === "plan") {
-      return { target, position: target.clone().add(new THREE.Vector3(0, 440, 0.01)) };
+      return { target, position: target.clone().add(new THREE.Vector3(0, 275, 0.01)) };
     }
     if (preset === "section") {
-      return { target, position: target.clone().add(new THREE.Vector3(520, 75, 0)) };
+      return { target, position: target.clone().add(new THREE.Vector3(320, 55, 0)) };
     }
-    return { target, position: target.clone().add(new THREE.Vector3(235, 215, 305)) };
+    return { target, position: target.clone().add(new THREE.Vector3(140, 125, 180)) };
   }
 
   const target = new THREE.Vector3(0, -42 * verticalExaggeration, 0);
@@ -556,7 +556,7 @@ function GeoMotionScene({
     scene.add(activeOutline);
 
     const labelSprites: THREE.Sprite[] = [];
-    BENCH_LABELS.filter((label) => ["crest", "b720", "b680", "floor"].includes(label.id)).forEach((label) => {
+    BENCH_LABELS.filter((label) => ["crest", "b720", "floor"].includes(label.id)).forEach((label) => {
       const sprite = makeTextSprite(label.label, label.active ? "#fde68a" : "#dbeafe", label.active);
       if (!sprite) return;
       sprite.position.copy(toScenePoint(label.point, verticalExaggeration));
