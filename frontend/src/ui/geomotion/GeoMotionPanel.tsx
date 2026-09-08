@@ -427,9 +427,9 @@ function GeoMotionScene({
       activeLabel.position.copy(
         toScenePoint(
           pointOnPit(
-            (ACTIVE_BENCH.innerRadius + ACTIVE_BENCH.outerRadius) / 2,
+            ACTIVE_BENCH.outerRadius + 0.16,
             (ACTIVE_BENCH.startAngle + ACTIVE_BENCH.endAngle) / 2,
-            ACTIVE_BENCH.elevation + 52,
+            ACTIVE_BENCH.elevation + 38,
           ),
           verticalExaggeration,
         ),
@@ -466,6 +466,8 @@ function GeoMotionScene({
     const holeMaterial = new THREE.MeshBasicMaterial({
       color: "#ffffff",
       vertexColors: true,
+      depthTest: false,
+      depthWrite: false,
     });
     const holeMesh = new THREE.InstancedMesh(holeGeometry, holeMaterial, holePoints.length);
     const matrix = new THREE.Matrix4();
@@ -490,7 +492,7 @@ function GeoMotionScene({
     });
     const stemGeometry = new THREE.BufferGeometry();
     stemGeometry.setAttribute("position", new THREE.Float32BufferAttribute(stemPositions, 3));
-    const stemMaterial = new THREE.LineBasicMaterial({ color: "#07101c", opacity: 0.68, transparent: true });
+    const stemMaterial = new THREE.LineBasicMaterial({ color: "#dbeafe", opacity: 0.24, transparent: true });
     scene.add(new THREE.LineSegments(stemGeometry, stemMaterial));
 
     const tiePositions: number[] = [];
@@ -514,6 +516,8 @@ function GeoMotionScene({
       vertexColors: true,
       transparent: true,
       opacity: 0.88,
+      depthTest: false,
+      depthWrite: false,
     });
     const tieLines = new THREE.LineSegments(tieGeometry, tieMaterial);
     tieLines.renderOrder = 11;
