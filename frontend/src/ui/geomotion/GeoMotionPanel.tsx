@@ -22,21 +22,28 @@ import {
   PIT_SURFACE_CELLS,
   pointOnPit,
 } from "./mineContext";
-import type { MineMaterial, MinePoint3D } from "./mineContext";
+import type { MinePoint3D } from "./mineContext";
 
 const NOTICE = "Synthetic Demonstration / Uncalibrated — Planning Only";
 const STORAGE_KEY = "geomotion_3d_demo_v1";
+const WORKSPACE_STORAGE_KEY = "geomotion_3d_workspace_v2";
 const DEFAULT_TIE_UP_FILE = "680-665QS32-33_synthetic_reference.csv";
 const PIT_VERTICAL_ORIGIN = 690;
 
-const MINE_MATERIAL_COLORS: Record<MineMaterial, string> = {
-  waste: "#64748b",
-  oxide: "#b7793f",
-  transition: "#6d8f70",
-  ore: "#2f9c88",
-};
+const BENCH_COLORS = ["#7f8b96", "#8f887d", "#748491", "#91897d", "#71808a", "#89847c", "#697883"];
+const WHOLE_MINE_COLOR = "#354656";
+const PIT_FLOOR_COLOR = "#34414b";
+const ACTIVE_SECTION_COLOR = "#fbbf24";
 
-type Props = { apiBaseUrl: string; token: string };
+type SpatialView = "overview" | "active";
+
+type Props = {
+  apiBaseUrl: string;
+  token: string;
+  standalone?: boolean;
+  userEmail?: string;
+  onLogout?: () => void;
+};
 
 function format(value: number | undefined, digits = 1) {
   return Number.isFinite(value) ? Number(value).toLocaleString(undefined, { maximumFractionDigits: digits }) : "—";
@@ -114,6 +121,52 @@ function parseGeoMotionTieUp(text: string) {
 }
 
 const DEFAULT_TIE_UP = parseGeoMotionTieUp(diamondReferenceCsv());
+
+interface SavedWorkspace {
+  projectName: string;
+  fileName: string;
+  holes: BlastHole[];
+  issues: ValidationIssue[];
+  inputErrors: string[];
+}
+
+function readSavedWorkspace(): SavedWorkspace | null {
+  try {
+    const raw = localStorage.getItem(WORKSPACE_STORAGE_KEY);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<SavedWorkspace> & { version?: number };
+    if (value.version !== 1 || !Array.isArray(value.holes) || value.holes.length > 5_000) return null;
+    const holes = (value.holes as unknown[]).filter((candidate): candidate is BlastHole => {
+      if (!candidate || typeof candidate !== "object") return false;
+      const hole = candidate as Partial<BlastHole>;
+      return (
+        typeof hole.id === "string" &&
+        typeof hole.x === "number" &&
+        Number.isFinite(hole.x) &&
+        typeof hole.y === "number" &&
+        Number.isFinite(hole.y) &&
+        typeof hole.depth === "number" &&
+        Number.isFinite(hole.depth) &&
+        typeof hole.charge === "number" &&
+        Number.isFinite(hole.charge) &&
+        typeof hole.delayMs === "number" &&
+        Number.isFinite(hole.delayMs)
+      );
+    });
+    if (holes.length < 3) return null;
+    return {
+      projectName: typeof value.projectName === "string" ? value.projectName : "GeoMotion project",
+      fileName: typeof value.fileName === "string" ? value.fileName : "restored_tie_up.csv",
+      holes,
+      issues: Array.isArray(value.issues) ? value.issues : [],
+      inputErrors: Array.isArray(value.inputErrors)
+        ? value.inputErrors.filter((message): message is string => typeof message === "string")
+        : [],
+    };
+  } catch {
+    return null;
+  }
+}
 
 function colorFor(block: GeoMotionBlock, mode: GeoMotionColor, destination: boolean) {
   if (mode === "classification") {
@@ -213,20 +266,56 @@ function makeTextSprite(text: string, color: string, active = false) {
   texture.colorSpace = THREE.SRGBColorSpace;
   const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
   const sprite = new THREE.Sprite(material);
-  sprite.scale.set(active ? 135 : 96, active ? 34 : 24, 1);
+  sprite.scale.set(active ? 98 : 72, active ? 25 : 18, 1);
   sprite.renderOrder = 20;
   return sprite;
+}
+
+type CameraPreset = "perspective" | "plan" | "section";
+
+function cameraFrame(
+  preset: CameraPreset,
+  spatialView: SpatialView,
+  verticalExaggeration: number,
+) {
+  if (spatialView === "active") {
+    const target = toScenePoint(
+      pointOnPit(
+        (ACTIVE_BENCH.innerRadius + ACTIVE_BENCH.outerRadius) / 2,
+        (ACTIVE_BENCH.startAngle + ACTIVE_BENCH.endAngle) / 2,
+        ACTIVE_BENCH.elevation,
+      ),
+      verticalExaggeration,
+    );
+    if (preset === "plan") {
+      return { target, position: target.clone().add(new THREE.Vector3(0, 440, 0.01)) };
+    }
+    if (preset === "section") {
+      return { target, position: target.clone().add(new THREE.Vector3(520, 75, 0)) };
+    }
+    return { target, position: target.clone().add(new THREE.Vector3(235, 215, 305)) };
+  }
+
+  const target = new THREE.Vector3(0, -42 * verticalExaggeration, 0);
+  if (preset === "plan") {
+    return { target, position: new THREE.Vector3(0, 1_520, 0.01) };
+  }
+  if (preset === "section") {
+    return { target, position: new THREE.Vector3(1_620, 60, 0) };
+  }
+  return { target, position: new THREE.Vector3(760, 630, 920) };
 }
 
 function setCameraPosition(
   camera: THREE.PerspectiveCamera,
   controls: OrbitControls,
-  preset: "perspective" | "plan" | "section",
+  preset: CameraPreset,
+  spatialView: SpatialView,
+  verticalExaggeration: number,
 ) {
-  controls.target.set(0, -28, 0);
-  if (preset === "plan") camera.position.set(0, 980, 0.01);
-  else if (preset === "section") camera.position.set(850, 35, 0);
-  else camera.position.set(610, 390, 650);
+  const frame = cameraFrame(preset, spatialView, verticalExaggeration);
+  controls.target.copy(frame.target);
+  camera.position.copy(frame.position);
   camera.lookAt(controls.target);
   controls.update();
 }
@@ -290,6 +379,7 @@ function GeoMotionScene({
   clipPercent,
   cameraPreset,
   seamPercent,
+  spatialView,
 }: {
   result: GeoMotionResult | null;
   holes: BlastHole[];
@@ -299,12 +389,14 @@ function GeoMotionScene({
   showVectors: boolean;
   verticalExaggeration: number;
   clipPercent: number;
-  cameraPreset: "perspective" | "plan" | "section";
+  cameraPreset: CameraPreset;
   seamPercent: number;
+  spatialView: SpatialView;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const cameraTransitionRef = useRef<number | null>(null);
   const progressRef = useRef(progress);
   progressRef.current = progress;
 
@@ -314,15 +406,15 @@ function GeoMotionScene({
     const width = Math.max(host.clientWidth, 320);
     const height = Math.max(host.clientHeight, 460);
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color("#07101c");
-    scene.fog = new THREE.Fog("#07101c", 760, 1_650);
-    const camera = new THREE.PerspectiveCamera(45, width / height, 0.5, 3_000);
+    scene.background = new THREE.Color("#08131f");
+    scene.fog = new THREE.Fog("#08131f", 1_450, 2_400);
+    const camera = new THREE.PerspectiveCamera(43, width / height, 0.5, 3_200);
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
     renderer.setSize(width, height);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
+    renderer.toneMappingExposure = 1.08;
     renderer.localClippingEnabled = clipPercent < 99;
     renderer.domElement.setAttribute("aria-hidden", "true");
     host.replaceChildren(renderer.domElement);
@@ -332,11 +424,11 @@ function GeoMotionScene({
     controls.dampingFactor = 0.075;
     controls.enablePan = true;
     controls.screenSpacePanning = true;
-    controls.minDistance = 150;
-    controls.maxDistance = 1_650;
+    controls.minDistance = 55;
+    controls.maxDistance = 2_400;
     controls.minPolarAngle = 0.04;
-    controls.maxPolarAngle = Math.PI * 0.54;
-    setCameraPosition(camera, controls, cameraPreset);
+    controls.maxPolarAngle = Math.PI * 0.48;
+    setCameraPosition(camera, controls, cameraPreset, spatialView, verticalExaggeration);
     cameraRef.current = camera;
     controlsRef.current = controls;
 
@@ -345,9 +437,16 @@ function GeoMotionScene({
     const edgePositions: number[] = [];
     PIT_SURFACE_CELLS.forEach((cell) => {
       const points = cell.points.map((point) => toScenePoint(point, verticalExaggeration));
-      const base = new THREE.Color(cell.active ? "#f59e0b" : MINE_MATERIAL_COLORS[cell.material]);
-      if (cell.kind === "wall") base.multiplyScalar(0.68);
-      else if (cell.kind === "terrain") base.multiplyScalar(0.82);
+      const base = new THREE.Color(
+        cell.kind === "terrain"
+          ? WHOLE_MINE_COLOR
+          : cell.kind === "floor"
+            ? PIT_FLOOR_COLOR
+            : BENCH_COLORS[Math.max(0, cell.benchIndex - 1) % BENCH_COLORS.length],
+      );
+      if (cell.kind === "wall") base.multiplyScalar(0.56);
+      else if (cell.kind === "bench") base.multiplyScalar(0.94 + 0.025 * Math.sin(cell.benchIndex * 1.7));
+      else if (cell.kind === "terrain") base.multiplyScalar(0.72);
       const triangles = points.length === 3 ? [0, 1, 2] : [0, 1, 2, 0, 2, 3];
       triangles.forEach((index) => {
         const point = points[index];
@@ -376,22 +475,46 @@ function GeoMotionScene({
     edgeGeometry.setAttribute("position", new THREE.Float32BufferAttribute(edgePositions, 3));
     const edgeMaterial = new THREE.LineBasicMaterial({
       color: "#dbeafe",
-      opacity: 0.17,
+      opacity: 0.1,
       transparent: true,
     });
     scene.add(new THREE.LineSegments(edgeGeometry, edgeMaterial));
 
-    const groundGeometry = new THREE.RingGeometry(650, 1_050, 80);
+    const groundGeometry = new THREE.RingGeometry(680, 1_180, 96);
     groundGeometry.rotateX(-Math.PI / 2);
     groundGeometry.scale(1, 1, PIT_CONTEXT.lengthM / PIT_CONTEXT.widthM);
     const groundMaterial = new THREE.MeshStandardMaterial({
-      color: "#17232c",
+      color: "#182732",
       roughness: 1,
       side: THREE.DoubleSide,
     });
     const ground = new THREE.Mesh(groundGeometry, groundMaterial);
     ground.position.y = (760 - PIT_VERTICAL_ORIGIN) * verticalExaggeration - 0.5;
     scene.add(ground);
+
+    const benchLipGeometries: THREE.BufferGeometry[] = [];
+    const benchLipMaterials: THREE.LineBasicMaterial[] = [];
+    const benchLipRadii = [1, 0.875, 0.75, 0.625, 0.5, 0.375, 0.25, 0.175];
+    benchLipRadii.forEach((radius, index) => {
+      const elevation = 760 - index * 20;
+      const lipPoints = Array.from({ length: 80 }, (_, pointIndex) =>
+        toScenePoint(
+          pointOnPit(radius, (pointIndex / 80) * Math.PI * 2 - Math.PI, elevation + 0.8),
+          verticalExaggeration,
+        ),
+      );
+      const geometry = new THREE.BufferGeometry().setFromPoints(lipPoints);
+      const material = new THREE.LineBasicMaterial({
+        color: index === 0 ? "#d8edf7" : "#a8bac7",
+        opacity: index === 0 ? 0.82 : 0.48,
+        transparent: true,
+      });
+      const line = new THREE.LineLoop(geometry, material);
+      line.renderOrder = 4;
+      benchLipGeometries.push(geometry);
+      benchLipMaterials.push(material);
+      scene.add(line);
+    });
 
     const activeOutlinePoints = [
       pointOnPit(ACTIVE_BENCH.outerRadius + 0.006, ACTIVE_BENCH.startAngle, ACTIVE_BENCH.elevation + 2.4),
@@ -403,10 +526,29 @@ function GeoMotionScene({
       ...activeOutlinePoints,
       activeOutlinePoints[0],
     ]);
+    const activeFillGeometry = new THREE.BufferGeometry().setFromPoints([
+      activeOutlinePoints[0],
+      activeOutlinePoints[1],
+      activeOutlinePoints[2],
+      activeOutlinePoints[0],
+      activeOutlinePoints[2],
+      activeOutlinePoints[3],
+    ]);
+    activeFillGeometry.computeVertexNormals();
+    const activeFillMaterial = new THREE.MeshBasicMaterial({
+      color: ACTIVE_SECTION_COLOR,
+      opacity: 0.2,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const activeFill = new THREE.Mesh(activeFillGeometry, activeFillMaterial);
+    activeFill.renderOrder = 7;
+    scene.add(activeFill);
     const activeOutlineMaterial = new THREE.LineDashedMaterial({
-      color: "#fbbf24",
-      dashSize: 8,
-      gapSize: 5,
+      color: ACTIVE_SECTION_COLOR,
+      dashSize: 5,
+      gapSize: 3,
       linewidth: 2,
     });
     const activeOutline = new THREE.Line(activeOutlineGeometry, activeOutlineMaterial);
@@ -414,30 +556,14 @@ function GeoMotionScene({
     scene.add(activeOutline);
 
     const labelSprites: THREE.Sprite[] = [];
-    BENCH_LABELS.forEach((label) => {
+    BENCH_LABELS.filter((label) => ["crest", "b720", "b680", "floor"].includes(label.id)).forEach((label) => {
       const sprite = makeTextSprite(label.label, label.active ? "#fde68a" : "#dbeafe", label.active);
       if (!sprite) return;
       sprite.position.copy(toScenePoint(label.point, verticalExaggeration));
-      sprite.position.y += label.active ? 17 : 11;
+      sprite.position.y += label.active ? 12 : 8;
       labelSprites.push(sprite);
       scene.add(sprite);
     });
-    const activeLabel = makeTextSprite(`${ACTIVE_BENCH.label} · ${ACTIVE_BENCH.section}`, "#fde68a", true);
-    if (activeLabel) {
-      activeLabel.position.copy(
-        toScenePoint(
-          pointOnPit(
-            ACTIVE_BENCH.outerRadius + 0.16,
-            (ACTIVE_BENCH.startAngle + ACTIVE_BENCH.endAngle) / 2,
-            ACTIVE_BENCH.elevation + 38,
-          ),
-          verticalExaggeration,
-        ),
-      );
-      activeLabel.scale.set(176, 42, 1);
-      labelSprites.push(activeLabel);
-      scene.add(activeLabel);
-    }
 
     const bounds = buildPlanBounds(holes, result);
     const holePoints = holes.map((hole) => {
@@ -462,7 +588,7 @@ function GeoMotionScene({
       return delayTimes[Math.floor(clamp(timelineProgress, 0, 1) * Math.max(0, delayTimes.length - 1))];
     };
 
-    const holeGeometry = new THREE.SphereGeometry(4.1, 12, 8);
+    const holeGeometry = new THREE.SphereGeometry(3.1, 12, 8);
     const holeMaterial = new THREE.MeshBasicMaterial({
       color: "#ffffff",
       vertexColors: true,
@@ -604,12 +730,12 @@ function GeoMotionScene({
       scene.add(new THREE.LineSegments(vectorGeometry, vectorMaterial));
     }
 
-    const ambient = new THREE.HemisphereLight("#dbeafe", "#17232c", 2.3);
+    const ambient = new THREE.HemisphereLight("#dbeafe", "#101923", 1.8);
     scene.add(ambient);
-    const keyLight = new THREE.DirectionalLight("#ffffff", 3.2);
-    keyLight.position.set(360, 620, 220);
+    const keyLight = new THREE.DirectionalLight("#fff7ed", 2.55);
+    keyLight.position.set(480, 720, 340);
     scene.add(keyLight);
-    const rimLight = new THREE.DirectionalLight("#67e8f9", 1.25);
+    const rimLight = new THREE.DirectionalLight("#8ed8ef", 0.78);
     rimLight.position.set(-420, 180, -360);
     scene.add(rimLight);
 
@@ -710,6 +836,10 @@ function GeoMotionScene({
       edgeMaterial.dispose();
       groundGeometry.dispose();
       groundMaterial.dispose();
+      benchLipGeometries.forEach((geometry) => geometry.dispose());
+      benchLipMaterials.forEach((material) => material.dispose());
+      activeFillGeometry.dispose();
+      activeFillMaterial.dispose();
       activeOutlineGeometry.dispose();
       activeOutlineMaterial.dispose();
       holeGeometry.dispose();
@@ -726,7 +856,34 @@ function GeoMotionScene({
       renderer.dispose();
       host.replaceChildren();
     };
-  }, [result, holes, view, colorMode, showVectors, verticalExaggeration, clipPercent, cameraPreset, seamPercent]);
+  }, [result, holes, view, colorMode, showVectors, verticalExaggeration, clipPercent, seamPercent]);
+
+  useEffect(() => {
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    if (!camera || !controls) return;
+    if (cameraTransitionRef.current != null) cancelAnimationFrame(cameraTransitionRef.current);
+    const destination = cameraFrame(cameraPreset, spatialView, verticalExaggeration);
+    const startPosition = camera.position.clone();
+    const startTarget = controls.target.clone();
+    const startedAt = performance.now();
+    const duration = 620;
+    const move = (time: number) => {
+      const raw = clamp((time - startedAt) / duration, 0, 1);
+      const eased = raw * raw * (3 - 2 * raw);
+      camera.position.lerpVectors(startPosition, destination.position, eased);
+      controls.target.lerpVectors(startTarget, destination.target, eased);
+      camera.lookAt(controls.target);
+      controls.update();
+      if (raw < 1) cameraTransitionRef.current = requestAnimationFrame(move);
+      else cameraTransitionRef.current = null;
+    };
+    cameraTransitionRef.current = requestAnimationFrame(move);
+    return () => {
+      if (cameraTransitionRef.current != null) cancelAnimationFrame(cameraTransitionRef.current);
+      cameraTransitionRef.current = null;
+    };
+  }, [cameraPreset, spatialView, verticalExaggeration]);
 
   function zoom(factor: number) {
     const camera = cameraRef.current;
@@ -740,7 +897,13 @@ function GeoMotionScene({
 
   function resetCamera() {
     if (cameraRef.current && controlsRef.current) {
-      setCameraPosition(cameraRef.current, controlsRef.current, cameraPreset);
+      setCameraPosition(
+        cameraRef.current,
+        controlsRef.current,
+        cameraPreset,
+        spatialView,
+        verticalExaggeration,
+      );
     }
   }
 
@@ -754,43 +917,137 @@ function GeoMotionScene({
     view === "destination" || progress >= 0.999
       ? delayValues.length
       : delayValues.filter((delay) => currentDelay != null && delay < currentDelay).length;
+  const orderedTimeline = [...holes]
+    .filter((hole) => Number.isFinite(hole.delayMs))
+    .sort(
+      (left, right) =>
+        (left.delayMs as number) - (right.delayMs as number) || left.id.localeCompare(right.id),
+    );
+  const activeEventIndex = orderedTimeline.length
+    ? Math.min(orderedTimeline.length - 1, Math.floor(clamp(progress, 0, 1) * orderedTimeline.length))
+    : 0;
+  const visibleEventStart = Math.max(0, Math.min(activeEventIndex - 2, orderedTimeline.length - 6));
+  const visibleEvents = orderedTimeline.slice(visibleEventStart, visibleEventStart + 6);
 
   return (
-    <div className="geomotionSceneFrame">
+    <div className="geomotionSceneFrame" data-spatial-view={spatialView}>
       <div
         ref={hostRef}
         className="geomotionScene"
         role="img"
         data-testid="geomotion-whole-pit-scene"
-        aria-label={`Interactive whole-mine 3D model of ${PIT_CONTEXT.name}, with the imported tie-up localized to ${ACTIVE_BENCH.label}, ${ACTIVE_BENCH.section}.`}
+        aria-label={
+          spatialView === "overview"
+            ? `Whole pit overview of ${PIT_CONTEXT.name}, showing the complete crest, descending benches, highwalls, pit floor, and the localized ${ACTIVE_BENCH.label} blast section.`
+            : `Focused active blast section on ${ACTIVE_BENCH.label}, ${ACTIVE_BENCH.section}, with ordered holes and delay tie lines.`
+        }
       />
       <div className="geomotionSceneHud geomotionSceneHudLeft" aria-hidden="true">
-        <strong>WHOLE-MINE CONTEXT</strong>
-        <span>{PIT_CONTEXT.benches} stepped benches · {PIT_CONTEXT.verticalRangeM} m vertical</span>
-        <span>{PIT_CONTEXT.widthM / 1_000} × {(PIT_CONTEXT.lengthM / 1_000).toFixed(2)} km pit extent</span>
+        <strong>{spatialView === "overview" ? "WHOLE PIT OVERVIEW" : "FOCUSED BLAST SECTION"}</strong>
+        <span>
+          {spatialView === "overview"
+            ? `${PIT_CONTEXT.benches} descending benches · crest 760 m → floor 620 m`
+            : `${ACTIVE_BENCH.label} · ${ACTIVE_BENCH.section} · localized tie-up detail`}
+        </span>
+        <span>
+          {spatialView === "overview"
+            ? `${PIT_CONTEXT.widthM / 1_000} × ${(PIT_CONTEXT.lengthM / 1_000).toFixed(2)} km complete pit`
+            : `${holes.length} holes · ordered cumulative delays`}
+        </span>
       </div>
       <div className="geomotionSceneHud geomotionSceneHudRight" aria-live="polite">
-        <strong>ACTIVE TIE-UP · {ACTIVE_BENCH.label}</strong>
+        <strong>{spatialView === "overview" ? "LOCALIZED ACTIVE SECTION" : "FIRING PLAYBACK"}</strong>
         <span>{holes.length} holes · {result ? `${result.blocks.length.toLocaleString()} movement cells` : "movement not run"}</span>
         <span>{view === "movement" && currentDelay != null ? `${currentDelay.toFixed(0)} ms · ${firedCount}/${delayValues.length} fired` : view === "destination" ? "Post-blast state" : "Pre-blast state"}</span>
         <small>Planning playback only · no device connection</small>
       </div>
+      {spatialView === "active" ? (
+        <>
+          <div
+            className="geomotionOverviewInset"
+            role="img"
+            aria-label={`Context locator: active section is a small east-side wedge on ${ACTIVE_BENCH.label} in the complete open pit.`}
+            data-testid="geomotion-overview-inset"
+          >
+            <div>
+              <strong>WHOLE PIT LOCATOR</strong>
+              <span>{ACTIVE_BENCH.label} · {ACTIVE_BENCH.section}</span>
+            </div>
+            <svg viewBox="0 0 220 120" aria-hidden="true">
+              <ellipse cx="110" cy="60" rx="96" ry="47" />
+              <ellipse cx="110" cy="60" rx="78" ry="38" />
+              <ellipse cx="110" cy="60" rx="60" ry="29" />
+              <ellipse cx="110" cy="60" rx="42" ry="20" />
+              <ellipse cx="110" cy="60" rx="22" ry="10" />
+              <path d="M159 52 L202 48 L204 63 L160 64 Z" />
+              <circle cx="181" cy="56" r="4" />
+            </svg>
+          </div>
+          <div className="geomotionFocusedEvents" data-testid="geomotion-focused-events">
+            <strong>DELAY ORDER</strong>
+            <ol start={visibleEventStart + 1}>
+              {visibleEvents.map((hole, index) => {
+                const eventIndex = visibleEventStart + index;
+                const status =
+                  progress >= 0.999 || eventIndex < activeEventIndex
+                    ? "fired"
+                    : eventIndex === activeEventIndex
+                      ? "current"
+                      : "queued";
+                return (
+                  <li key={hole.id} className={status}>
+                    <i />
+                    <span>{eventIndex + 1}</span>
+                    <b>{hole.id}</b>
+                    <em>{format(hole.delayMs, 0)} ms</em>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        </>
+      ) : (
+        <div className="geomotionScaleBar" aria-hidden="true"><span>200 m</span><i /></div>
+      )}
       <div className="geomotionSceneButtons" role="group" aria-label="3D camera controls">
         <button type="button" onClick={() => zoom(0.82)} aria-label="Zoom in">+</button>
         <button type="button" onClick={() => zoom(1.22)} aria-label="Zoom out">−</button>
-        <button type="button" onClick={resetCamera} aria-label="Reset and fit whole pit">Fit</button>
+        <button
+          type="button"
+          onClick={resetCamera}
+          aria-label={spatialView === "overview" ? "Reset and fit whole pit" : "Reset and fit active blast section"}
+        >
+          Fit
+        </button>
       </div>
       <div className="geomotionOrbitHint" aria-hidden="true">Drag to orbit · Right-drag to pan · Wheel or +/− to zoom</div>
     </div>
   );
 }
 
-export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
-  const [projectName, setProjectName] = useState("680-665QS32-33 Diamond Demonstration");
-  const [holes, setHoles] = useState<BlastHole[]>(() => DEFAULT_TIE_UP.holes.map((hole) => ({ ...hole })));
-  const [fileName, setFileName] = useState(DEFAULT_TIE_UP_FILE);
-  const [issues, setIssues] = useState<ValidationIssue[]>(() => [...DEFAULT_TIE_UP.issues]);
-  const [inputErrors, setInputErrors] = useState<string[]>(() => [...DEFAULT_TIE_UP.errors]);
+export function GeoMotionPanel({
+  apiBaseUrl,
+  token,
+  standalone = false,
+  userEmail,
+  onLogout,
+}: Props) {
+  const restoredWorkspace = useMemo(() => readSavedWorkspace(), []);
+  const [projectName, setProjectName] = useState(
+    () => restoredWorkspace?.projectName ?? "680-665QS32-33 Diamond Demonstration",
+  );
+  const [holes, setHoles] = useState<BlastHole[]>(
+    () => restoredWorkspace?.holes ?? DEFAULT_TIE_UP.holes.map((hole) => ({ ...hole })),
+  );
+  const [fileName, setFileName] = useState(
+    () => restoredWorkspace?.fileName ?? DEFAULT_TIE_UP_FILE,
+  );
+  const [issues, setIssues] = useState<ValidationIssue[]>(
+    () => restoredWorkspace?.issues ?? [...DEFAULT_TIE_UP.issues],
+  );
+  const [inputErrors, setInputErrors] = useState<string[]>(
+    () => restoredWorkspace?.inputErrors ?? [...DEFAULT_TIE_UP.errors],
+  );
   const [assumptions, setAssumptions] = useState<GeoMotionAssumptions>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -810,17 +1067,46 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
   const [playing, setPlaying] = useState(false);
   const [colorMode, setColorMode] = useState<GeoMotionColor>("classification");
   const [showVectors, setShowVectors] = useState(true);
-  const [verticalExaggeration, setVerticalExaggeration] = useState(1);
+  const [verticalExaggeration, setVerticalExaggeration] = useState(1.5);
   const [clipPercent, setClipPercent] = useState(100);
-  const [cameraPreset, setCameraPreset] = useState<"perspective" | "plan" | "section">("perspective");
+  const [cameraPreset, setCameraPreset] = useState<CameraPreset>("perspective");
   const [seamPercent, setSeamPercent] = useState(1);
+  const [spatialView, setSpatialView] = useState<SpatialView>("overview");
   const [datasetRefs, setDatasetRefs] = useState<GeoMotionRequest["site_data"]["datasets"]>([]);
   const [blockModelFile, setBlockModelFile] = useState<File | null>(null);
   const [nativeFullscreen, setNativeFullscreen] = useState(false);
   const [fallbackFullscreen, setFallbackFullscreen] = useState(false);
+  const [standaloneDark, setStandaloneDark] = useState(
+    () => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false,
+  );
   const viewerRef = useRef<HTMLDivElement>(null);
+  const blastDataRef = useRef<HTMLElement>(null);
 
   useEffect(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(assumptions)), [assumptions]);
+
+  useEffect(() => {
+    localStorage.setItem(
+      WORKSPACE_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        projectName,
+        fileName,
+        holes,
+        issues,
+        inputErrors,
+      }),
+    );
+  }, [projectName, fileName, holes, issues, inputErrors]);
+
+  useEffect(() => {
+    if (!standalone) return;
+    const previousTheme = document.body.dataset.theme;
+    document.body.dataset.theme = standaloneDark ? "dark" : "light";
+    return () => {
+      if (previousTheme) document.body.dataset.theme = previousTheme;
+      else delete document.body.dataset.theme;
+    };
+  }, [standalone, standaloneDark]);
 
   useEffect(() => {
     if (!playing) return;
@@ -908,7 +1194,19 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
     setFallbackFullscreen(true);
   }
 
+  function focusActiveSection() {
+    setSpatialView("active");
+    setView("movement");
+    setPlaying(false);
+  }
+
+  function returnToWholePit() {
+    setSpatialView("overview");
+    setPlaying(false);
+  }
+
   function startPlayback() {
+    setSpatialView("active");
     setView("movement");
     if (progress >= 0.999) setProgress(0);
     setPlaying(true);
@@ -1076,50 +1374,87 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
   const fullscreen = nativeFullscreen || fallbackFullscreen;
 
   return (
-    <div className="geomotionWorkspace">
-      <section className="geomotionHero">
-        <div>
-          <div className="geomotionEyebrow">BLAST MOVEMENT • DILUTION • RECOVERY</div>
-          <h2>GeoMotion 3D</h2>
-          <p>Move the mine's 1 m³ block model (1 m × 1 m × 1 m cells) through the delay sequence, then identify ore loss, waste dilution, and practical post-blast dig outcomes. This planning simulation never arms, programs, initiates, or connects to blasting hardware.</p>
-        </div>
-        <div className="geomotionNotice">{NOTICE}</div>
-      </section>
+    <div className={`geomotionWorkspace${standalone ? " geomotionWorkspaceStandalone" : ""}`}>
+      {!standalone ? (
+        <>
+          <section className="geomotionHero">
+            <div>
+              <div className="geomotionEyebrow">BLAST MOVEMENT • DILUTION • RECOVERY</div>
+              <h2>GeoMotion 3D</h2>
+              <p>Move the mine's 1 m³ block model (1 m × 1 m × 1 m cells) through the delay sequence, then identify ore loss, waste dilution, and practical post-blast dig outcomes. This planning simulation never arms, programs, initiates, or connects to blasting hardware.</p>
+            </div>
+            <div className="geomotionNotice">{NOTICE}</div>
+          </section>
 
-      <div className="geomotionWorkflow">
-        {["1  Upload tie-up", "2  Block model (optional)", "3  Run movement", "4  Review ore control"].map((step, index) => (
-          <div
-            key={step}
-            className={`geomotionStep ${
-              (index === 0 && !holes.length) ||
-              (index === 1 && holes.length && !result) ||
-              (index === 2 && running) ||
-              (index === 3 && result)
-                ? "active"
-                : ""
-            }`}
-          >
-            {step}
+          <div className="geomotionWorkflow">
+            {["1  Upload tie-up", "2  Block model (optional)", "3  Run movement", "4  Review ore control"].map((step, index) => (
+              <div
+                key={step}
+                className={`geomotionStep ${
+                  (index === 0 && !holes.length) ||
+                  (index === 1 && holes.length && !result) ||
+                  (index === 2 && running) ||
+                  (index === 3 && result)
+                    ? "active"
+                    : ""
+                }`}
+              >
+                {step}
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </>
+      ) : null}
 
       <section
         ref={viewerRef}
-        className={`card geomotionViewerCard${fallbackFullscreen ? " geomotionViewerFallbackFullscreen" : ""}`}
+        className={`card geomotionViewerCard${standalone ? " geomotionViewerStandalone" : ""}${fallbackFullscreen ? " geomotionViewerFallbackFullscreen" : ""}`}
         data-testid="geomotion-viewer"
+        data-spatial-view={spatialView}
       >
         <div className="geomotionViewerHeader">
           <div>
-            <div className="sectionTitle">Whole-mine movement model</div>
+            {standalone ? <div className="geomotionEyebrow">GEOMOTION 3D · DEDICATED MINE VIEW</div> : null}
+            <div className="sectionTitle">
+              {spatialView === "overview" ? "Whole pit overview" : "Active blast section"}
+            </div>
             <div className="subtitle">
-              Complete stepped pit context with the delay-bearing tie-up isolated to {ACTIVE_BENCH.label}, {ACTIVE_BENCH.section}. Drag to orbit and scroll to zoom.
+              {spatialView === "overview"
+                ? `Complete crest, highwalls, descending benches and pit floor. The ${ACTIVE_BENCH.label} tie-up remains a small localized section.`
+                : `Focused tie-up detail on ${ACTIVE_BENCH.label}, ${ACTIVE_BENCH.section}, with the whole-pit locator retained for context.`}
             </div>
           </div>
           <div className="geomotionViewerActions">
+            {standalone ? (
+              <button
+                className="btn"
+                type="button"
+                onClick={() => blastDataRef.current?.scrollIntoView({ behavior: "smooth" })}
+              >
+                Blast data &amp; setup
+              </button>
+            ) : null}
+            <button
+              className="btn geomotionSpatialButton"
+              type="button"
+              data-testid="geomotion-spatial-toggle"
+              onClick={spatialView === "overview" ? focusActiveSection : returnToWholePit}
+            >
+              {spatialView === "overview" ? "Focus active blast section" : "Return to whole pit"}
+            </button>
             <button className="btn" type="button" onClick={playing ? () => setPlaying(false) : startPlayback} disabled={!timedHoles.length}>
               {playing ? "Pause sequence" : "Play sequence"}
             </button>
+            {standalone ? (
+              <button
+                className="btn"
+                type="button"
+                aria-label="Toggle colour theme"
+                onClick={() => setStandaloneDark((current) => !current)}
+              >
+                {standaloneDark ? "Light theme" : "Dark theme"}
+              </button>
+            ) : null}
             <button
               className="btn btnPrimary"
               type="button"
@@ -1127,16 +1462,25 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
               onClick={toggleFullscreen}
               aria-pressed={fullscreen}
             >
-              {fullscreen ? "Exit fullscreen" : "View fullscreen"}
+              {fullscreen ? "Exit fullscreen" : "Enter browser fullscreen"}
             </button>
+            {standalone && onLogout ? (
+              <button className="btn" type="button" onClick={onLogout}>
+                Sign out
+              </button>
+            ) : null}
           </div>
         </div>
 
         <div className="geomotionContextRow" aria-label="Mine context summary">
+          <span className="mode" data-testid="geomotion-spatial-mode">
+            {spatialView === "overview" ? "Whole pit overview" : "Focused active section"}
+          </span>
           <span>Whole mine · {PIT_CONTEXT.name}</span>
           <span>{PIT_CONTEXT.renderedCells} deterministic context cells</span>
           <span>{PIT_CONTEXT.benches} benches · {PIT_CONTEXT.verticalRangeM} m vertical</span>
           <span className="active">Active · {ACTIVE_BENCH.label} / {ACTIVE_BENCH.section} / {holes.length} holes</span>
+          {standalone && userEmail ? <span>{userEmail}</span> : null}
         </div>
 
         <div className="geomotionViewerControls" aria-label="Movement model view controls">
@@ -1181,7 +1525,7 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
           <label>
             <span>Z exaggeration</span>
             <select className="input" value={verticalExaggeration} onChange={(event) => setVerticalExaggeration(Number(event.target.value))}>
-              <option value={1}>1x</option><option value={2}>2x</option><option value={3}>3x</option>
+              <option value={1}>1x</option><option value={1.5}>1.5x</option><option value={2}>2x</option><option value={3}>3x</option>
             </select>
           </label>
           <label>
@@ -1196,13 +1540,15 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
           </label>
         </div>
 
-        <div className="geomotionPitLegend" aria-label="Whole-mine material legend">
-          {(Object.entries(MINE_MATERIAL_COLORS) as Array<[MineMaterial, string]>).map(([material, color]) => (
-            <span key={material}><i style={{ background: color }} />{material === "ore" ? "Ore envelope" : material[0].toUpperCase() + material.slice(1)}</span>
-          ))}
-          <span><i className="active" />Active bench</span>
-          <span><i className="tie" />Delay tie-up</span>
-          <span className="geomotionLegendNote">Synthetic pit context · imported hole data remains the active tie-up</span>
+        <div className="geomotionPitLegend" aria-label="Whole-pit and firing-state legend">
+          <span><i className="model" />Whole mine block model</span>
+          <span><i className="bench" />Pit benches</span>
+          <span><i className="active" />Active blast section</span>
+          <span><i className="tie" />Delay tie line</span>
+          <span><i className="queued" />Queued hole</span>
+          <span><i className="current" />Current firing</span>
+          <span><i className="fired" />Fired hole</span>
+          <span className="geomotionLegendNote">Imported holes remain bounded to {ACTIVE_BENCH.label}</span>
         </div>
         {result ? (
           <ColorLegend mode={colorMode} blocks={result.blocks} destination={view === "destination" || (view === "movement" && progress > 0.5)} />
@@ -1256,18 +1602,19 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
           clipPercent={clipPercent}
           cameraPreset={cameraPreset}
           seamPercent={seamPercent}
+          spatialView={spatialView}
         />
         <div className="geomotionViewerFooter">
           <span><strong>{PIT_CONTEXT.coordinateSystem}</strong> · deterministic seed {PIT_CONTEXT.seed}</span>
           <span>Planning/simulation only · no detonator, firing-system, or hardware control</span>
         </div>
         <span className="geomotionSrOnly" aria-live="polite">
-          {fullscreen ? "GeoMotion whole-mine fullscreen view active." : "GeoMotion whole-mine embedded view active."}
+          {`${spatialView === "overview" ? "Whole pit overview" : "Focused active blast section"} active${fullscreen ? " in browser fullscreen" : standalone ? " in the dedicated window" : ""}.`}
         </span>
       </section>
 
       <div className="geomotionTopGrid">
-        <section className="card">
+        <section className="card" id="geomotion-blast-data" ref={blastDataRef}>
           <div className="sectionTitle">1. Tie-up with cumulative delays</div>
           <div className="subtitle">Required columns: Hole ID, X, Y, Z, Depth, Charge, Delay (ms). Every hole needs a unique firing time.</div>
           <label className="label">Project</label>

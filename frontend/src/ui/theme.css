@@ -29,7 +29,29 @@ body{
   color: var(--text);
 }
 
+.geomotionStandaloneBody{ overflow:auto; }
+.geomotionStandaloneShell{ width:100vw; min-height:100dvh; background:var(--bg); }
+.geomotionStandaloneLoading{ width:100vw; height:100dvh; color:var(--muted); background:var(--bg); }
+.geomotionLaunchPage{ min-height:560px; }
+.geomotionLaunchCard{
+  display:grid; grid-template-columns:auto minmax(0,1fr) auto auto; align-items:center; gap:14px;
+  min-height:190px; padding:22px;
+}
+.geomotionLaunchIcon{
+  display:grid; place-items:center; width:66px; height:66px; border-radius:18px;
+  color:#dff8ff; background:linear-gradient(145deg,#0f3550,#0d766f); font-weight:950;
+  box-shadow:0 14px 30px rgba(8,47,73,.22);
+}
+.geomotionLaunchStatus{
+  grid-column:1/-1; padding:10px 12px; border:1px solid rgba(16,185,129,.3); border-radius:10px;
+  color:#065f46; background:rgba(236,253,245,.86); font-size:12px; font-weight:750;
+}
 .geomotionWorkspace{ display:grid; gap:14px; }
+.geomotionWorkspaceStandalone{ display:grid; min-height:100dvh; gap:16px; padding-bottom:24px; }
+.geomotionWorkspaceStandalone > .geomotionTopGrid,
+.geomotionWorkspaceStandalone > .grid3,
+.geomotionWorkspaceStandalone > .geomotionResultsGrid,
+.geomotionWorkspaceStandalone > .geomotionEmpty{ margin-inline:18px; }
 .geomotionHero{
   display:flex; justify-content:space-between; align-items:center; gap:18px; flex-wrap:wrap;
   padding:22px 24px; border-radius:20px; color:#f8fafc;
@@ -94,6 +116,11 @@ body{
   position:relative; display:flex; flex-direction:column; gap:10px; min-width:0;
   padding:14px; overflow:hidden; background:var(--panel);
 }
+.geomotionViewerStandalone{
+  width:100vw; height:100dvh; min-height:700px; margin:0; padding:12px;
+  overflow:auto; border:0; border-radius:0; box-shadow:none;
+}
+.geomotionViewerStandalone .geomotionSceneFrame{ flex:1 1 0; height:auto; min-height:340px; }
 .geomotionViewerHeader{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; padding:2px 3px 0; }
 .geomotionViewerActions{ display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
 .geomotionContextRow{ display:flex; align-items:center; gap:7px; overflow-x:auto; padding:1px 2px 2px; scrollbar-width:thin; }
@@ -102,6 +129,7 @@ body{
   color:var(--muted); background:var(--bg-soft); font-size:10px; font-weight:800;
 }
 .geomotionContextRow span.active{ border-color:rgba(245,158,11,.48); color:#92400e; background:#fffbeb; }
+.geomotionContextRow span.mode{ border-color:rgba(14,116,144,.32); color:#0e7490; background:#ecfeff; }
 .geomotionViewerControls{
   display:grid; grid-template-columns:repeat(5,minmax(125px,1fr)) auto; align-items:end; gap:8px;
   padding:10px; border:1px solid var(--border); border-radius:13px; background:var(--bg-soft);
@@ -123,8 +151,13 @@ body{
 }
 .geomotionPitLegend span{ display:inline-flex; align-items:center; gap:5px; }
 .geomotionPitLegend i{ display:inline-block; width:11px; height:11px; border:1px solid rgba(15,23,42,.22); border-radius:3px; }
-.geomotionPitLegend i.active{ background:#f59e0b; box-shadow:0 0 0 2px rgba(245,158,11,.16); }
+.geomotionPitLegend i.model{ background:#354656; }
+.geomotionPitLegend i.bench{ background:#7f8b96; }
+.geomotionPitLegend i.active{ background:rgba(251,191,36,.25); border:2px solid #f59e0b; box-shadow:0 0 0 2px rgba(245,158,11,.1); }
 .geomotionPitLegend i.tie{ width:17px; height:0; border:0; border-top:2px solid #22d3ee; border-radius:0; }
+.geomotionPitLegend i.queued{ border-radius:50%; background:#94a3b8; }
+.geomotionPitLegend i.current{ border-radius:50%; background:#fbbf24; box-shadow:0 0 0 2px rgba(251,191,36,.18); }
+.geomotionPitLegend i.fired{ border-radius:50%; background:#34d399; }
 .geomotionLegendNote{ margin-left:auto; font-weight:650!important; }
 .geomotionPlayback{ display:grid; grid-template-columns:auto auto minmax(220px,1fr) auto; align-items:center; gap:8px; padding:8px; border:1px solid var(--border); border-radius:12px; background:var(--bg-soft); }
 .geomotionPlayback .geomotionTimeline{ padding:0; }
@@ -147,6 +180,44 @@ body{
 .geomotionSceneHud strong{ color:#7dd3fc; font-size:9px; font-weight:900; letter-spacing:.12em; }
 .geomotionSceneHud span{ color:rgba(226,232,240,.78); font-size:10px; line-height:1.35; }
 .geomotionSceneHud small{ color:#fcd34d; font-size:9px; line-height:1.35; }
+.geomotionOverviewInset{
+  position:absolute; z-index:3; left:14px; bottom:44px; width:238px; padding:9px;
+  border:1px solid rgba(148,163,184,.32); border-radius:12px;
+  color:#dbeafe; background:rgba(5,12,23,.9); box-shadow:0 14px 30px rgba(2,6,23,.28);
+  backdrop-filter:blur(10px); pointer-events:none;
+}
+.geomotionOverviewInset > div{ display:flex; justify-content:space-between; gap:8px; align-items:center; }
+.geomotionOverviewInset strong{ color:#7dd3fc; font-size:8px; letter-spacing:.11em; }
+.geomotionOverviewInset span{ color:#fcd34d; font-size:8px; font-weight:800; }
+.geomotionOverviewInset svg{ display:block; width:100%; height:92px; margin-top:4px; }
+.geomotionOverviewInset ellipse{ fill:none; stroke:rgba(203,213,225,.48); stroke-width:2; }
+.geomotionOverviewInset path{ fill:rgba(251,191,36,.28); stroke:#fbbf24; stroke-width:2; }
+.geomotionOverviewInset circle{ fill:#fbbf24; stroke:#fff7ed; stroke-width:1.5; }
+.geomotionFocusedEvents{
+  position:absolute; z-index:3; right:14px; bottom:44px; width:244px; padding:10px;
+  border:1px solid rgba(148,163,184,.32); border-radius:12px;
+  color:#e2e8f0; background:rgba(5,12,23,.9); box-shadow:0 14px 30px rgba(2,6,23,.28);
+  backdrop-filter:blur(10px); pointer-events:none;
+}
+.geomotionFocusedEvents > strong{ display:block; margin-bottom:5px; color:#7dd3fc; font-size:8px; letter-spacing:.12em; }
+.geomotionFocusedEvents ol{ display:grid; gap:3px; margin:0; padding:0; list-style:none; counter-reset:none; }
+.geomotionFocusedEvents li{
+  display:grid; grid-template-columns:8px 20px minmax(0,1fr) auto; gap:5px; align-items:center;
+  min-height:20px; padding:2px 5px; border-radius:6px; color:#cbd5e1; font-size:9px;
+}
+.geomotionFocusedEvents li.current{ color:#fff7d6; background:rgba(180,83,9,.28); }
+.geomotionFocusedEvents li.fired{ color:#bbf7d0; }
+.geomotionFocusedEvents li i{ width:7px; height:7px; border-radius:50%; background:#94a3b8; }
+.geomotionFocusedEvents li.current i{ background:#fbbf24; box-shadow:0 0 0 2px rgba(251,191,36,.18); }
+.geomotionFocusedEvents li.fired i{ background:#34d399; }
+.geomotionFocusedEvents li span{ color:#94a3b8; font-variant-numeric:tabular-nums; }
+.geomotionFocusedEvents li b{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.geomotionFocusedEvents li em{ color:inherit; font-style:normal; font-variant-numeric:tabular-nums; }
+.geomotionScaleBar{
+  position:absolute; z-index:2; left:18px; bottom:20px; display:grid; gap:3px;
+  color:rgba(226,232,240,.78); font-size:8px; font-weight:800; pointer-events:none;
+}
+.geomotionScaleBar i{ display:block; width:112px; height:7px; border:solid rgba(226,232,240,.7); border-width:0 1px 1px; }
 .geomotionSceneButtons{ position:absolute; z-index:3; top:116px; right:14px; display:grid; gap:5px; }
 .geomotionSceneButtons button{
   min-width:36px; height:34px; border:1px solid rgba(148,163,184,.34); border-radius:9px;
@@ -160,6 +231,7 @@ body{
   color:rgba(226,232,240,.72); background:rgba(5,12,23,.74); font-size:9px; font-weight:750;
   text-align:center; white-space:nowrap; pointer-events:none;
 }
+.geomotionSceneFrame[data-spatial-view="active"] .geomotionOrbitHint{ display:none; }
 .geomotionViewerFooter{ display:flex; align-items:center; justify-content:space-between; gap:8px 16px; flex-wrap:wrap; color:var(--muted); font-size:10px; }
 .geomotionSrOnly{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 .geomotionViewerCard:fullscreen,.geomotionViewerFallbackFullscreen{
@@ -188,8 +260,12 @@ body{
   .geomotionTopGrid,.geomotionResultsGrid{ grid-template-columns:1fr; }
   .geomotionAssumptions{ grid-template-columns:repeat(2,minmax(0,1fr)); }
   .geomotionViewerControls{ grid-template-columns:repeat(3,minmax(125px,1fr)); }
+  .geomotionLaunchCard{ grid-template-columns:auto minmax(0,1fr); }
+  .geomotionLaunchCard > .btn{ justify-self:start; }
 }
 @media (max-width:680px){
+  .geomotionLaunchCard{ grid-template-columns:1fr; }
+  .geomotionLaunchIcon{ width:54px; height:54px; }
   .geomotionWorkflow{ grid-template-columns:repeat(2,1fr); }
   .geomotionAssumptions{ grid-template-columns:1fr; }
   .geomotionViewerHeader{ align-items:flex-start; flex-direction:column; }
@@ -205,6 +281,19 @@ body{
   .geomotionSceneButtons{ top:10px; right:10px; }
   .geomotionOrbitHint{ left:10px; bottom:10px; max-width:calc(100% - 20px); transform:none; }
   .geomotionLegendNote{ width:100%; margin-left:0; }
+  .geomotionViewerStandalone{ height:auto; min-height:100dvh; }
+  .geomotionViewerStandalone .geomotionSceneFrame{ min-height:560px; }
+  .geomotionOverviewInset{ left:10px; bottom:10px; width:150px; padding:7px; }
+  .geomotionOverviewInset > div{ display:grid; }
+  .geomotionOverviewInset svg{ height:70px; }
+  .geomotionFocusedEvents{ right:10px; bottom:10px; width:182px; padding:7px; }
+  .geomotionFocusedEvents li{ grid-template-columns:7px 17px minmax(0,1fr) auto; gap:3px; }
+  .geomotionFocusedEvents li:nth-child(n+5){ display:none; }
+  .geomotionSceneFrame[data-spatial-view="active"] .geomotionSceneHudRight{ display:none; }
+  .geomotionWorkspaceStandalone > .geomotionTopGrid,
+  .geomotionWorkspaceStandalone > .grid3,
+  .geomotionWorkspaceStandalone > .geomotionResultsGrid,
+  .geomotionWorkspaceStandalone > .geomotionEmpty{ margin-inline:10px; }
 }
 
 a{ color:inherit; }
@@ -1405,8 +1494,18 @@ body[data-theme="dark"] .geomotionContextRow span.active{
   background:rgba(180,83,9,.22);
   border-color:rgba(251,191,36,.42);
 }
+body[data-theme="dark"] .geomotionContextRow span.mode{
+  color:#a5f3fc;
+  background:rgba(8,145,178,.16);
+  border-color:rgba(34,211,238,.3);
+}
 body[data-theme="dark"] .geomotionCheckbox{
   background:rgba(17,27,47,.96);
+}
+body[data-theme="dark"] .geomotionLaunchStatus{
+  color:#a7f3d0;
+  background:rgba(6,78,59,.3);
+  border-color:rgba(52,211,153,.32);
 }
 body[data-accent="green"]{
   --brand: #16a34a;

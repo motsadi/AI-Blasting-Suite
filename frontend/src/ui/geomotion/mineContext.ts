@@ -38,16 +38,16 @@ export const ACTIVE_BENCH = {
   label: "Bench 680",
   section: "East 04",
   elevation: 680,
-  outerRadius: 0.505,
-  innerRadius: 0.44,
-  startAngle: -0.3,
-  endAngle: 0.3,
+  outerRadius: 0.55,
+  innerRadius: 0.5,
+  startAngle: -0.12,
+  endAngle: 0.12,
 } as const;
 
 const SEGMENTS = 40;
 const BENCH_DROP_M = 20;
 const CREST_ELEVATION = 760;
-const BENCH_STEP = 0.14;
+const BENCH_STEP = 0.125;
 const WALL_RUN = 0.075;
 const PIT_RADIUS_X = PIT_CONTEXT.widthM / 2;
 const PIT_RADIUS_Y = PIT_CONTEXT.lengthM / 2;
@@ -113,7 +113,7 @@ function buildPitSurfaceCells() {
   const cells: PitSurfaceCell[] = [];
 
   for (let segment = 0; segment < SEGMENTS; segment += 1) {
-    cells.push(ringCell(`terrain-${segment}`, "terrain", 0, segment, 1.18, 1, CREST_ELEVATION, CREST_ELEVATION));
+    cells.push(ringCell(`terrain-${segment}`, "terrain", 0, segment, 1.32, 1, CREST_ELEVATION, CREST_ELEVATION));
   }
 
   for (let transition = 0; transition < PIT_CONTEXT.benches; transition += 1) {
@@ -178,17 +178,17 @@ export const PIT_SURFACE_CELLS = buildPitSurfaceCells();
 
 export const BENCH_LABELS: BenchLabel[] = [
   { id: "crest", label: "Crest 760", point: pointOnPit(1.02, 2.62, 760) },
-  { id: "b740", label: "740", point: pointOnPit(0.89, 2.62, 740) },
-  { id: "b720", label: "720", point: pointOnPit(0.75, 2.62, 720) },
-  { id: "b700", label: "700", point: pointOnPit(0.61, 2.62, 700) },
+  { id: "b740", label: "740", point: pointOnPit(0.9, 2.62, 740) },
+  { id: "b720", label: "720", point: pointOnPit(0.775, 2.62, 720) },
+  { id: "b700", label: "700", point: pointOnPit(0.65, 2.62, 700) },
   {
     id: "b680",
     label: "680 · active",
-    point: pointOnPit(0.475, ACTIVE_BENCH.endAngle + 0.035, ACTIVE_BENCH.elevation),
+    point: pointOnPit(0.525, ACTIVE_BENCH.endAngle + 0.025, ACTIVE_BENCH.elevation),
     active: true,
   },
-  { id: "b660", label: "660", point: pointOnPit(0.33, 2.62, 660) },
-  { id: "b640", label: "640", point: pointOnPit(0.19, 2.62, 640) },
+  { id: "b660", label: "660", point: pointOnPit(0.4, 2.62, 660) },
+  { id: "b640", label: "640", point: pointOnPit(0.275, 2.62, 640) },
   { id: "floor", label: "Floor 620", point: { x: 0, y: 0, z: 620 } },
 ];
 

@@ -4,8 +4,11 @@ Use this checklist before deploying changes to the GeoMotion 3D module.
 
 ## GeoMotion demonstration
 
-- Open GeoMotion without importing data and confirm the complete seven-bench stepped pit plus deterministic 182-hole tie-up are visible by default.
-- Confirm the tie-up and movement cells remain confined to Bench 680 / East 04 while the whole pit stays visible as context.
+- Click the main-app GeoMotion navigation entry and confirm it opens or focuses the authenticated `?view=geomotion` standalone window; the standalone viewport must contain no application header or sidebar.
+- Block `window.open` and confirm the launch page announces the popup failure and retains retry plus normal-tab fallbacks.
+- Open GeoMotion without importing data and confirm the initial `Whole pit overview` visibly contains the complete crest, seven descending benches, highwall faces, and depressed floor—not a mound or raised ore body.
+- Confirm the tie-up and movement cells remain a small bounded section on Bench 680 / East 04 while the complete pit stays dominant.
+- Use `Focus active blast section`; confirm holes, tie lines and ordered delays are readable and the whole-pit locator identifies the section. Use `Return to whole pit` and confirm the fitted crest returns.
 - Replace the demonstration with an uploaded blast CSV and confirm only the active tie-up changes; the whole-pit context remains.
 - Test native Fullscreen API entry/exit and Escape, then disable/reject the API and confirm the viewport fallback exits safely with Escape.
 - Orbit, pan, wheel-zoom, use the accessible +/- controls, and reset/fit the whole pit.
