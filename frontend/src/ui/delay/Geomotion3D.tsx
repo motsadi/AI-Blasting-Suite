@@ -581,7 +581,7 @@ export function Geomotion3D({
                 (Number.isFinite(item.hole.columnIndex) ? item.hole.columnIndex === 0 : holeIndex === 0));
             const overviewLabel = holes.length > 24 && camera.zoom < 1.45;
             const holeLabel = overviewLabel ? item.hole.id.replace(/^B\d+-/, "") : item.hole.id;
-            const labelRowOffset = overviewLabel ? (item.hole.rowIndex ?? 0) * 4 : 0;
+            const labelRowOffset = overviewLabel ? (item.hole.rowIndex ?? 0) * 14 : 0;
             return (
               <g
                 key={item.hole.id}
