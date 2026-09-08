@@ -169,14 +169,14 @@ function ColorLegend({ mode, blocks, destination }: { mode: GeoMotionColor; bloc
       </div>
     );
   }
-  const title = {
+  const titleByMode: Partial<Record<GeoMotionColor, string>> = {
     grade: "Low grade → High grade",
     displacement: "Low movement → High movement",
     uncertainty: "Low uncertainty → High uncertainty",
     burdenVelocity: "Low velocity → High velocity",
     impulse: "Low impulse → High impulse",
-  }[mode];
-  return <div className="geomotionLegend"><span className="geomotionGradient" />{title}</div>;
+  };
+  return <div className="geomotionLegend"><span className="geomotionGradient" />{titleByMode[mode] ?? "Model value"}</div>;
 }
 
 function clamp(value: number, minimum: number, maximum: number) {
@@ -1040,7 +1040,11 @@ export function GeoMotionPanel({ apiBaseUrl, token }: Props) {
     }
   }
 
-  const numberField = (label: string, key: keyof GeoMotionAssumptions, suffix: string) => (
+  const numberField = (
+    label: string,
+    key: Exclude<keyof GeoMotionAssumptions, "electronic_scatter_enabled">,
+    suffix: string,
+  ) => (
     <label className="geomotionField">
       <span>{label}</span>
       <span className="geomotionInputWithUnit">
