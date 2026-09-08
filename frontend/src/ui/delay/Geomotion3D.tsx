@@ -363,6 +363,9 @@ export function Geomotion3D({
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     suppressHoleClickRef.current = drag.moved;
+    window.setTimeout(() => {
+      suppressHoleClickRef.current = false;
+    }, 0);
     dragRef.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   }
