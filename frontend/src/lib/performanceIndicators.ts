@@ -71,7 +71,8 @@ export function estimatePerformance(holes: BlastHole[]) {
     const delayRisk = chargeAtDelay > medianCharge * 2 ? 0.25 : 0;
     const flyrockDistance = Math.max(20, Math.min(700, 95 + 130 * confinementRisk + 0.035 * charge + 25 * chargeRisk + 30 * delayRisk));
     const flyrockScore = confinementRisk + chargeRisk + delayRisk;
-    const flyrockRisk = flyrockScore >= 0.65 ? "high" : flyrockScore >= 0.3 ? "moderate" : "low";
+    const flyrockRisk: NonNullable<BlastHole["flyrockRisk"]> =
+      flyrockScore >= 0.65 ? "high" : flyrockScore >= 0.3 ? "moderate" : "low";
     const performanceWarnings = [
       flyrockRisk === "high" ? "Elevated flyrock screening risk from scaled burden/charge concentration." : "",
       ppv > 12 ? "Higher relative PPV estimate. Review charge per delay and sensitive locations." : "",
