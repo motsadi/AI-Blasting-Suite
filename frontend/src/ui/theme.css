@@ -151,14 +151,10 @@ body{
 }
 .geomotionPitLegend span{ display:inline-flex; align-items:center; gap:5px; }
 .geomotionPitLegend i{ display:inline-block; width:11px; height:11px; border:1px solid rgba(15,23,42,.22); border-radius:3px; }
-.geomotionPitLegend i.benchSurface{ background:#475569; }
-.geomotionPitLegend i.patternZone{ background:rgba(34,211,238,.16); border:2px dashed #22d3ee; }
-.geomotionPitLegend i.movementZone{ background:rgba(251,146,60,.22); border:2px dashed #fb923c; box-shadow:0 0 0 2px rgba(251,146,60,.08); }
-.geomotionPitLegend i.freeFace{ width:17px; height:0; border:0; border-top:3px solid #22d3ee; border-radius:0; }
-.geomotionPitLegend i.tie{ width:17px; height:0; border:0; border-top:2px solid #22d3ee; border-radius:0; }
-.geomotionPitLegend i.queued{ border-radius:50%; background:#94a3b8; }
-.geomotionPitLegend i.current{ border-radius:50%; background:#fbbf24; box-shadow:0 0 0 2px rgba(251,191,36,.18); }
-.geomotionPitLegend i.fired{ border-radius:50%; background:#34d399; }
+.geomotionPitLegend i.oreCube{ background:#f4c14b; }
+.geomotionPitLegend i.wasteCube{ background:#c5ced8; }
+.geomotionPitLegend i.cubeEdge{ background:transparent; border:2px solid #e2e8f0; }
+.geomotionPitLegend i.movementVector{ width:17px; height:0; border:0; border-top:3px solid #fb7185; border-radius:0; }
 .geomotionLegendNote{ margin-left:auto; font-weight:650!important; }
 .geomotionPlayback{ display:grid; grid-template-columns:auto auto minmax(220px,1fr) auto; align-items:center; gap:8px; padding:8px; border:1px solid var(--border); border-radius:12px; background:var(--bg-soft); }
 .geomotionPlayback .geomotionTimeline{ padding:0; }

@@ -74,11 +74,11 @@ The result is conservatively remapped into unique destination columns. Collision
 
 ## Visualization and transport
 
-The backend computes every 1 m³ cell. Interactive responses may aggregate contiguous source cells into larger regular level-of-detail cubes while preserving aggregate tonnes and carats. The UI uses GPU-instanced solid cells.
+The backend computes every 1 m³ cell. Interactive responses may aggregate contiguous source cells into larger regular level-of-detail cubes while preserving aggregate tonnes and carats. The UI uses GPU-instanced solid cells with visible cube edges.
 
-The 3D workspace intentionally renders only the active blasting bench. It uses the imported tie-up coordinates directly and adds a local highwall, free-face direction, north arrow, planned rock footprint and predicted bulk-movement envelope. It does not render a synthetic whole mine. The envelope is derived from modelled source/destination cells plus the reported P95 movement-uncertainty buffer; it is not a flyrock, blast-damage or regulatory exclusion zone.
+The 3D workspace renders the block model only. It does not draw a bench floor, highwall, free-face arrow, north arrow, hole markers or a synthetic whole mine. Default colouring is ore (gold) versus waste (stone). Fit frames the full source-to-destination AABB so every cube is in view.
 
-Controls include joined or 1–3% seams, bench cutaway, vertical exaggeration, plan/section/perspective cameras, event playback, firing pulses, movement vectors, grade/facies, ore/waste, displacement, uncertainty, burden velocity and peak impulse. Full-resolution gzip CSV export is available from the authoritative backend.
+Controls include 8–22% cube seams, model cutaway, 1× vertical scale by default, plan/section/perspective cameras, event playback, optional movement vectors, grade/facies, ore/waste, displacement, uncertainty, burden velocity and peak impulse. Full-resolution gzip CSV export is available from the authoritative backend.
 
 If Cloud Run returns `404` or `405`, the UI runs a clearly labelled coarse browser preview. That preview is not the authoritative 1 m³-cell event solver.
 

@@ -50,14 +50,15 @@ export function simulateGeoMotionLocally(request: GeoMotionRequest): GeoMotionRe
   const centerX = xs.reduce((sum, value) => sum + value, 0) / holes.length;
   const centerY = ys.reduce((sum, value) => sum + value, 0) / holes.length;
   const cell = a.cell_size_m;
-  const levels = Math.max(2, Math.min(6, Math.ceil(benchHeight / cell)));
-  const levelHeight = benchHeight / levels;
+  const levels = Math.max(1, Math.round(benchHeight / Math.max(cell, 0.5)));
+  const levelHeight = cell;
   const azimuth = (a.free_face_azimuth_deg * Math.PI) / 180;
   const faceX = Math.sin(azimuth);
   const faceY = Math.cos(azimuth);
   const blocks: GeoMotionResult["blocks"] = [];
+  const maxVisualBlocks = Math.max(500, a.max_visual_blocks || 20_000);
 
-  for (let y = ymin - cell; y <= ymax + cell; y += cell) {
+  outer: for (let y = ymin - cell; y <= ymax + cell; y += cell) {
     for (let x = xmin - cell; x <= xmax + cell; x += cell) {
       let nearest = Number.POSITIVE_INFINITY;
       let weightedCharge = 0;
@@ -76,6 +77,7 @@ export function simulateGeoMotionLocally(request: GeoMotionRequest): GeoMotionRe
       weightedDelay /= Math.max(influenceSum, 1e-9);
 
       for (let level = 0; level < levels; level += 1) {
+        if (blocks.length >= maxVisualBlocks) break outer;
         const z = floor + (level + 0.5) * levelHeight;
         const nx = (x - centerX) / Math.max(spanX * 0.4, 1);
         const ny = (y - centerY - spanY * 0.1 * Math.sin(nx * 1.7)) / Math.max(spanY * 0.36, 1);
@@ -136,8 +138,8 @@ export function simulateGeoMotionLocally(request: GeoMotionRequest): GeoMotionRe
           burden_velocity_m_s: round(displacement * 0.22),
           contributing_event: -1,
           size_m: cell,
-          physics_cell_dimensions_m: [cell, cell, levelHeight],
-          physics_cell_volume_m3: round(cell * cell * levelHeight),
+          physics_cell_dimensions_m: [cell, cell, cell],
+          physics_cell_volume_m3: round(cell * cell * cell),
           represented_cell_count: 1,
           provenance: "synthetic",
         });
