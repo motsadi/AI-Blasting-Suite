@@ -823,11 +823,11 @@ function GeoMotionScene({
         true,
       );
       affectedTubeMaterial = new THREE.MeshBasicMaterial({
-        color: "#fb923c",
+        color: "#f97316",
         transparent: true,
-        opacity: 0.92,
+        opacity: 1,
         depthTest: false,
-        blending: THREE.AdditiveBlending,
+        toneMapped: false,
       });
       const affectedTube = new THREE.Mesh(affectedTubeGeometry, affectedTubeMaterial);
       affectedTube.renderOrder = 17;
@@ -997,7 +997,7 @@ function GeoMotionScene({
 
     let blockMesh: THREE.InstancedMesh | null = null;
     let blockGeometry: THREE.BoxGeometry | null = null;
-    let blockMaterial: THREE.MeshStandardMaterial | null = null;
+    let blockMaterial: THREE.MeshBasicMaterial | null = null;
     const resultBlocks = result?.blocks ?? [];
     const lodScale = Math.max(1, Math.cbrt(result?.transport?.stride || 1));
     const voxelSize = (result?.assumptions.cell_size_m ?? 1) * lodScale * (1 - seamPercent / 100);
@@ -1040,13 +1040,10 @@ function GeoMotionScene({
 
     if (resultBlocks.length) {
       blockGeometry = new THREE.BoxGeometry(voxelSize, voxelSize * verticalExaggeration, voxelSize);
-      blockMaterial = new THREE.MeshStandardMaterial({
+      blockMaterial = new THREE.MeshBasicMaterial({
         color: "#ffffff",
         vertexColors: true,
-        roughness: 0.58,
-        metalness: 0.03,
-        emissive: "#07131d",
-        emissiveIntensity: 0.34,
+        toneMapped: false,
         clippingPlanes: clipPlane ? [clipPlane] : [],
       });
       blockMesh = new THREE.InstancedMesh(blockGeometry, blockMaterial, resultBlocks.length);
