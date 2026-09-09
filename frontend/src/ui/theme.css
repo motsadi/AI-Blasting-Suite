@@ -144,7 +144,7 @@ body{
 .geomotionLegend{ display:flex; align-items:center; justify-content:flex-end; gap:12px; flex-wrap:wrap; padding:0 8px 9px; color:var(--muted); font-size:11px; font-weight:750; }
 .geomotionLegend span{ display:inline-flex; align-items:center; gap:5px; }
 .geomotionLegend i{ display:inline-block; width:13px; height:13px; border-radius:3px; border:1px solid rgba(15,23,42,.18); }
-.geomotionGradient{ width:120px; height:10px; border-radius:999px; background:linear-gradient(90deg,#164e8a,#0ea5a8,#84cc16,#facc15,#f97316,#e11d48); border:1px solid rgba(15,23,42,.12); }
+.geomotionGradient{ width:120px; height:10px; border-radius:999px; background:linear-gradient(90deg,#38bdf8,#2dd4bf,#a3e635,#fde047,#fb923c,#fb7185); border:1px solid rgba(15,23,42,.12); }
 .geomotionPitLegend{
   display:flex; align-items:center; gap:8px 13px; flex-wrap:wrap; min-height:26px; padding:0 4px;
   color:var(--muted); font-size:10px; font-weight:750;

@@ -182,7 +182,7 @@ function numericColorMaximum(blocks: GeoMotionBlock[], mode: GeoMotionColor) {
   );
 }
 
-const MOVEMENT_PALETTE = ["#164e8a", "#0ea5a8", "#84cc16", "#facc15", "#f97316", "#e11d48"];
+const MOVEMENT_PALETTE = ["#38bdf8", "#2dd4bf", "#a3e635", "#fde047", "#fb923c", "#fb7185"];
 
 function paletteColor(value: number, maximum: number) {
   const scaled = clamp(value / Math.max(maximum, 0.001), 0, 1) * (MOVEMENT_PALETTE.length - 1);
@@ -782,6 +782,8 @@ function GeoMotionScene({
     let affectedMaterial: THREE.MeshBasicMaterial | null = null;
     let affectedOutlineGeometry: THREE.BufferGeometry | null = null;
     let affectedOutlineMaterial: THREE.LineDashedMaterial | null = null;
+    let affectedTubeGeometry: THREE.TubeGeometry | null = null;
+    let affectedTubeMaterial: THREE.MeshBasicMaterial | null = null;
     if (result) {
       affectedGeometry = makePlanGeometry(layout.affectedPolygon);
       affectedMaterial = new THREE.MeshBasicMaterial({
@@ -805,6 +807,31 @@ function GeoMotionScene({
       const affectedOutline = new THREE.Line(affectedOutlineGeometry, affectedOutlineMaterial);
       affectedOutline.computeLineDistances();
       scene.add(affectedOutline);
+      const envelopeCurve = new THREE.CatmullRomCurve3(
+        layout.affectedPolygon.map((point) =>
+          toScenePoint({ ...point, z: layout.surfaceZ + 0.72 }, layout, verticalExaggeration),
+        ),
+        true,
+        "centripetal",
+        0.18,
+      );
+      affectedTubeGeometry = new THREE.TubeGeometry(
+        envelopeCurve,
+        Math.max(48, layout.affectedPolygon.length * 6),
+        clamp(layout.spanM * 0.0032, 0.28, 0.58),
+        7,
+        true,
+      );
+      affectedTubeMaterial = new THREE.MeshBasicMaterial({
+        color: "#fb923c",
+        transparent: true,
+        opacity: 0.92,
+        depthTest: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const affectedTube = new THREE.Mesh(affectedTubeGeometry, affectedTubeMaterial);
+      affectedTube.renderOrder = 17;
+      scene.add(affectedTube);
     }
 
     const freeFaceDirection = new THREE.Vector3(layout.forward.x, 0, -layout.forward.y).normalize();
@@ -1030,16 +1057,21 @@ function GeoMotionScene({
 
     let vectorGeometry: THREE.BufferGeometry | null = null;
     let vectorMaterial: THREE.LineBasicMaterial | null = null;
+    let arrowheadGeometry: THREE.ConeGeometry | null = null;
+    let arrowheadMaterial: THREE.MeshBasicMaterial | null = null;
     if (showVectors && resultBlocks.length) {
       const vectorPositions: number[] = [];
       const vectorColors: number[] = [];
+      const vectorSamples: Array<{ source: THREE.Vector3; destination: THREE.Vector3 }> = [];
       const sourceColor = new THREE.Color("#67e8f9");
       const destinationColor = new THREE.Color("#fb7185");
-      const step = Math.max(1, Math.ceil(resultBlocks.length / 450));
+      const step = Math.max(1, Math.ceil(resultBlocks.length / 260));
       for (let index = 0; index < resultBlocks.length; index += step) {
         const block = resultBlocks[index];
         const source = blockPosition(block, 0);
         const destination = blockPosition(block, 1);
+        if (source.distanceToSquared(destination) < 0.04) continue;
+        vectorSamples.push({ source, destination });
         vectorPositions.push(source.x, source.y, source.z, destination.x, destination.y, destination.z);
         vectorColors.push(
           sourceColor.r, sourceColor.g, sourceColor.b,
@@ -1056,6 +1088,32 @@ function GeoMotionScene({
         depthTest: false,
       });
       scene.add(new THREE.LineSegments(vectorGeometry, vectorMaterial));
+      const arrowRadius = clamp(layout.spanM * 0.0036, 0.34, 0.72);
+      arrowheadGeometry = new THREE.ConeGeometry(arrowRadius, arrowRadius * 2.8, 7);
+      arrowheadMaterial = new THREE.MeshBasicMaterial({
+        color: "#fb7185",
+        depthTest: false,
+        transparent: true,
+        opacity: 0.94,
+      });
+      const arrowheads = new THREE.InstancedMesh(
+        arrowheadGeometry,
+        arrowheadMaterial,
+        vectorSamples.length,
+      );
+      const arrowMatrix = new THREE.Matrix4();
+      const arrowQuaternion = new THREE.Quaternion();
+      const arrowScale = new THREE.Vector3(1, 1, 1);
+      const up = new THREE.Vector3(0, 1, 0);
+      vectorSamples.forEach(({ source, destination }, index) => {
+        const direction = destination.clone().sub(source).normalize();
+        arrowQuaternion.setFromUnitVectors(up, direction);
+        arrowMatrix.compose(destination, arrowQuaternion, arrowScale);
+        arrowheads.setMatrixAt(index, arrowMatrix);
+      });
+      arrowheads.instanceMatrix.needsUpdate = true;
+      arrowheads.renderOrder = 17;
+      scene.add(arrowheads);
     }
 
     const pulseGeometry = new THREE.RingGeometry(0.72, 1, 48);
@@ -1230,6 +1288,8 @@ function GeoMotionScene({
       affectedMaterial?.dispose();
       affectedOutlineGeometry?.dispose();
       affectedOutlineMaterial?.dispose();
+      affectedTubeGeometry?.dispose();
+      affectedTubeMaterial?.dispose();
       holeGeometry.dispose();
       holeMaterial.dispose();
       stemGeometry.dispose();
@@ -1240,6 +1300,8 @@ function GeoMotionScene({
       blockMaterial?.dispose();
       vectorGeometry?.dispose();
       vectorMaterial?.dispose();
+      arrowheadGeometry?.dispose();
+      arrowheadMaterial?.dispose();
       pulseGeometry.dispose();
       pulseMaterials.forEach((material) => material.dispose());
       renderer.renderLists.dispose();
