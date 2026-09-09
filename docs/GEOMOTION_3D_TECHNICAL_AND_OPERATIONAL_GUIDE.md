@@ -392,14 +392,16 @@ This distinction prevents presenting fine voxel selectivity as an operationally 
 The interface provides:
 
 - in-situ, movement and post-blast views;
-- joined cubes or 1–3% seams;
-- ore/waste, facies, grade, displacement, uncertainty, burden-velocity and impulse colours;
+- joined cubes or 8–22% seams with visible cube edges;
+- default gold ore / stone waste colouring, plus facies, grade, displacement, uncertainty, burden-velocity and impulse colours;
 - live legend counts;
-- source-to-destination vectors;
-- plan, section and perspective cameras;
+- optional source-to-destination vectors;
+- plan, section and perspective cameras that fit the whole model;
 - clipping for internal sections;
-- vertical exaggeration; and
+- 1× vertical scale by default; and
 - event timeline playback.
+
+The 3D workspace draws the block model only. It does not render a bench, highwall, free-face arrow or mine context.
 
 The backend computes 1 m³ cells (1 m × 1 m × 1 m). Interactive responses may aggregate contiguous cells into larger level-of-detail cubes for performance. Full-resolution records remain available from the authoritative compressed export.
 

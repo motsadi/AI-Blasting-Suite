@@ -6,13 +6,15 @@ Use this checklist before deploying changes to the GeoMotion 3D module.
 
 - Click the main-app GeoMotion navigation entry and confirm it opens or focuses the authenticated `?view=geomotion` standalone window; the standalone viewport must contain no application header or sidebar.
 - Block `window.open` and confirm the launch page announces the popup failure and retains retry plus normal-tab fallbacks.
-- Open GeoMotion without importing data and confirm the initial `Whole pit overview` visibly contains the complete crest, seven descending benches, highwall faces, and depressed floor—not a mound or raised ore body.
-- Confirm the tie-up and movement cells remain a small bounded section on Bench 680 / East 04 while the complete pit stays dominant.
-- Use `Focus active blast section`; confirm holes, tie lines and ordered delays are readable and the whole-pit locator identifies the section. Use `Return to whole pit` and confirm the fitted crest returns.
-- Replace the demonstration with an uploaded blast CSV and confirm only the active tie-up changes; the whole-pit context remains.
+- Open GeoMotion without importing data and confirm the viewer is an empty block-model viewport with no bench floor, highwall, free face, footprint, north arrow, whole-pit mesh, distant terrain or mine locator.
+- After running the demonstration, confirm only 1 m³ cubes are drawn, ore is gold, waste is stone, cube edges and seams are visible, and Fit frames the whole model.
+- Confirm holes and coordinates stay in imported plan space and are not projected onto a synthetic pit wedge.
+- Replace the demonstration with an uploaded blast CSV and confirm camera fit and model dimensions adapt to that tie-up.
 - Test native Fullscreen API entry/exit and Escape, then disable/reject the API and confirm the viewport fallback exits safely with Escape.
-- Orbit, pan, wheel-zoom, use the accessible +/- controls, and reset/fit the whole pit.
-- Play, pause, scrub, and reset the firing timeline; confirm fired/current/queued state changes are limited to the active bench.
+- Orbit, pan, wheel-zoom, use the accessible +/- controls, and reset/fit the whole block model.
+- Play, pause, scrub, and reset the firing timeline; confirm the delay-order HUD and bulk-rock cubes follow the delay sequence.
+- Confirm displacement colours use the labelled zero-to-P95 scale and optional movement vectors run from real source to destination coordinates.
+- Confirm the UI states that displacement is uncalibrated bulk-rock movement—not flyrock, damage or an exclusion zone.
 - Check desktop/mobile layouts and both light/dark application themes.
 - Load the built-in delay-bearing 182-hole diamond demonstration and confirm every physics cell is exactly 1 m³ (1 m × 1 m × 1 m).
 - Import `Hole_data_v1.csv`; confirm cumulative times are preserved, normalized to zero and its invalid depth/charge rows are explicitly excluded.

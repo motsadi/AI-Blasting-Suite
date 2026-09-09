@@ -144,20 +144,17 @@ body{
 .geomotionLegend{ display:flex; align-items:center; justify-content:flex-end; gap:12px; flex-wrap:wrap; padding:0 8px 9px; color:var(--muted); font-size:11px; font-weight:750; }
 .geomotionLegend span{ display:inline-flex; align-items:center; gap:5px; }
 .geomotionLegend i{ display:inline-block; width:13px; height:13px; border-radius:3px; border:1px solid rgba(15,23,42,.18); }
-.geomotionGradient{ width:90px; height:10px; border-radius:999px; background:linear-gradient(90deg,#2563eb,#22c55e,#f59e0b,#ef4444); border:1px solid rgba(15,23,42,.12); }
+.geomotionGradient{ width:120px; height:10px; border-radius:999px; background:linear-gradient(90deg,#38bdf8,#2dd4bf,#a3e635,#fde047,#fb923c,#fb7185); border:1px solid rgba(15,23,42,.12); }
 .geomotionPitLegend{
   display:flex; align-items:center; gap:8px 13px; flex-wrap:wrap; min-height:26px; padding:0 4px;
   color:var(--muted); font-size:10px; font-weight:750;
 }
 .geomotionPitLegend span{ display:inline-flex; align-items:center; gap:5px; }
 .geomotionPitLegend i{ display:inline-block; width:11px; height:11px; border:1px solid rgba(15,23,42,.22); border-radius:3px; }
-.geomotionPitLegend i.model{ background:#354656; }
-.geomotionPitLegend i.bench{ background:#7f8b96; }
-.geomotionPitLegend i.active{ background:rgba(251,191,36,.25); border:2px solid #f59e0b; box-shadow:0 0 0 2px rgba(245,158,11,.1); }
-.geomotionPitLegend i.tie{ width:17px; height:0; border:0; border-top:2px solid #22d3ee; border-radius:0; }
-.geomotionPitLegend i.queued{ border-radius:50%; background:#94a3b8; }
-.geomotionPitLegend i.current{ border-radius:50%; background:#fbbf24; box-shadow:0 0 0 2px rgba(251,191,36,.18); }
-.geomotionPitLegend i.fired{ border-radius:50%; background:#34d399; }
+.geomotionPitLegend i.oreCube{ background:#ffd34d; }
+.geomotionPitLegend i.wasteCube{ background:#d7dee6; }
+.geomotionPitLegend i.cubeEdge{ background:transparent; border:2px solid #e2e8f0; }
+.geomotionPitLegend i.movementVector{ width:17px; height:0; border:0; border-top:3px solid #fb7185; border-radius:0; }
 .geomotionLegendNote{ margin-left:auto; font-weight:650!important; }
 .geomotionPlayback{ display:grid; grid-template-columns:auto auto minmax(220px,1fr) auto; align-items:center; gap:8px; padding:8px; border:1px solid var(--border); border-radius:12px; background:var(--bg-soft); }
 .geomotionPlayback .geomotionTimeline{ padding:0; }
@@ -180,19 +177,6 @@ body{
 .geomotionSceneHud strong{ color:#7dd3fc; font-size:9px; font-weight:900; letter-spacing:.12em; }
 .geomotionSceneHud span{ color:rgba(226,232,240,.78); font-size:10px; line-height:1.35; }
 .geomotionSceneHud small{ color:#fcd34d; font-size:9px; line-height:1.35; }
-.geomotionOverviewInset{
-  position:absolute; z-index:3; left:14px; bottom:44px; width:238px; padding:9px;
-  border:1px solid rgba(148,163,184,.32); border-radius:12px;
-  color:#dbeafe; background:rgba(5,12,23,.9); box-shadow:0 14px 30px rgba(2,6,23,.28);
-  backdrop-filter:blur(10px); pointer-events:none;
-}
-.geomotionOverviewInset > div{ display:flex; justify-content:space-between; gap:8px; align-items:center; }
-.geomotionOverviewInset strong{ color:#7dd3fc; font-size:8px; letter-spacing:.11em; }
-.geomotionOverviewInset span{ color:#fcd34d; font-size:8px; font-weight:800; }
-.geomotionOverviewInset svg{ display:block; width:100%; height:92px; margin-top:4px; }
-.geomotionOverviewInset ellipse{ fill:none; stroke:rgba(203,213,225,.48); stroke-width:2; }
-.geomotionOverviewInset path{ fill:rgba(251,191,36,.28); stroke:#fbbf24; stroke-width:2; }
-.geomotionOverviewInset circle{ fill:#fbbf24; stroke:#fff7ed; stroke-width:1.5; }
 .geomotionFocusedEvents{
   position:absolute; z-index:3; right:14px; bottom:44px; width:244px; padding:10px;
   border:1px solid rgba(148,163,184,.32); border-radius:12px;
@@ -231,7 +215,6 @@ body{
   color:rgba(226,232,240,.72); background:rgba(5,12,23,.74); font-size:9px; font-weight:750;
   text-align:center; white-space:nowrap; pointer-events:none;
 }
-.geomotionSceneFrame[data-spatial-view="active"] .geomotionOrbitHint{ display:none; }
 .geomotionViewerFooter{ display:flex; align-items:center; justify-content:space-between; gap:8px 16px; flex-wrap:wrap; color:var(--muted); font-size:10px; }
 .geomotionSrOnly{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 .geomotionViewerCard:fullscreen,.geomotionViewerFallbackFullscreen{
@@ -277,19 +260,15 @@ body{
   .geomotionSceneFrame{ min-height:480px; height:68vh; }
   .geomotionSceneHud{ top:10px; max-width:calc(100% - 64px); }
   .geomotionSceneHudLeft{ left:10px; }
-  .geomotionSceneHudRight{ top:auto; right:10px; bottom:46px; }
+  .geomotionSceneHudRight{ top:104px; right:10px; bottom:auto; max-width:220px; }
   .geomotionSceneButtons{ top:10px; right:10px; }
   .geomotionOrbitHint{ left:10px; bottom:10px; max-width:calc(100% - 20px); transform:none; }
   .geomotionLegendNote{ width:100%; margin-left:0; }
   .geomotionViewerStandalone{ height:auto; min-height:100dvh; }
   .geomotionViewerStandalone .geomotionSceneFrame{ min-height:560px; }
-  .geomotionOverviewInset{ left:10px; bottom:10px; width:150px; padding:7px; }
-  .geomotionOverviewInset > div{ display:grid; }
-  .geomotionOverviewInset svg{ height:70px; }
-  .geomotionFocusedEvents{ right:10px; bottom:10px; width:182px; padding:7px; }
+  .geomotionFocusedEvents{ right:10px; bottom:42px; width:182px; padding:7px; }
   .geomotionFocusedEvents li{ grid-template-columns:7px 17px minmax(0,1fr) auto; gap:3px; }
   .geomotionFocusedEvents li:nth-child(n+5){ display:none; }
-  .geomotionSceneFrame[data-spatial-view="active"] .geomotionSceneHudRight{ display:none; }
   .geomotionWorkspaceStandalone > .geomotionTopGrid,
   .geomotionWorkspaceStandalone > .grid3,
   .geomotionWorkspaceStandalone > .geomotionResultsGrid,

@@ -121,7 +121,7 @@ function GeoMotionLaunchPanel({
       <ModuleHero
         eyebrow="Dedicated spatial workspace"
         title="GeoMotion 3D"
-        description="GeoMotion opens separately so the complete pit and active blast section can use the full browser viewport without the application sidebar."
+        description="GeoMotion opens separately so the 1 m³ block model, firing sequence and ore/waste cubes can use the full browser viewport without the application sidebar."
       >
         <button className="btn btnPrimary" type="button" onClick={onOpen}>
           Open GeoMotion in new window
@@ -130,11 +130,11 @@ function GeoMotionLaunchPanel({
       <section className="card geomotionLaunchCard">
         <div className="geomotionLaunchIcon" aria-hidden="true">3D</div>
         <div>
-          <div className="sectionTitle">Full-viewport mine context</div>
+          <div className="sectionTitle">Focused block-model movement</div>
           <p className="subtitle">
-            The dedicated view starts with the complete concave open pit, then provides a focused
-            active-bench view for tie-up and delay playback. Sign-in remains required when
-            authentication is enabled.
+            The dedicated view shows only the 1 m³ mining block model: individual cubes,
+            ore versus waste colour, delay playback and the whole model framed in view.
+            Sign-in remains required when authentication is enabled.
           </p>
         </div>
         <button
