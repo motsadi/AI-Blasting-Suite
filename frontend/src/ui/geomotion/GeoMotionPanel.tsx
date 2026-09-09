@@ -15,27 +15,15 @@ import type {
   GeoMotionView,
 } from "../../types/geomotion";
 import { DIAMOND_DEMO_ASSUMPTIONS, toGeoMotionHoles } from "../../types/geomotion";
-import {
-  ACTIVE_BENCH,
-  BENCH_LABELS,
-  PIT_CONTEXT,
-  PIT_SURFACE_CELLS,
-  pointOnPit,
-} from "./mineContext";
-import type { MinePoint3D } from "./mineContext";
 
 const NOTICE = "Synthetic Demonstration / Uncalibrated — Planning Only";
 const STORAGE_KEY = "geomotion_3d_demo_v1";
 const WORKSPACE_STORAGE_KEY = "geomotion_3d_workspace_v2";
 const DEFAULT_TIE_UP_FILE = "680-665QS32-33_synthetic_reference.csv";
-const PIT_VERTICAL_ORIGIN = 690;
-
-const BENCH_COLORS = ["#7f8b96", "#8f887d", "#748491", "#91897d", "#71808a", "#89847c", "#697883"];
-const WHOLE_MINE_COLOR = "#354656";
-const PIT_FLOOR_COLOR = "#34414b";
-const ACTIVE_SECTION_COLOR = "#fbbf24";
-
-type SpatialView = "overview" | "active";
+const BENCH_SURFACE_COLOR = "#475569";
+const HIGHWALL_COLOR = "#604f43";
+const PATTERN_ZONE_COLOR = "#22d3ee";
+const MOVEMENT_ZONE_COLOR = "#fb923c";
 
 type Props = {
   apiBaseUrl: string;
@@ -168,32 +156,57 @@ function readSavedWorkspace(): SavedWorkspace | null {
   }
 }
 
-function colorFor(block: GeoMotionBlock, mode: GeoMotionColor, destination: boolean) {
+function numericColorValue(block: GeoMotionBlock, mode: GeoMotionColor) {
+  if (mode === "grade") return block.grade_cpht;
+  if (mode === "uncertainty") return block.uncertainty_m;
+  if (mode === "burdenVelocity") return block.burden_velocity_m_s;
+  if (mode === "impulse") return block.peak_impulse_m_s;
+  return block.displacement_m;
+}
+
+function percentile(values: number[], fraction: number) {
+  if (!values.length) return 1;
+  const ordered = [...values].sort((left, right) => left - right);
+  return ordered[Math.min(ordered.length - 1, Math.floor((ordered.length - 1) * fraction))] || 1;
+}
+
+function numericColorMaximum(blocks: GeoMotionBlock[], mode: GeoMotionColor) {
+  return Math.max(
+    0.001,
+    percentile(
+      blocks
+        .map((block) => numericColorValue(block, mode))
+        .filter((value) => Number.isFinite(value) && value >= 0),
+      0.95,
+    ),
+  );
+}
+
+const MOVEMENT_PALETTE = ["#164e8a", "#0ea5a8", "#84cc16", "#facc15", "#f97316", "#e11d48"];
+
+function paletteColor(value: number, maximum: number) {
+  const scaled = clamp(value / Math.max(maximum, 0.001), 0, 1) * (MOVEMENT_PALETTE.length - 1);
+  const lowerIndex = Math.min(MOVEMENT_PALETTE.length - 2, Math.floor(scaled));
+  return new THREE.Color(MOVEMENT_PALETTE[lowerIndex]).lerp(
+    new THREE.Color(MOVEMENT_PALETTE[lowerIndex + 1]),
+    scaled - lowerIndex,
+  );
+}
+
+function colorFor(
+  block: GeoMotionBlock,
+  mode: GeoMotionColor,
+  destination: boolean,
+  numericMaximum: number,
+) {
   if (mode === "classification") {
     const classification = destination ? block.destination_class : block.source_class;
-    return classification === "ORE" ? new THREE.Color("#16a34a") : new THREE.Color("#64748b");
+    return classification === "ORE" ? new THREE.Color("#22c55e") : new THREE.Color("#64748b");
   }
   if (mode === "facies") {
-    return new THREE.Color({ VK: "#7c3aed", SVK_M1: "#0ea5e9", CONTACT: "#f59e0b", WASTE: "#64748b" }[block.facies]);
+    return new THREE.Color({ VK: "#8b5cf6", SVK_M1: "#0ea5e9", CONTACT: "#f59e0b", WASTE: "#64748b" }[block.facies]);
   }
-  if (mode === "grade") {
-    const t = Math.round(Math.min(block.grade_cpht / 60, 1) * 11) / 11;
-    return new THREE.Color().setHSL(0.68 - t * 0.68, 0.82, 0.5);
-  }
-  if (mode === "uncertainty") {
-    const t = Math.round(Math.min(block.uncertainty_m / 3, 1) * 11) / 11;
-    return new THREE.Color().setHSL(0.33 - t * 0.33, 0.82, 0.5);
-  }
-  if (mode === "burdenVelocity") {
-    const t = Math.round(Math.min(block.burden_velocity_m_s / 8, 1) * 11) / 11;
-    return new THREE.Color().setHSL(0.62 - t * 0.62, 0.84, 0.5);
-  }
-  if (mode === "impulse") {
-    const t = Math.round(Math.min(block.peak_impulse_m_s / 8, 1) * 11) / 11;
-    return new THREE.Color().setHSL(0.74 - t * 0.74, 0.84, 0.5);
-  }
-  const t = Math.round(Math.min(block.displacement_m / 15, 1) * 11) / 11;
-  return new THREE.Color().setHSL(0.62 - t * 0.62, 0.82, 0.5);
+  return paletteColor(numericColorValue(block, mode), numericMaximum);
 }
 
 function ColorLegend({ mode, blocks, destination }: { mode: GeoMotionColor; blocks: GeoMotionBlock[]; destination: boolean }) {
@@ -223,42 +236,87 @@ function ColorLegend({ mode, blocks, destination }: { mode: GeoMotionColor; bloc
     );
   }
   const titleByMode: Partial<Record<GeoMotionColor, string>> = {
-    grade: "Low grade → High grade",
-    displacement: "Low movement → High movement",
-    uncertainty: "Low uncertainty → High uncertainty",
-    burdenVelocity: "Low velocity → High velocity",
-    impulse: "Low impulse → High impulse",
+    grade: "Grade",
+    displacement: "Bulk movement",
+    uncertainty: "Uncertainty",
+    burdenVelocity: "Burden velocity",
+    impulse: "Peak impulse",
   };
-  return <div className="geomotionLegend"><span className="geomotionGradient" />{titleByMode[mode] ?? "Model value"}</div>;
+  const unitByMode: Partial<Record<GeoMotionColor, string>> = {
+    grade: "cpht",
+    displacement: "m",
+    uncertainty: "m",
+    burdenVelocity: "m/s",
+    impulse: "m/s",
+  };
+  const maximum = numericColorMaximum(blocks, mode);
+  return (
+    <div className="geomotionLegend" aria-label={`${titleByMode[mode] ?? "Model value"} colour scale from zero to the 95th percentile`}>
+      <strong>{titleByMode[mode] ?? "Model value"}</strong>
+      <span>0</span>
+      <span className="geomotionGradient" />
+      <span>P95 {format(maximum, 2)} {unitByMode[mode] ?? ""}</span>
+    </div>
+  );
 }
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
-function toScenePoint(point: MinePoint3D, verticalExaggeration: number) {
-  return new THREE.Vector3(
-    point.x,
-    (point.z - PIT_VERTICAL_ORIGIN) * verticalExaggeration,
-    -point.y,
-  );
+interface PlanPoint2D {
+  x: number;
+  y: number;
 }
 
-function makeTextSprite(text: string, color: string, active = false) {
+interface PlanPoint3D extends PlanPoint2D {
+  z: number;
+}
+
+interface BenchLayout {
+  centerX: number;
+  centerY: number;
+  surfaceZ: number;
+  forward: PlanPoint2D;
+  cross: PlanPoint2D;
+  floorBackM: number;
+  floorFrontM: number;
+  floorLeftM: number;
+  floorRightM: number;
+  patternPolygon: PlanPoint2D[];
+  affectedPolygon: PlanPoint2D[];
+  floorPolygon: PlanPoint2D[];
+  influenceRadiusM: number;
+  uncertaintyBufferM: number;
+  widthM: number;
+  lengthM: number;
+  areaM2: number;
+  depthM: number;
+  highwallHeightM: number;
+  spanM: number;
+  scaleM: number;
+}
+
+function makeTextSprite(
+  text: string,
+  color: string,
+  highlighted = false,
+  worldWidth = 30,
+) {
   const canvas = document.createElement("canvas");
   canvas.width = 512;
   canvas.height = 128;
   const context = canvas.getContext("2d");
   if (!context) return null;
-  context.fillStyle = active ? "rgba(69,36,5,.94)" : "rgba(5,12,23,.86)";
-  context.strokeStyle = active ? "rgba(251,191,36,.88)" : "rgba(148,163,184,.42)";
+  context.fillStyle = highlighted ? "rgba(69,36,5,.94)" : "rgba(5,12,23,.88)";
+  context.strokeStyle = highlighted ? "rgba(251,146,60,.9)" : "rgba(148,163,184,.48)";
   context.lineWidth = 4;
   context.beginPath();
   context.roundRect(3, 3, 506, 122, 18);
   context.fill();
   context.stroke();
   context.fillStyle = color;
-  context.font = `800 ${active ? 41 : 37}px ui-sans-serif, system-ui, sans-serif`;
+  context.font = `800 ${highlighted ? 41 : 37}px ui-sans-serif, system-ui, sans-serif`;
   context.textAlign = "center";
   context.textBaseline = "middle";
   context.fillText(text, 256, 67);
@@ -266,111 +324,249 @@ function makeTextSprite(text: string, color: string, active = false) {
   texture.colorSpace = THREE.SRGBColorSpace;
   const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
   const sprite = new THREE.Sprite(material);
-  sprite.scale.set(active ? 98 : 72, active ? 25 : 18, 1);
+  sprite.scale.set(worldWidth, worldWidth / 4, 1);
   sprite.renderOrder = 20;
   return sprite;
 }
 
 type CameraPreset = "perspective" | "plan" | "section";
 
+function median(values: number[]) {
+  if (!values.length) return 0;
+  const ordered = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2
+    ? ordered[middle]
+    : (ordered[middle - 1] + ordered[middle]) / 2;
+}
+
+function convexHull(points: PlanPoint2D[]) {
+  const unique = Array.from(
+    new Map(points.map((point) => [`${point.x.toFixed(5)}:${point.y.toFixed(5)}`, point])).values(),
+  );
+  if (unique.length <= 2) return unique;
+  const sorted = [...unique].sort((left, right) => left.x - right.x || left.y - right.y);
+  const cross = (origin: PlanPoint2D, left: PlanPoint2D, right: PlanPoint2D) =>
+    (left.x - origin.x) * (right.y - origin.y) -
+    (left.y - origin.y) * (right.x - origin.x);
+  const lower: PlanPoint2D[] = [];
+  sorted.forEach((point) => {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) {
+      lower.pop();
+    }
+    lower.push(point);
+  });
+  const upper: PlanPoint2D[] = [];
+  [...sorted].reverse().forEach((point) => {
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) {
+      upper.pop();
+    }
+    upper.push(point);
+  });
+  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
+}
+
+function bufferedHull(points: PlanPoint2D[], radiusM: number) {
+  const baseHull = convexHull(points);
+  if (!baseHull.length) return [{ x: -5, y: -5 }, { x: 5, y: -5 }, { x: 5, y: 5 }, { x: -5, y: 5 }];
+  const radius = Math.max(radiusM, 0.5);
+  const ringPoints = baseHull.flatMap((point) =>
+    Array.from({ length: 12 }, (_, index) => {
+      const angle = (index / 12) * Math.PI * 2;
+      return { x: point.x + Math.cos(angle) * radius, y: point.y + Math.sin(angle) * radius };
+    }),
+  );
+  return convexHull(ringPoints);
+}
+
+function polygonArea(points: PlanPoint2D[]) {
+  if (points.length < 3) return 0;
+  return Math.abs(
+    points.reduce((sum, point, index) => {
+      const next = points[(index + 1) % points.length];
+      return sum + point.x * next.y - next.x * point.y;
+    }, 0) / 2,
+  );
+}
+
+function niceScaleLength(spanM: number) {
+  const target = Math.max(spanM / 5, 1);
+  const magnitude = 10 ** Math.floor(Math.log10(target));
+  const candidates = [1, 2, 5, 10].map((factor) => factor * magnitude);
+  return candidates.filter((value) => value <= target).pop() ?? magnitude;
+}
+
+function pointFromBenchAxes(layout: BenchLayout, alongM: number, acrossM: number): PlanPoint2D {
+  return {
+    x: layout.centerX + layout.forward.x * alongM + layout.cross.x * acrossM,
+    y: layout.centerY + layout.forward.y * alongM + layout.cross.y * acrossM,
+  };
+}
+
+function projectOnBenchAxes(
+  point: PlanPoint2D,
+  centerX: number,
+  centerY: number,
+  forward: PlanPoint2D,
+  crossAxis: PlanPoint2D,
+) {
+  const dx = point.x - centerX;
+  const dy = point.y - centerY;
+  return {
+    along: dx * forward.x + dy * forward.y,
+    across: dx * crossAxis.x + dy * crossAxis.y,
+  };
+}
+
+function buildBenchLayout(
+  holes: BlastHole[],
+  result: GeoMotionResult | null,
+  assumptions: GeoMotionAssumptions,
+): BenchLayout {
+  const holePoints = holes.map((hole) => ({ x: hole.x, y: hole.y }));
+  const fallbackPoints = holePoints.length ? holePoints : [{ x: 0, y: 0 }];
+  const blockStep = Math.max(1, Math.ceil((result?.blocks.length ?? 0) / 6_000));
+  const movedPoints = result
+    ? result.blocks.flatMap((block, index) =>
+        index % blockStep === 0
+          ? [
+              { x: block.source[0], y: block.source[1] },
+              { x: block.destination[0], y: block.destination[1] },
+            ]
+          : [],
+      )
+    : [];
+  const influenceRadiusM = Math.max(assumptions.burden_m, assumptions.spacing_m, 1) * 0.9;
+  const uncertaintyBufferM = result
+    ? Math.max(result.uncertainty.p95_m || 0, (result.assumptions.cell_size_m || 1) * 0.5)
+    : 0;
+  const patternPolygon = bufferedHull(fallbackPoints, influenceRadiusM);
+  const affectedPolygon = result
+    ? bufferedHull([...fallbackPoints, ...movedPoints], uncertaintyBufferM)
+    : patternPolygon;
+  const affectedXs = affectedPolygon.map((point) => point.x);
+  const affectedYs = affectedPolygon.map((point) => point.y);
+  const centerX = (Math.min(...affectedXs) + Math.max(...affectedXs)) / 2;
+  const centerY = (Math.min(...affectedYs) + Math.max(...affectedYs)) / 2;
+  const azimuth = ((assumptions.free_face_azimuth_deg % 360) + 360) % 360;
+  const radians = (azimuth * Math.PI) / 180;
+  const forward = { x: Math.sin(radians), y: Math.cos(radians) };
+  const crossAxis = { x: Math.cos(radians), y: -Math.sin(radians) };
+  const projected = affectedPolygon.map((point) =>
+    projectOnBenchAxes(point, centerX, centerY, forward, crossAxis),
+  );
+  const minAlong = Math.min(...projected.map((point) => point.along));
+  const maxAlong = Math.max(...projected.map((point) => point.along));
+  const minAcross = Math.min(...projected.map((point) => point.across));
+  const maxAcross = Math.max(...projected.map((point) => point.across));
+  const benchPaddingM = Math.max(8, influenceRadiusM * 0.8);
+  const floorBackM = minAlong - benchPaddingM;
+  const floorFrontM = maxAlong + benchPaddingM;
+  const floorLeftM = minAcross - benchPaddingM;
+  const floorRightM = maxAcross + benchPaddingM;
+  const collarElevations = holes
+    .map((hole) => hole.z)
+    .filter((value): value is number => Number.isFinite(value));
+  const sourceElevations = result?.blocks.map((block) => block.source[2]) ?? [];
+  const surfaceZ = collarElevations.length
+    ? median(collarElevations)
+    : sourceElevations.length
+      ? Math.max(...sourceElevations) + (result?.assumptions.cell_size_m ?? 1) / 2
+      : 680;
+  const averageDepth = holes.length
+    ? holes.reduce((sum, hole) => sum + (hole.depth ?? 12), 0) / holes.length
+    : 12;
+  const partialLayout = {
+    centerX,
+    centerY,
+    surfaceZ,
+    forward,
+    cross: crossAxis,
+    floorBackM,
+    floorFrontM,
+    floorLeftM,
+    floorRightM,
+  };
+  const floorPolygon = [
+    pointFromBenchAxes(partialLayout as BenchLayout, floorBackM, floorLeftM),
+    pointFromBenchAxes(partialLayout as BenchLayout, floorFrontM, floorLeftM),
+    pointFromBenchAxes(partialLayout as BenchLayout, floorFrontM, floorRightM),
+    pointFromBenchAxes(partialLayout as BenchLayout, floorBackM, floorRightM),
+  ];
+  const widthM = maxAcross - minAcross;
+  const lengthM = maxAlong - minAlong;
+  const spanM = Math.max(floorFrontM - floorBackM, floorRightM - floorLeftM, 36);
+  return {
+    ...partialLayout,
+    patternPolygon,
+    affectedPolygon,
+    floorPolygon,
+    influenceRadiusM,
+    uncertaintyBufferM,
+    widthM,
+    lengthM,
+    areaM2: polygonArea(affectedPolygon),
+    depthM: Math.max(averageDepth + assumptions.subdrill_m, 8),
+    highwallHeightM: clamp(averageDepth * 0.8, 8, 20),
+    spanM,
+    scaleM: niceScaleLength(spanM),
+  };
+}
+
+function toScenePoint(point: PlanPoint3D, layout: BenchLayout, verticalExaggeration: number) {
+  return new THREE.Vector3(
+    point.x - layout.centerX,
+    (point.z - layout.surfaceZ) * verticalExaggeration,
+    -(point.y - layout.centerY),
+  );
+}
+
 function cameraFrame(
   preset: CameraPreset,
-  spatialView: SpatialView,
+  layout: BenchLayout,
   verticalExaggeration: number,
 ) {
-  if (spatialView === "active") {
-    const target = toScenePoint(
-      pointOnPit(
-        (ACTIVE_BENCH.innerRadius + ACTIVE_BENCH.outerRadius) / 2,
-        (ACTIVE_BENCH.startAngle + ACTIVE_BENCH.endAngle) / 2,
-        ACTIVE_BENCH.elevation,
-      ),
-      verticalExaggeration,
-    );
-    if (preset === "plan") {
-      return { target, position: target.clone().add(new THREE.Vector3(0, 275, 0.01)) };
-    }
-    if (preset === "section") {
-      return { target, position: target.clone().add(new THREE.Vector3(320, 55, 0)) };
-    }
-    return { target, position: target.clone().add(new THREE.Vector3(180, 145, 55)) };
-  }
-
-  const target = new THREE.Vector3(0, -42 * verticalExaggeration, 0);
+  const span = layout.spanM;
+  const target = new THREE.Vector3(0, -layout.depthM * verticalExaggeration * 0.28, 0);
+  const sceneForward = new THREE.Vector3(layout.forward.x, 0, -layout.forward.y);
+  const sceneCross = new THREE.Vector3(layout.cross.x, 0, -layout.cross.y);
   if (preset === "plan") {
-    return { target, position: new THREE.Vector3(0, 1_520, 0.01) };
+    return { target, position: target.clone().add(new THREE.Vector3(0, span * 1.55, 0.01)) };
   }
   if (preset === "section") {
-    return { target, position: new THREE.Vector3(1_620, 60, 0) };
+    return {
+      target,
+      position: target.clone().add(sceneCross.multiplyScalar(span * 1.45)).add(new THREE.Vector3(0, span * 0.2, 0)),
+    };
   }
-  return { target, position: new THREE.Vector3(760, 630, 920) };
+  return {
+    target,
+    position: target
+      .clone()
+      .add(sceneCross.multiplyScalar(span * 0.62))
+      .add(sceneForward.multiplyScalar(-span * 0.88))
+      .add(new THREE.Vector3(0, span * 0.72, 0)),
+  };
 }
 
 function setCameraPosition(
   camera: THREE.PerspectiveCamera,
   controls: OrbitControls,
   preset: CameraPreset,
-  spatialView: SpatialView,
+  layout: BenchLayout,
   verticalExaggeration: number,
 ) {
-  const frame = cameraFrame(preset, spatialView, verticalExaggeration);
+  const frame = cameraFrame(preset, layout, verticalExaggeration);
   controls.target.copy(frame.target);
   camera.position.copy(frame.position);
   camera.lookAt(controls.target);
   controls.update();
 }
 
-interface PlanBounds {
-  xmin: number;
-  xmax: number;
-  ymin: number;
-  ymax: number;
-  maxSourceZ: number;
-}
-
-function buildPlanBounds(holes: BlastHole[], result: GeoMotionResult | null): PlanBounds {
-  const blockPoints = result?.blocks.map((block) => block.source) ?? [];
-  const xs = blockPoints.length ? blockPoints.map((point) => point[0]) : holes.map((hole) => hole.x);
-  const ys = blockPoints.length ? blockPoints.map((point) => point[1]) : holes.map((hole) => hole.y);
-  const zs = blockPoints.length
-    ? blockPoints.map((point) => point[2])
-    : holes.map((hole) => hole.z).filter((value): value is number => Number.isFinite(value));
-  return {
-    xmin: xs.length ? Math.min(...xs) : 0,
-    xmax: xs.length ? Math.max(...xs) : 1,
-    ymin: ys.length ? Math.min(...ys) : 0,
-    ymax: ys.length ? Math.max(...ys) : 1,
-    maxSourceZ: zs.length ? Math.max(...zs) : ACTIVE_BENCH.elevation,
-  };
-}
-
-function mapToActiveBench(
-  x: number,
-  y: number,
-  bounds: PlanBounds,
-  verticalExaggeration: number,
-) {
-  const u = clamp((x - bounds.xmin) / Math.max(bounds.xmax - bounds.xmin, 1), 0, 1);
-  const v = clamp((y - bounds.ymin) / Math.max(bounds.ymax - bounds.ymin, 1), 0, 1);
-  const angleInset = 0.012;
-  const radiusInset = 0.002;
-  const angle =
-    ACTIVE_BENCH.startAngle +
-    angleInset +
-    u * (ACTIVE_BENCH.endAngle - ACTIVE_BENCH.startAngle - angleInset * 2);
-  const radius =
-    ACTIVE_BENCH.innerRadius +
-    radiusInset +
-    v * (ACTIVE_BENCH.outerRadius - ACTIVE_BENCH.innerRadius - radiusInset * 2);
-  return {
-    angle,
-    point: toScenePoint(pointOnPit(radius, angle, ACTIVE_BENCH.elevation + 1.4), verticalExaggeration),
-  };
-}
-
 function GeoMotionScene({
   result,
   holes,
+  assumptions,
   progress,
   view,
   colorMode,
@@ -379,10 +575,10 @@ function GeoMotionScene({
   clipPercent,
   cameraPreset,
   seamPercent,
-  spatialView,
 }: {
   result: GeoMotionResult | null;
   holes: BlastHole[];
+  assumptions: GeoMotionAssumptions;
   progress: number;
   view: GeoMotionView;
   colorMode: GeoMotionColor;
@@ -391,13 +587,16 @@ function GeoMotionScene({
   clipPercent: number;
   cameraPreset: CameraPreset;
   seamPercent: number;
-  spatialView: SpatialView;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const cameraTransitionRef = useRef<number | null>(null);
   const progressRef = useRef(progress);
+  const layout = useMemo(
+    () => buildBenchLayout(holes, result, assumptions),
+    [holes, result, assumptions],
+  );
   progressRef.current = progress;
 
   useEffect(() => {
@@ -407,8 +606,8 @@ function GeoMotionScene({
     const height = Math.max(host.clientHeight, 460);
     const scene = new THREE.Scene();
     scene.background = new THREE.Color("#08131f");
-    scene.fog = new THREE.Fog("#08131f", 1_450, 2_400);
-    const camera = new THREE.PerspectiveCamera(43, width / height, 0.5, 3_200);
+    scene.fog = new THREE.Fog("#08131f", layout.spanM * 2.1, layout.spanM * 5.2);
+    const camera = new THREE.PerspectiveCamera(43, width / height, 0.1, Math.max(1_200, layout.spanM * 12));
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
     renderer.setSize(width, height);
@@ -424,155 +623,275 @@ function GeoMotionScene({
     controls.dampingFactor = 0.075;
     controls.enablePan = true;
     controls.screenSpacePanning = true;
-    controls.minDistance = 55;
-    controls.maxDistance = 2_400;
+    controls.minDistance = Math.max(10, layout.spanM * 0.1);
+    controls.maxDistance = layout.spanM * 6;
     controls.minPolarAngle = 0.04;
     controls.maxPolarAngle = Math.PI * 0.48;
-    setCameraPosition(camera, controls, cameraPreset, spatialView, verticalExaggeration);
+    setCameraPosition(camera, controls, cameraPreset, layout, verticalExaggeration);
     cameraRef.current = camera;
     controlsRef.current = controls;
 
-    const pitPositions: number[] = [];
-    const pitColors: number[] = [];
-    const edgePositions: number[] = [];
-    PIT_SURFACE_CELLS.forEach((cell) => {
-      const points = cell.points.map((point) => toScenePoint(point, verticalExaggeration));
-      const base = new THREE.Color(
-        cell.kind === "terrain"
-          ? WHOLE_MINE_COLOR
-          : cell.kind === "floor"
-            ? PIT_FLOOR_COLOR
-            : BENCH_COLORS[Math.max(0, cell.benchIndex - 1) % BENCH_COLORS.length],
-      );
-      if (cell.kind === "wall") base.multiplyScalar(0.56);
-      else if (cell.kind === "bench") base.multiplyScalar(0.94 + 0.025 * Math.sin(cell.benchIndex * 1.7));
-      else if (cell.kind === "terrain") base.multiplyScalar(0.72);
-      const triangles = points.length === 3 ? [0, 1, 2] : [0, 1, 2, 0, 2, 3];
-      triangles.forEach((index) => {
-        const point = points[index];
-        pitPositions.push(point.x, point.y, point.z);
-        pitColors.push(base.r, base.g, base.b);
-      });
+    const makePlanGeometry = (points: PlanPoint2D[]) => {
+      const shape = new THREE.Shape();
       points.forEach((point, index) => {
-        const next = points[(index + 1) % points.length];
-        edgePositions.push(point.x, point.y + 0.08, point.z, next.x, next.y + 0.08, next.z);
+        const x = point.x - layout.centerX;
+        const y = point.y - layout.centerY;
+        if (index === 0) shape.moveTo(x, y);
+        else shape.lineTo(x, y);
       });
-    });
-    const pitGeometry = new THREE.BufferGeometry();
-    pitGeometry.setAttribute("position", new THREE.Float32BufferAttribute(pitPositions, 3));
-    pitGeometry.setAttribute("color", new THREE.Float32BufferAttribute(pitColors, 3));
-    pitGeometry.computeVertexNormals();
-    const pitMaterial = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.92,
-      metalness: 0.02,
+      shape.closePath();
+      const geometry = new THREE.ShapeGeometry(shape);
+      geometry.rotateX(-Math.PI / 2);
+      return geometry;
+    };
+    const makeOutlineGeometry = (points: PlanPoint2D[], elevationM: number) =>
+      new THREE.BufferGeometry().setFromPoints([
+        ...points.map((point) =>
+          toScenePoint({ ...point, z: layout.surfaceZ + elevationM }, layout, verticalExaggeration),
+        ),
+        toScenePoint({ ...points[0], z: layout.surfaceZ + elevationM }, layout, verticalExaggeration),
+      ]);
+    const makeQuadGeometry = (points: THREE.Vector3[]) => {
+      const geometry = new THREE.BufferGeometry().setFromPoints([
+        points[0], points[1], points[2], points[0], points[2], points[3],
+      ]);
+      geometry.computeVertexNormals();
+      return geometry;
+    };
+
+    const floorGeometry = makePlanGeometry(layout.floorPolygon);
+    const floorMaterial = new THREE.MeshStandardMaterial({
+      color: BENCH_SURFACE_COLOR,
+      roughness: 0.94,
+      metalness: 0.01,
+      transparent: true,
+      opacity: 0.74,
+      depthWrite: false,
       side: THREE.DoubleSide,
     });
-    const pitMesh = new THREE.Mesh(pitGeometry, pitMaterial);
-    scene.add(pitMesh);
+    const floorMesh = new THREE.Mesh(floorGeometry, floorMaterial);
+    floorMesh.position.y = -0.08;
+    floorMesh.renderOrder = 1;
+    scene.add(floorMesh);
 
-    const edgeGeometry = new THREE.BufferGeometry();
-    edgeGeometry.setAttribute("position", new THREE.Float32BufferAttribute(edgePositions, 3));
-    const edgeMaterial = new THREE.LineBasicMaterial({
-      color: "#dbeafe",
-      opacity: 0.1,
-      transparent: true,
-    });
-    scene.add(new THREE.LineSegments(edgeGeometry, edgeMaterial));
+    const gridPositions: number[] = [];
+    const gridStepM = Math.max(5, niceScaleLength(layout.spanM) / 2);
+    for (
+      let along = Math.ceil(layout.floorBackM / gridStepM) * gridStepM;
+      along <= layout.floorFrontM;
+      along += gridStepM
+    ) {
+      const start = pointFromBenchAxes(layout, along, layout.floorLeftM);
+      const end = pointFromBenchAxes(layout, along, layout.floorRightM);
+      const startScene = toScenePoint({ ...start, z: layout.surfaceZ + 0.03 }, layout, verticalExaggeration);
+      const endScene = toScenePoint({ ...end, z: layout.surfaceZ + 0.03 }, layout, verticalExaggeration);
+      gridPositions.push(startScene.x, startScene.y, startScene.z, endScene.x, endScene.y, endScene.z);
+    }
+    for (
+      let across = Math.ceil(layout.floorLeftM / gridStepM) * gridStepM;
+      across <= layout.floorRightM;
+      across += gridStepM
+    ) {
+      const start = pointFromBenchAxes(layout, layout.floorBackM, across);
+      const end = pointFromBenchAxes(layout, layout.floorFrontM, across);
+      const startScene = toScenePoint({ ...start, z: layout.surfaceZ + 0.03 }, layout, verticalExaggeration);
+      const endScene = toScenePoint({ ...end, z: layout.surfaceZ + 0.03 }, layout, verticalExaggeration);
+      gridPositions.push(startScene.x, startScene.y, startScene.z, endScene.x, endScene.y, endScene.z);
+    }
+    const gridGeometry = new THREE.BufferGeometry();
+    gridGeometry.setAttribute("position", new THREE.Float32BufferAttribute(gridPositions, 3));
+    const gridMaterial = new THREE.LineBasicMaterial({ color: "#cbd5e1", opacity: 0.13, transparent: true });
+    scene.add(new THREE.LineSegments(gridGeometry, gridMaterial));
 
-    const groundGeometry = new THREE.RingGeometry(680, 1_180, 96);
-    groundGeometry.rotateX(-Math.PI / 2);
-    groundGeometry.scale(1, 1, PIT_CONTEXT.lengthM / PIT_CONTEXT.widthM);
-    const groundMaterial = new THREE.MeshStandardMaterial({
-      color: "#182732",
+    const backLeft = pointFromBenchAxes(layout, layout.floorBackM, layout.floorLeftM);
+    const backRight = pointFromBenchAxes(layout, layout.floorBackM, layout.floorRightM);
+    const highwallGeometry = makeQuadGeometry([
+      toScenePoint({ ...backLeft, z: layout.surfaceZ }, layout, verticalExaggeration),
+      toScenePoint({ ...backRight, z: layout.surfaceZ }, layout, verticalExaggeration),
+      toScenePoint({ ...backRight, z: layout.surfaceZ + layout.highwallHeightM }, layout, verticalExaggeration),
+      toScenePoint({ ...backLeft, z: layout.surfaceZ + layout.highwallHeightM }, layout, verticalExaggeration),
+    ]);
+    const highwallMaterial = new THREE.MeshStandardMaterial({
+      color: HIGHWALL_COLOR,
       roughness: 1,
       side: THREE.DoubleSide,
     });
-    const ground = new THREE.Mesh(groundGeometry, groundMaterial);
-    ground.position.y = (760 - PIT_VERTICAL_ORIGIN) * verticalExaggeration - 0.5;
-    scene.add(ground);
+    scene.add(new THREE.Mesh(highwallGeometry, highwallMaterial));
 
-    const benchLipGeometries: THREE.BufferGeometry[] = [];
-    const benchLipMaterials: THREE.LineBasicMaterial[] = [];
-    const benchLipRadii = [1, 0.875, 0.75, 0.625, 0.5, 0.375, 0.25, 0.175];
-    benchLipRadii.forEach((radius, index) => {
-      const elevation = 760 - index * 20;
-      const lipPoints = Array.from({ length: 80 }, (_, pointIndex) =>
-        toScenePoint(
-          pointOnPit(radius, (pointIndex / 80) * Math.PI * 2 - Math.PI, elevation + 0.8),
-          verticalExaggeration,
-        ),
+    const strataPositions: number[] = [];
+    [0.25, 0.5, 0.75].forEach((fraction) => {
+      const left = toScenePoint(
+        { ...backLeft, z: layout.surfaceZ + layout.highwallHeightM * fraction },
+        layout,
+        verticalExaggeration,
       );
-      const geometry = new THREE.BufferGeometry().setFromPoints(lipPoints);
-      const material = new THREE.LineBasicMaterial({
-        color: index === 0 ? "#d8edf7" : "#a8bac7",
-        opacity: index === 0 ? 0.82 : 0.48,
-        transparent: true,
-      });
-      const line = new THREE.LineLoop(geometry, material);
-      line.renderOrder = 4;
-      benchLipGeometries.push(geometry);
-      benchLipMaterials.push(material);
-      scene.add(line);
+      const right = toScenePoint(
+        { ...backRight, z: layout.surfaceZ + layout.highwallHeightM * fraction },
+        layout,
+        verticalExaggeration,
+      );
+      strataPositions.push(left.x, left.y, left.z, right.x, right.y, right.z);
     });
+    const strataGeometry = new THREE.BufferGeometry();
+    strataGeometry.setAttribute("position", new THREE.Float32BufferAttribute(strataPositions, 3));
+    const strataMaterial = new THREE.LineBasicMaterial({ color: "#d6b98c", opacity: 0.3, transparent: true });
+    scene.add(new THREE.LineSegments(strataGeometry, strataMaterial));
 
-    const activeOutlinePoints = [
-      pointOnPit(ACTIVE_BENCH.outerRadius + 0.006, ACTIVE_BENCH.startAngle, ACTIVE_BENCH.elevation + 2.4),
-      pointOnPit(ACTIVE_BENCH.outerRadius + 0.006, ACTIVE_BENCH.endAngle, ACTIVE_BENCH.elevation + 2.4),
-      pointOnPit(ACTIVE_BENCH.innerRadius - 0.006, ACTIVE_BENCH.endAngle, ACTIVE_BENCH.elevation + 2.4),
-      pointOnPit(ACTIVE_BENCH.innerRadius - 0.006, ACTIVE_BENCH.startAngle, ACTIVE_BENCH.elevation + 2.4),
-    ].map((point) => toScenePoint(point, verticalExaggeration));
-    const activeOutlineGeometry = new THREE.BufferGeometry().setFromPoints([
-      ...activeOutlinePoints,
-      activeOutlinePoints[0],
+    const faceLeft = pointFromBenchAxes(layout, layout.floorFrontM, layout.floorLeftM);
+    const faceRight = pointFromBenchAxes(layout, layout.floorFrontM, layout.floorRightM);
+    const freeFaceGeometry = makeQuadGeometry([
+      toScenePoint({ ...faceLeft, z: layout.surfaceZ }, layout, verticalExaggeration),
+      toScenePoint({ ...faceRight, z: layout.surfaceZ }, layout, verticalExaggeration),
+      toScenePoint({ ...faceRight, z: layout.surfaceZ - Math.min(layout.depthM * 0.45, 8) }, layout, verticalExaggeration),
+      toScenePoint({ ...faceLeft, z: layout.surfaceZ - Math.min(layout.depthM * 0.45, 8) }, layout, verticalExaggeration),
     ]);
-    const activeFillGeometry = new THREE.BufferGeometry().setFromPoints([
-      activeOutlinePoints[0],
-      activeOutlinePoints[1],
-      activeOutlinePoints[2],
-      activeOutlinePoints[0],
-      activeOutlinePoints[2],
-      activeOutlinePoints[3],
-    ]);
-    activeFillGeometry.computeVertexNormals();
-    const activeFillMaterial = new THREE.MeshBasicMaterial({
-      color: ACTIVE_SECTION_COLOR,
-      opacity: 0.2,
+    const freeFaceMaterial = new THREE.MeshStandardMaterial({
+      color: "#193e4b",
+      roughness: 0.88,
+      side: THREE.DoubleSide,
+    });
+    scene.add(new THREE.Mesh(freeFaceGeometry, freeFaceMaterial));
+
+    const floorOutlineGeometry = makeOutlineGeometry(layout.floorPolygon, 0.08);
+    const floorOutlineMaterial = new THREE.LineBasicMaterial({ color: "#94a3b8", opacity: 0.62, transparent: true });
+    scene.add(new THREE.Line(floorOutlineGeometry, floorOutlineMaterial));
+
+    const patternGeometry = makePlanGeometry(layout.patternPolygon);
+    const patternMaterial = new THREE.MeshBasicMaterial({
+      color: PATTERN_ZONE_COLOR,
+      opacity: 0.1,
       transparent: true,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
-    const activeFill = new THREE.Mesh(activeFillGeometry, activeFillMaterial);
-    activeFill.renderOrder = 7;
-    scene.add(activeFill);
-    const activeOutlineMaterial = new THREE.LineDashedMaterial({
-      color: ACTIVE_SECTION_COLOR,
-      dashSize: 5,
-      gapSize: 3,
-      linewidth: 2,
+    const patternMesh = new THREE.Mesh(patternGeometry, patternMaterial);
+    patternMesh.position.y = 0.1;
+    patternMesh.renderOrder = 3;
+    scene.add(patternMesh);
+    const patternOutlineGeometry = makeOutlineGeometry(layout.patternPolygon, 0.14);
+    const patternOutlineMaterial = new THREE.LineDashedMaterial({
+      color: PATTERN_ZONE_COLOR,
+      dashSize: 2.8,
+      gapSize: 1.6,
     });
-    const activeOutline = new THREE.Line(activeOutlineGeometry, activeOutlineMaterial);
-    activeOutline.computeLineDistances();
-    scene.add(activeOutline);
+    const patternOutline = new THREE.Line(patternOutlineGeometry, patternOutlineMaterial);
+    patternOutline.computeLineDistances();
+    scene.add(patternOutline);
+
+    let affectedGeometry: THREE.ShapeGeometry | null = null;
+    let affectedMaterial: THREE.MeshBasicMaterial | null = null;
+    let affectedOutlineGeometry: THREE.BufferGeometry | null = null;
+    let affectedOutlineMaterial: THREE.LineDashedMaterial | null = null;
+    if (result) {
+      affectedGeometry = makePlanGeometry(layout.affectedPolygon);
+      affectedMaterial = new THREE.MeshBasicMaterial({
+        color: MOVEMENT_ZONE_COLOR,
+        opacity: 0.16,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+      });
+      const affectedMesh = new THREE.Mesh(affectedGeometry, affectedMaterial);
+      affectedMesh.position.y = 0.18;
+      affectedMesh.renderOrder = 4;
+      scene.add(affectedMesh);
+      affectedOutlineGeometry = makeOutlineGeometry(layout.affectedPolygon, 0.22);
+      affectedOutlineMaterial = new THREE.LineDashedMaterial({
+        color: MOVEMENT_ZONE_COLOR,
+        dashSize: 3.6,
+        gapSize: 1.8,
+      });
+      const affectedOutline = new THREE.Line(affectedOutlineGeometry, affectedOutlineMaterial);
+      affectedOutline.computeLineDistances();
+      scene.add(affectedOutline);
+    }
+
+    const freeFaceDirection = new THREE.Vector3(layout.forward.x, 0, -layout.forward.y).normalize();
+    const arrowOriginPlan = pointFromBenchAxes(
+      layout,
+      layout.floorFrontM - Math.max(8, layout.influenceRadiusM),
+      0,
+    );
+    const arrowOrigin = toScenePoint(
+      { ...arrowOriginPlan, z: layout.surfaceZ + 0.65 },
+      layout,
+      verticalExaggeration,
+    );
+    const freeFaceArrow = new THREE.ArrowHelper(
+      freeFaceDirection,
+      arrowOrigin,
+      Math.min(layout.spanM * 0.16, 20),
+      "#22d3ee",
+      3,
+      1.7,
+    );
+    scene.add(freeFaceArrow);
+
+    const northOriginPlan = pointFromBenchAxes(
+      layout,
+      layout.floorBackM + Math.max(6, layout.influenceRadiusM * 0.6),
+      layout.floorRightM - Math.max(6, layout.influenceRadiusM * 0.6),
+    );
+    const northOrigin = toScenePoint(
+      { ...northOriginPlan, z: layout.surfaceZ + 0.65 },
+      layout,
+      verticalExaggeration,
+    );
+    const northArrow = new THREE.ArrowHelper(
+      new THREE.Vector3(0, 0, -1),
+      northOrigin,
+      Math.min(layout.spanM * 0.11, 13),
+      "#f8fafc",
+      2.4,
+      1.4,
+    );
+    scene.add(northArrow);
 
     const labelSprites: THREE.Sprite[] = [];
-    BENCH_LABELS.filter((label) => ["crest", "b720", "floor"].includes(label.id)).forEach((label) => {
-      const sprite = makeTextSprite(label.label, label.active ? "#fde68a" : "#dbeafe", label.active);
-      if (!sprite) return;
-      sprite.position.copy(toScenePoint(label.point, verticalExaggeration));
-      sprite.position.y += label.active ? 12 : 8;
-      labelSprites.push(sprite);
-      scene.add(sprite);
-    });
+    const labelWidth = clamp(layout.spanM * 0.22, 18, 34);
+    const benchLabel = makeTextSprite(
+      `ACTIVE BENCH · RL ${format(layout.surfaceZ, 0)} m`,
+      "#dbeafe",
+      false,
+      labelWidth,
+    );
+    if (benchLabel) {
+      const labelPlan = pointFromBenchAxes(layout, layout.floorBackM, 0);
+      benchLabel.position.copy(
+        toScenePoint(
+          { ...labelPlan, z: layout.surfaceZ + layout.highwallHeightM + 2 },
+          layout,
+          verticalExaggeration,
+        ),
+      );
+      labelSprites.push(benchLabel);
+      scene.add(benchLabel);
+    }
+    const faceLabel = makeTextSprite("FREE FACE · MOVEMENT", "#a5f3fc", true, labelWidth * 0.82);
+    if (faceLabel) {
+      const labelPlan = pointFromBenchAxes(layout, layout.floorFrontM, 0);
+      faceLabel.position.copy(
+        toScenePoint({ ...labelPlan, z: layout.surfaceZ + 2.2 }, layout, verticalExaggeration),
+      );
+      labelSprites.push(faceLabel);
+      scene.add(faceLabel);
+    }
+    const northLabel = makeTextSprite("N", "#f8fafc", false, 7);
+    if (northLabel) {
+      northLabel.position.copy(northOrigin.clone().add(new THREE.Vector3(0, 1.5, -Math.min(layout.spanM * 0.13, 15))));
+      labelSprites.push(northLabel);
+      scene.add(northLabel);
+    }
 
-    const bounds = buildPlanBounds(holes, result);
-    const holePoints = holes.map((hole) => {
-      const mapped = mapToActiveBench(hole.x, hole.y, bounds, verticalExaggeration);
-      mapped.point.y += Number.isFinite(hole.z)
-        ? clamp(((hole.z as number) - bounds.maxSourceZ) * verticalExaggeration, -3, 3)
-        : 0;
-      return { hole, ...mapped };
-    });
+    const holePoints = holes.map((hole) => ({
+      hole,
+      point: toScenePoint(
+        { x: hole.x, y: hole.y, z: Number.isFinite(hole.z) ? (hole.z as number) : layout.surfaceZ },
+        layout,
+        verticalExaggeration,
+      ),
+    }));
     const orderedHoles = [...holePoints].sort(
       (left, right) =>
         (left.hole.delayMs ?? Number.POSITIVE_INFINITY) -
@@ -653,28 +972,24 @@ function GeoMotionScene({
     let blockGeometry: THREE.BoxGeometry | null = null;
     let blockMaterial: THREE.MeshStandardMaterial | null = null;
     const resultBlocks = result?.blocks ?? [];
-    const rawSpanX = Math.max(bounds.xmax - bounds.xmin, 1);
-    const rawSpanY = Math.max(bounds.ymax - bounds.ymin, 1);
-    const mappedArc = PIT_CONTEXT.widthM * ACTIVE_BENCH.outerRadius * (ACTIVE_BENCH.endAngle - ACTIVE_BENCH.startAngle);
-    const mappedRadial = PIT_CONTEXT.widthM * (ACTIVE_BENCH.outerRadius - ACTIVE_BENCH.innerRadius) * 0.5;
-    const planScale = clamp((mappedArc / rawSpanX + mappedRadial / rawSpanY) / 2, 0.65, 1.6);
     const lodScale = Math.max(1, Math.cbrt(result?.transport?.stride || 1));
-    const voxelSize = (result?.assumptions.cell_size_m ?? 1) * lodScale * planScale * (1 - seamPercent / 100);
-    const midpointAngle = (ACTIVE_BENCH.startAngle + ACTIVE_BENCH.endAngle) / 2;
-    const blockRotation = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -midpointAngle);
+    const voxelSize = (result?.assumptions.cell_size_m ?? 1) * lodScale * (1 - seamPercent / 100);
+    const blockRotation = new THREE.Quaternion();
     const blockScale = new THREE.Vector3(1, 1, 1);
+    const colorMaximum = numericColorMaximum(resultBlocks, colorMode);
 
     const blockPosition = (block: GeoMotionBlock, movement: number) => {
-      const mapped = mapToActiveBench(block.source[0], block.source[1], bounds, verticalExaggeration);
-      mapped.point.y -= Math.max(0, bounds.maxSourceZ - block.source[2]) * verticalExaggeration;
+      const point = toScenePoint(
+        { x: block.source[0], y: block.source[1], z: block.source[2] },
+        layout,
+        verticalExaggeration,
+      );
       if (movement > 0) {
-        const tangent = new THREE.Vector3(-Math.sin(mapped.angle), 0, -Math.cos(mapped.angle)).normalize();
-        const radial = new THREE.Vector3(Math.cos(mapped.angle), 0, -Math.sin(mapped.angle)).normalize();
-        mapped.point.addScaledVector(tangent, block.vector[0] * movement);
-        mapped.point.addScaledVector(radial, block.vector[1] * movement);
-        mapped.point.y += block.vector[2] * movement * verticalExaggeration;
+        point.x += block.vector[0] * movement;
+        point.z -= block.vector[1] * movement;
+        point.y += block.vector[2] * movement * verticalExaggeration;
       }
-      return mapped.point;
+      return point;
     };
     const movementFor = (block: GeoMotionBlock, timelineProgress: number) => {
       if (view === "source") return 0;
@@ -683,17 +998,15 @@ function GeoMotionScene({
       const maximumDelay = delayTimes[delayTimes.length - 1] ?? minimumDelay + 1;
       const currentDelay = minimumDelay + (maximumDelay - minimumDelay) * timelineProgress;
       const movementWindow = Math.max(18, (maximumDelay - minimumDelay) * 0.035);
-      return clamp((currentDelay - block.effective_time_ms) / movementWindow, 0, 1);
+      const raw = clamp((currentDelay - block.effective_time_ms) / movementWindow, 0, 1);
+      return raw * raw * (3 - 2 * raw);
     };
 
     let clipPlane: THREE.Plane | null = null;
     if (resultBlocks.length && clipPercent < 99) {
-      const planPoints = [
-        mapToActiveBench(bounds.xmin, bounds.ymin, bounds, verticalExaggeration).point,
-        mapToActiveBench(bounds.xmax, bounds.ymax, bounds, verticalExaggeration).point,
-      ];
-      const minX = Math.min(...planPoints.map((point) => point.x));
-      const maxX = Math.max(...planPoints.map((point) => point.x));
+      const planXs = layout.affectedPolygon.map((point) => point.x - layout.centerX);
+      const minX = Math.min(...planXs);
+      const maxX = Math.max(...planXs);
       const cutoff = minX + (maxX - minX) * (clipPercent / 100);
       clipPlane = new THREE.Plane(new THREE.Vector3(-1, 0, 0), cutoff);
     }
@@ -703,8 +1016,10 @@ function GeoMotionScene({
       blockMaterial = new THREE.MeshStandardMaterial({
         color: "#ffffff",
         vertexColors: true,
-        roughness: 0.76,
-        metalness: 0.02,
+        roughness: 0.58,
+        metalness: 0.03,
+        emissive: "#07131d",
+        emissiveIntensity: 0.34,
         clippingPlanes: clipPlane ? [clipPlane] : [],
       });
       blockMesh = new THREE.InstancedMesh(blockGeometry, blockMaterial, resultBlocks.length);
@@ -717,26 +1032,63 @@ function GeoMotionScene({
     let vectorMaterial: THREE.LineBasicMaterial | null = null;
     if (showVectors && resultBlocks.length) {
       const vectorPositions: number[] = [];
+      const vectorColors: number[] = [];
+      const sourceColor = new THREE.Color("#67e8f9");
+      const destinationColor = new THREE.Color("#fb7185");
       const step = Math.max(1, Math.ceil(resultBlocks.length / 450));
       for (let index = 0; index < resultBlocks.length; index += step) {
         const block = resultBlocks[index];
         const source = blockPosition(block, 0);
         const destination = blockPosition(block, 1);
         vectorPositions.push(source.x, source.y, source.z, destination.x, destination.y, destination.z);
+        vectorColors.push(
+          sourceColor.r, sourceColor.g, sourceColor.b,
+          destinationColor.r, destinationColor.g, destinationColor.b,
+        );
       }
       vectorGeometry = new THREE.BufferGeometry();
       vectorGeometry.setAttribute("position", new THREE.Float32BufferAttribute(vectorPositions, 3));
-      vectorMaterial = new THREE.LineBasicMaterial({ color: "#fb923c", opacity: 0.62, transparent: true });
+      vectorGeometry.setAttribute("color", new THREE.Float32BufferAttribute(vectorColors, 3));
+      vectorMaterial = new THREE.LineBasicMaterial({
+        vertexColors: true,
+        opacity: 0.72,
+        transparent: true,
+        depthTest: false,
+      });
       scene.add(new THREE.LineSegments(vectorGeometry, vectorMaterial));
     }
+
+    const pulseGeometry = new THREE.RingGeometry(0.72, 1, 48);
+    pulseGeometry.rotateX(-Math.PI / 2);
+    const pulseMaterials = Array.from({ length: 3 }, () =>
+      new THREE.MeshBasicMaterial({
+        color: "#fbbf24",
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        depthTest: false,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+      }),
+    );
+    const pulseRings = pulseMaterials.map((material) => {
+      const ring = new THREE.Mesh(pulseGeometry, material);
+      ring.visible = false;
+      ring.renderOrder = 18;
+      scene.add(ring);
+      return ring;
+    });
+    const eventGlow = new THREE.PointLight("#fbbf24", 0, Math.max(24, layout.influenceRadiusM * 4), 2);
+    scene.add(eventGlow);
+    let activePulsePoint: THREE.Vector3 | null = null;
 
     const ambient = new THREE.HemisphereLight("#dbeafe", "#101923", 1.8);
     scene.add(ambient);
     const keyLight = new THREE.DirectionalLight("#fff7ed", 2.55);
-    keyLight.position.set(480, 720, 340);
+    keyLight.position.set(layout.spanM * 1.2, layout.spanM * 1.8, layout.spanM * 0.9);
     scene.add(keyLight);
     const rimLight = new THREE.DirectionalLight("#8ed8ef", 0.78);
-    rimLight.position.set(-420, 180, -360);
+    rimLight.position.set(-layout.spanM, layout.spanM * 0.55, -layout.spanM);
     scene.add(rimLight);
 
     let lastProgress = Number.NaN;
@@ -746,6 +1098,7 @@ function GeoMotionScene({
       const queuedColor = new THREE.Color("#94a3b8");
       const activeColor = new THREE.Color("#fbbf24");
       const firedColor = new THREE.Color("#34d399");
+      activePulsePoint = null;
       holePoints.forEach(({ hole }, index) => {
         const delay = hole.delayMs ?? Number.POSITIVE_INFINITY;
         const color =
@@ -755,6 +1108,9 @@ function GeoMotionScene({
               ? activeColor
               : queuedColor;
         holeMesh.setColorAt(index, color);
+        if (view === "movement" && delay === currentDelay && displayProgress < 0.999) {
+          activePulsePoint = holePoints[index].point.clone().add(new THREE.Vector3(0, 0.28, 0));
+        }
       });
       if (holeMesh.instanceColor) holeMesh.instanceColor.needsUpdate = true;
 
@@ -778,7 +1134,7 @@ function GeoMotionScene({
           const movement = movementFor(block, displayProgress);
           matrix.compose(blockPosition(block, movement), blockRotation, blockScale);
           activeBlockMesh.setMatrixAt(index, matrix);
-          activeBlockMesh.setColorAt(index, colorFor(block, colorMode, movement > 0.5));
+          activeBlockMesh.setColorAt(index, colorFor(block, colorMode, movement > 0.5, colorMaximum));
         });
         activeBlockMesh.instanceMatrix.needsUpdate = true;
         if (activeBlockMesh.instanceColor) activeBlockMesh.instanceColor.needsUpdate = true;
@@ -789,19 +1145,37 @@ function GeoMotionScene({
 
     let frame = 0;
     let isVisible = true;
-    const animate = () => {
+    const animate = (time: number) => {
       frame = requestAnimationFrame(animate);
       const nextProgress = progressRef.current;
       if (nextProgress !== lastProgress) {
         updateTimeline(nextProgress);
         lastProgress = nextProgress;
       }
+      pulseRings.forEach((ring, index) => {
+        if (!activePulsePoint) {
+          ring.visible = false;
+          return;
+        }
+        const phase = ((time / 1_050) + index / pulseRings.length) % 1;
+        const radius = 1.2 + phase * Math.max(layout.influenceRadiusM * 1.25, 7);
+        ring.visible = true;
+        ring.position.copy(activePulsePoint);
+        ring.scale.set(radius, radius, radius);
+        pulseMaterials[index].opacity = (1 - phase) * 0.48;
+      });
+      if (activePulsePoint) {
+        eventGlow.position.copy(activePulsePoint).add(new THREE.Vector3(0, 2, 0));
+        eventGlow.intensity = 2.4 + Math.sin(time / 90) * 0.7;
+      } else {
+        eventGlow.intensity = 0;
+      }
       if (isVisible) {
         controls.update();
         renderer.render(scene, camera);
       }
     };
-    animate();
+    frame = requestAnimationFrame(animate);
 
     const observer = new ResizeObserver(() => {
       const nextWidth = Math.max(host.clientWidth, 320);
@@ -830,18 +1204,32 @@ function GeoMotionScene({
         sprite.material.map?.dispose();
         sprite.material.dispose();
       });
-      pitGeometry.dispose();
-      pitMaterial.dispose();
-      edgeGeometry.dispose();
-      edgeMaterial.dispose();
-      groundGeometry.dispose();
-      groundMaterial.dispose();
-      benchLipGeometries.forEach((geometry) => geometry.dispose());
-      benchLipMaterials.forEach((material) => material.dispose());
-      activeFillGeometry.dispose();
-      activeFillMaterial.dispose();
-      activeOutlineGeometry.dispose();
-      activeOutlineMaterial.dispose();
+      [freeFaceArrow, northArrow].forEach((arrow) => {
+        arrow.line.geometry.dispose();
+        (arrow.line.material as THREE.Material).dispose();
+        arrow.cone.geometry.dispose();
+        (arrow.cone.material as THREE.Material).dispose();
+      });
+      floorGeometry.dispose();
+      floorMaterial.dispose();
+      gridGeometry.dispose();
+      gridMaterial.dispose();
+      highwallGeometry.dispose();
+      highwallMaterial.dispose();
+      strataGeometry.dispose();
+      strataMaterial.dispose();
+      freeFaceGeometry.dispose();
+      freeFaceMaterial.dispose();
+      floorOutlineGeometry.dispose();
+      floorOutlineMaterial.dispose();
+      patternGeometry.dispose();
+      patternMaterial.dispose();
+      patternOutlineGeometry.dispose();
+      patternOutlineMaterial.dispose();
+      affectedGeometry?.dispose();
+      affectedMaterial?.dispose();
+      affectedOutlineGeometry?.dispose();
+      affectedOutlineMaterial?.dispose();
       holeGeometry.dispose();
       holeMaterial.dispose();
       stemGeometry.dispose();
@@ -852,21 +1240,30 @@ function GeoMotionScene({
       blockMaterial?.dispose();
       vectorGeometry?.dispose();
       vectorMaterial?.dispose();
+      pulseGeometry.dispose();
+      pulseMaterials.forEach((material) => material.dispose());
       renderer.renderLists.dispose();
       renderer.dispose();
       host.replaceChildren();
     };
-  }, [result, holes, view, colorMode, showVectors, verticalExaggeration, clipPercent, seamPercent]);
+  }, [result, holes, layout, view, colorMode, showVectors, verticalExaggeration, clipPercent, seamPercent]);
 
   useEffect(() => {
     const camera = cameraRef.current;
     const controls = controlsRef.current;
     if (!camera || !controls) return;
     if (cameraTransitionRef.current != null) cancelAnimationFrame(cameraTransitionRef.current);
-    const destination = cameraFrame(cameraPreset, spatialView, verticalExaggeration);
+    const destination = cameraFrame(cameraPreset, layout, verticalExaggeration);
     const startPosition = camera.position.clone();
     const startTarget = controls.target.clone();
     const startedAt = performance.now();
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      camera.position.copy(destination.position);
+      controls.target.copy(destination.target);
+      camera.lookAt(controls.target);
+      controls.update();
+      return;
+    }
     const duration = 620;
     const move = (time: number) => {
       const raw = clamp((time - startedAt) / duration, 0, 1);
@@ -883,7 +1280,7 @@ function GeoMotionScene({
       if (cameraTransitionRef.current != null) cancelAnimationFrame(cameraTransitionRef.current);
       cameraTransitionRef.current = null;
     };
-  }, [cameraPreset, spatialView, verticalExaggeration]);
+  }, [cameraPreset, layout, verticalExaggeration]);
 
   function zoom(factor: number) {
     const camera = cameraRef.current;
@@ -901,7 +1298,7 @@ function GeoMotionScene({
         cameraRef.current,
         controlsRef.current,
         cameraPreset,
-        spatialView,
+        layout,
         verticalExaggeration,
       );
     }
@@ -930,92 +1327,62 @@ function GeoMotionScene({
   const visibleEvents = orderedTimeline.slice(visibleEventStart, visibleEventStart + 6);
 
   return (
-    <div className="geomotionSceneFrame" data-spatial-view={spatialView}>
+    <div className="geomotionSceneFrame">
       <div
         ref={hostRef}
         className="geomotionScene"
         role="img"
-        data-testid="geomotion-whole-pit-scene"
-        aria-label={
-          spatialView === "overview"
-            ? `Whole pit overview of ${PIT_CONTEXT.name}, showing the complete crest, descending benches, highwalls, pit floor, and the localized ${ACTIVE_BENCH.label} blast section.`
-            : `Focused active blast section on ${ACTIVE_BENCH.label}, ${ACTIVE_BENCH.section}, with ordered holes and delay tie lines.`
-        }
+        data-testid="geomotion-active-bench-scene"
+        aria-label={`Active blast bench only, approximately ${format(layout.widthM, 0)} by ${format(layout.lengthM, 0)} metres, showing ${holes.length} ordered holes, the modelled rock footprint, free-face direction, and ${result ? "the predicted bulk-movement envelope" : "the planned influence envelope"}.`}
       />
       <div className="geomotionSceneHud geomotionSceneHudLeft" aria-hidden="true">
-        <strong>{spatialView === "overview" ? "WHOLE PIT OVERVIEW" : "FOCUSED BLAST SECTION"}</strong>
-        <span>
-          {spatialView === "overview"
-            ? `${PIT_CONTEXT.benches} descending benches · crest 760 m → floor 620 m`
-            : `${ACTIVE_BENCH.label} · ${ACTIVE_BENCH.section} · localized tie-up detail`}
-        </span>
-        <span>
-          {spatialView === "overview"
-            ? `${PIT_CONTEXT.widthM / 1_000} × ${(PIT_CONTEXT.lengthM / 1_000).toFixed(2)} km complete pit`
-            : `${holes.length} holes · ordered cumulative delays`}
-        </span>
+        <strong>ACTIVE BLAST BENCH ONLY</strong>
+        <span>Collar RL {format(layout.surfaceZ, 0)} m · {format(layout.widthM, 0)} × {format(layout.lengthM, 0)} m movement footprint</span>
+        <span>{holes.length} holes · free face {format(assumptions.free_face_azimuth_deg, 0)}° · north arrow shown</span>
       </div>
       <div className="geomotionSceneHud geomotionSceneHudRight" aria-live="polite">
-        <strong>{spatialView === "overview" ? "LOCALIZED ACTIVE SECTION" : "FIRING PLAYBACK"}</strong>
+        <strong>{result ? "PREDICTED BULK-MOVEMENT ENVELOPE" : "PLANNED ROCK INFLUENCE"}</strong>
         <span>{holes.length} holes · {result ? `${result.blocks.length.toLocaleString()} movement cells` : "movement not run"}</span>
         <span>{view === "movement" && currentDelay != null ? `${currentDelay.toFixed(0)} ms · ${firedCount}/${delayValues.length} fired` : view === "destination" ? "Post-blast state" : "Pre-blast state"}</span>
-        <small>Planning playback only · no device connection</small>
+        <small>{result ? `Envelope includes ${format(layout.uncertaintyBufferM, 1)} m P95 uncertainty buffer` : `Influence radius ${format(layout.influenceRadiusM, 1)} m`} · uncalibrated</small>
       </div>
-      {spatialView === "active" ? (
-        <>
-          <div
-            className="geomotionOverviewInset"
-            role="img"
-            aria-label={`Context locator: active section is a small east-side wedge on ${ACTIVE_BENCH.label} in the complete open pit.`}
-            data-testid="geomotion-overview-inset"
-          >
-            <div>
-              <strong>WHOLE PIT LOCATOR</strong>
-              <span>{ACTIVE_BENCH.label} · {ACTIVE_BENCH.section}</span>
-            </div>
-            <svg viewBox="0 0 220 120" aria-hidden="true">
-              <ellipse cx="110" cy="60" rx="96" ry="47" />
-              <ellipse cx="110" cy="60" rx="78" ry="38" />
-              <ellipse cx="110" cy="60" rx="60" ry="29" />
-              <ellipse cx="110" cy="60" rx="42" ry="20" />
-              <ellipse cx="110" cy="60" rx="22" ry="10" />
-              <path d="M159 52 L202 48 L204 63 L160 64 Z" />
-              <circle cx="181" cy="56" r="4" />
-            </svg>
-          </div>
-          <div className="geomotionFocusedEvents" data-testid="geomotion-focused-events">
-            <strong>DELAY ORDER</strong>
-            <ol start={visibleEventStart + 1}>
-              {visibleEvents.map((hole, index) => {
-                const eventIndex = visibleEventStart + index;
-                const status =
-                  progress >= 0.999 || eventIndex < activeEventIndex
-                    ? "fired"
-                    : eventIndex === activeEventIndex
-                      ? "current"
-                      : "queued";
-                return (
-                  <li key={hole.id} className={status}>
-                    <i />
-                    <span>{eventIndex + 1}</span>
-                    <b>{hole.id}</b>
-                    <em>{format(hole.delayMs, 0)} ms</em>
-                  </li>
-                );
-              })}
-            </ol>
-          </div>
-        </>
-      ) : (
-        <div className="geomotionScaleBar" aria-hidden="true"><span>200 m</span><i /></div>
-      )}
+      <div className="geomotionFocusedEvents" data-testid="geomotion-focused-events">
+        <strong>DELAY ORDER</strong>
+        <ol start={visibleEventStart + 1}>
+          {visibleEvents.map((hole, index) => {
+            const eventIndex = visibleEventStart + index;
+            const status =
+              view === "destination" || progress >= 0.999
+                ? "fired"
+                : view === "movement" && eventIndex < activeEventIndex
+                  ? "fired"
+                  : view === "movement" && eventIndex === activeEventIndex
+                    ? "current"
+                    : "queued";
+            return (
+              <li
+                key={hole.id}
+                className={status}
+                aria-current={status === "current" ? "step" : undefined}
+                aria-label={`Event ${eventIndex + 1}, hole ${hole.id}, ${format(hole.delayMs, 0)} milliseconds, ${status}`}
+              >
+                <i aria-hidden="true" />
+                <span>{eventIndex + 1}</span>
+                <b>{hole.id}</b>
+                <em>{format(hole.delayMs, 0)} ms</em>
+              </li>
+            );
+          })}
+        </ol>
+      </div>
+      <div className="geomotionScaleBar" aria-hidden="true"><span>{format(layout.scaleM, 0)} m reference</span><i /></div>
       <div className="geomotionSceneButtons" role="group" aria-label="3D camera controls">
         <button type="button" onClick={() => zoom(0.82)} aria-label="Zoom in">+</button>
         <button type="button" onClick={() => zoom(1.22)} aria-label="Zoom out">−</button>
         <button
           type="button"
           onClick={resetCamera}
-          aria-label={spatialView === "overview" ? "Reset and fit whole pit" : "Reset and fit active blast section"}
+          aria-label="Reset and fit active blast bench"
         >
           Fit
         </button>
@@ -1065,13 +1432,12 @@ export function GeoMotionPanel({
   const [progress, setProgress] = useState(0);
   const [view, setView] = useState<GeoMotionView>("source");
   const [playing, setPlaying] = useState(false);
-  const [colorMode, setColorMode] = useState<GeoMotionColor>("classification");
+  const [colorMode, setColorMode] = useState<GeoMotionColor>("displacement");
   const [showVectors, setShowVectors] = useState(true);
   const [verticalExaggeration, setVerticalExaggeration] = useState(1.5);
   const [clipPercent, setClipPercent] = useState(100);
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>("perspective");
   const [seamPercent, setSeamPercent] = useState(1);
-  const [spatialView, setSpatialView] = useState<SpatialView>("overview");
   const [datasetRefs, setDatasetRefs] = useState<GeoMotionRequest["site_data"]["datasets"]>([]);
   const [blockModelFile, setBlockModelFile] = useState<File | null>(null);
   const [nativeFullscreen, setNativeFullscreen] = useState(false);
@@ -1153,6 +1519,10 @@ export function GeoMotionPanel({
     const depths = holes.map((hole) => hole.depth).filter((value): value is number => Number.isFinite(value));
     return { charge, averageDepth: depths.length ? depths.reduce((sum, value) => sum + value, 0) / depths.length : 0 };
   }, [holes]);
+  const benchLayout = useMemo(
+    () => buildBenchLayout(holes, result, assumptions),
+    [holes, result, assumptions],
+  );
 
   function loadCsv(text: string, name: string) {
     const parsed = parseGeoMotionTieUp(text);
@@ -1194,19 +1564,7 @@ export function GeoMotionPanel({
     setFallbackFullscreen(true);
   }
 
-  function focusActiveSection() {
-    setSpatialView("active");
-    setView("movement");
-    setPlaying(false);
-  }
-
-  function returnToWholePit() {
-    setSpatialView("overview");
-    setPlaying(false);
-  }
-
   function startPlayback() {
-    setSpatialView("active");
     setView("movement");
     if (progress >= 0.999) setProgress(0);
     setPlaying(true);
@@ -1273,16 +1631,20 @@ export function GeoMotionPanel({
           assumptions: { ...request.assumptions, cell_size_m: 3, max_visual_blocks: 20000 },
         };
         setResult(simulateGeoMotionLocally(previewRequest));
-        setProgress(1);
-        setView("destination");
-        setPlaying(false);
+        setColorMode("displacement");
+        const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+        setProgress(reducedMotion ? 1 : 0);
+        setView(reducedMotion ? "destination" : "movement");
+        setPlaying(!reducedMotion);
         return;
       }
       if (!response.ok) throw new Error(payload?.detail?.[0]?.msg || payload?.detail || `Simulation failed (${response.status})`);
       setResult(payload as GeoMotionResult);
-      setProgress(1);
-      setView("destination");
-      setPlaying(false);
+      setColorMode("displacement");
+      const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+      setProgress(reducedMotion ? 1 : 0);
+      setView(reducedMotion ? "destination" : "movement");
+      setPlaying(!reducedMotion);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -1410,18 +1772,13 @@ export function GeoMotionPanel({
         ref={viewerRef}
         className={`card geomotionViewerCard${standalone ? " geomotionViewerStandalone" : ""}${fallbackFullscreen ? " geomotionViewerFallbackFullscreen" : ""}`}
         data-testid="geomotion-viewer"
-        data-spatial-view={spatialView}
       >
         <div className="geomotionViewerHeader">
           <div>
-            {standalone ? <div className="geomotionEyebrow">GEOMOTION 3D · DEDICATED MINE VIEW</div> : null}
-            <div className="sectionTitle">
-              {spatialView === "overview" ? "Whole pit overview" : "Active blast section"}
-            </div>
+            {standalone ? <div className="geomotionEyebrow">GEOMOTION 3D · ACTIVE BENCH WORKSPACE</div> : null}
+            <div className="sectionTitle">Active blast bench and movement envelope</div>
             <div className="subtitle">
-              {spatialView === "overview"
-                ? `Complete crest, highwalls, descending benches and pit floor. The ${ACTIVE_BENCH.label} tie-up remains a small localized section.`
-                : `Focused tie-up detail on ${ACTIVE_BENCH.label}, ${ACTIVE_BENCH.section}, with the whole-pit locator retained for context.`}
+              Bench-local view of the real tie-up coordinates, affected rock volume, free-face direction and predicted bulk movement. No whole-mine geometry is rendered.
             </div>
           </div>
           <div className="geomotionViewerActions">
@@ -1434,14 +1791,6 @@ export function GeoMotionPanel({
                 Blast data &amp; setup
               </button>
             ) : null}
-            <button
-              className="btn geomotionSpatialButton"
-              type="button"
-              data-testid="geomotion-spatial-toggle"
-              onClick={spatialView === "overview" ? focusActiveSection : returnToWholePit}
-            >
-              {spatialView === "overview" ? "Focus active blast section" : "Return to whole pit"}
-            </button>
             <button className="btn" type="button" onClick={playing ? () => setPlaying(false) : startPlayback} disabled={!timedHoles.length}>
               {playing ? "Pause sequence" : "Play sequence"}
             </button>
@@ -1472,14 +1821,13 @@ export function GeoMotionPanel({
           </div>
         </div>
 
-        <div className="geomotionContextRow" aria-label="Mine context summary">
-          <span className="mode" data-testid="geomotion-spatial-mode">
-            {spatialView === "overview" ? "Whole pit overview" : "Focused active section"}
-          </span>
-          <span>Whole mine · {PIT_CONTEXT.name}</span>
-          <span>{PIT_CONTEXT.renderedCells} deterministic context cells</span>
-          <span>{PIT_CONTEXT.benches} benches · {PIT_CONTEXT.verticalRangeM} m vertical</span>
-          <span className="active">Active · {ACTIVE_BENCH.label} / {ACTIVE_BENCH.section} / {holes.length} holes</span>
+        <div className="geomotionContextRow" aria-label="Active bench summary">
+          <span className="mode" data-testid="geomotion-bench-scope">Active bench only</span>
+          <span>Collar RL {format(benchLayout.surfaceZ, 0)} m</span>
+          <span>{format(benchLayout.widthM, 0)} × {format(benchLayout.lengthM, 0)} m envelope</span>
+          <span>{format(benchLayout.areaM2, 0)} m² plan area</span>
+          <span>Free face {format(assumptions.free_face_azimuth_deg, 0)}°</span>
+          <span className="active">{holes.length} charged holes</span>
           {standalone && userEmail ? <span>{userEmail}</span> : null}
         </div>
 
@@ -1540,15 +1888,16 @@ export function GeoMotionPanel({
           </label>
         </div>
 
-        <div className="geomotionPitLegend" aria-label="Whole-pit and firing-state legend">
-          <span><i className="model" />Whole mine block model</span>
-          <span><i className="bench" />Pit benches</span>
-          <span><i className="active" />Active blast section</span>
+        <div className="geomotionPitLegend" aria-label="Active bench, movement-zone and firing-state legend">
+          <span><i className="benchSurface" />Bench surface</span>
+          <span><i className="patternZone" />Modelled rock footprint</span>
+          {result ? <span><i className="movementZone" />Predicted movement envelope</span> : null}
+          <span><i className="freeFace" />Free-face direction</span>
           <span><i className="tie" />Delay tie line</span>
           <span><i className="queued" />Queued hole</span>
           <span><i className="current" />Current firing</span>
           <span><i className="fired" />Fired hole</span>
-          <span className="geomotionLegendNote">Imported holes remain bounded to {ACTIVE_BENCH.label}</span>
+          <span className="geomotionLegendNote">Movement envelope is uncalibrated bulk-rock displacement—not flyrock, damage or an exclusion zone.</span>
         </div>
         {result ? (
           <ColorLegend mode={colorMode} blocks={result.blocks} destination={view === "destination" || (view === "movement" && progress > 0.5)} />
@@ -1556,8 +1905,8 @@ export function GeoMotionPanel({
 
         {result ? (
           <div className="geomotionTimeline">
-            <span>Section clip</span>
-            <input aria-label="Active section clip" type="range" min={5} max={100} value={clipPercent} onChange={(event) => setClipPercent(Number(event.target.value))} />
+            <span>Bench cutaway</span>
+            <input aria-label="Active bench cutaway" type="range" min={5} max={100} value={clipPercent} onChange={(event) => setClipPercent(Number(event.target.value))} />
             <span>{clipPercent}%</span>
           </div>
         ) : null}
@@ -1594,6 +1943,7 @@ export function GeoMotionPanel({
         <GeoMotionScene
           result={result}
           holes={holes}
+          assumptions={assumptions}
           progress={progress}
           view={view}
           colorMode={colorMode}
@@ -1602,14 +1952,13 @@ export function GeoMotionPanel({
           clipPercent={clipPercent}
           cameraPreset={cameraPreset}
           seamPercent={seamPercent}
-          spatialView={spatialView}
         />
         <div className="geomotionViewerFooter">
-          <span><strong>{PIT_CONTEXT.coordinateSystem}</strong> · deterministic seed {PIT_CONTEXT.seed}</span>
+          <span><strong>Local blast coordinates in metres</strong> · north and free-face direction shown</span>
           <span>Planning/simulation only · no detonator, firing-system, or hardware control</span>
         </div>
         <span className="geomotionSrOnly" aria-live="polite">
-          {`${spatialView === "overview" ? "Whole pit overview" : "Focused active blast section"} active${fullscreen ? " in browser fullscreen" : standalone ? " in the dedicated window" : ""}.`}
+          {`Active blast bench view${fullscreen ? " in browser fullscreen" : standalone ? " in the dedicated window" : ""}. ${result ? "Predicted movement envelope is visible." : "Run the movement model to show the predicted movement envelope."}`}
         </span>
       </section>
 
@@ -1794,8 +2143,8 @@ export function GeoMotionPanel({
       ) : (
         <section className="geomotionEmpty">
           <div className="geomotionEmptyIcon">3D</div>
-          <h3>Whole-pit context is ready</h3>
-          <p>Run the movement model to add 1 m³ ore-control cells, movement vectors, mass balance, recovery, and dilution outcomes to the active bench.</p>
+          <h3>The active blast bench is ready</h3>
+          <p>Run the movement model to add the predicted bulk-rock movement envelope, 1 m³ ore-control cells, directional vectors, mass balance, recovery, and dilution outcomes—without loading unrelated mine geometry.</p>
         </section>
       )}
     </div>

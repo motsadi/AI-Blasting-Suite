@@ -76,7 +76,9 @@ The result is conservatively remapped into unique destination columns. Collision
 
 The backend computes every 1 m³ cell. Interactive responses may aggregate contiguous source cells into larger regular level-of-detail cubes while preserving aggregate tonnes and carats. The UI uses GPU-instanced solid cells.
 
-Controls include joined or 1–3% seams, clipping, vertical exaggeration, plan/section/perspective cameras, event playback, vectors, grade/facies, ore/waste, displacement, uncertainty, burden velocity and peak impulse. Full-resolution gzip CSV export is available from the authoritative backend.
+The 3D workspace intentionally renders only the active blasting bench. It uses the imported tie-up coordinates directly and adds a local highwall, free-face direction, north arrow, planned rock footprint and predicted bulk-movement envelope. It does not render a synthetic whole mine. The envelope is derived from modelled source/destination cells plus the reported P95 movement-uncertainty buffer; it is not a flyrock, blast-damage or regulatory exclusion zone.
+
+Controls include joined or 1–3% seams, bench cutaway, vertical exaggeration, plan/section/perspective cameras, event playback, firing pulses, movement vectors, grade/facies, ore/waste, displacement, uncertainty, burden velocity and peak impulse. Full-resolution gzip CSV export is available from the authoritative backend.
 
 If Cloud Run returns `404` or `405`, the UI runs a clearly labelled coarse browser preview. That preview is not the authoritative 1 m³-cell event solver.
 
