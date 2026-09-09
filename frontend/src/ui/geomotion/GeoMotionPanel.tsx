@@ -20,8 +20,8 @@ const NOTICE = "Synthetic Demonstration / Uncalibrated — Planning Only";
 const STORAGE_KEY = "geomotion_3d_demo_v1";
 const WORKSPACE_STORAGE_KEY = "geomotion_3d_workspace_v2";
 const DEFAULT_TIE_UP_FILE = "680-665QS32-33_synthetic_reference.csv";
-const ORE_COLOR = "#f4c14b";
-const WASTE_COLOR = "#c5ced8";
+const ORE_COLOR = "#ffd34d";
+const WASTE_COLOR = "#d7dee6";
 
 type Props = {
   apiBaseUrl: string;
@@ -359,8 +359,9 @@ function cameraFrame(
   const width = Math.max(layout.widthM, 4);
   const length = Math.max(layout.lengthM, 4);
   const height = Math.max(layout.heightM * verticalExaggeration, 4);
+  const fovDeg = 46;
   const halfDiag = Math.hypot(width, length, height) / 2;
-  const distance = (halfDiag / Math.tan((38 * Math.PI) / 360)) * 1.22;
+  const distance = (halfDiag / Math.tan((fovDeg * Math.PI) / 360)) * 0.74;
   const target = new THREE.Vector3(0, 0, 0);
   if (preset === "plan") {
     return { target, position: new THREE.Vector3(0, distance, 0.04) };
@@ -429,13 +430,13 @@ function GeoMotionScene({
     const height = Math.max(host.clientHeight, 460);
     const scene = new THREE.Scene();
     scene.background = new THREE.Color("#08131f");
-    const camera = new THREE.PerspectiveCamera(38, width / height, 0.1, Math.max(2_400, layout.spanM * 18));
+    const camera = new THREE.PerspectiveCamera(46, width / height, 0.1, Math.max(2_400, layout.spanM * 18));
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
     renderer.setSize(width, height);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.22;
+    renderer.toneMapping = THREE.NoToneMapping;
+    renderer.toneMappingExposure = 1;
     renderer.localClippingEnabled = clipPercent < 99;
     renderer.domElement.setAttribute("aria-hidden", "true");
     host.replaceChildren(renderer.domElement);
@@ -463,7 +464,7 @@ function GeoMotionScene({
     let blockMesh: THREE.InstancedMesh | null = null;
     let blockEdgeMesh: THREE.InstancedMesh | null = null;
     let blockGeometry: THREE.BoxGeometry | null = null;
-    let blockMaterial: THREE.MeshLambertMaterial | null = null;
+    let blockMaterial: THREE.MeshBasicMaterial | null = null;
     let blockEdgeMaterial: THREE.MeshBasicMaterial | null = null;
     const resultBlocks = result?.blocks ?? [];
     const lodScale = Math.max(1, Math.cbrt(result?.transport?.stride || 1));
@@ -506,9 +507,9 @@ function GeoMotionScene({
 
     if (resultBlocks.length) {
       blockGeometry = new THREE.BoxGeometry(1, 1, 1);
-      blockMaterial = new THREE.MeshLambertMaterial({
+      blockMaterial = new THREE.MeshBasicMaterial({
         color: "#ffffff",
-        vertexColors: true,
+        toneMapped: false,
         clippingPlanes: clipPlane ? [clipPlane] : [],
       });
       blockMesh = new THREE.InstancedMesh(blockGeometry, blockMaterial, resultBlocks.length);
@@ -517,10 +518,10 @@ function GeoMotionScene({
       blockMesh.renderOrder = 10;
       scene.add(blockMesh);
       blockEdgeMaterial = new THREE.MeshBasicMaterial({
-        color: "#0f172a",
+        color: "#0b1220",
         wireframe: true,
         transparent: true,
-        opacity: 0.55,
+        opacity: 0.42,
         toneMapped: false,
         clippingPlanes: clipPlane ? [clipPlane] : [],
       });
@@ -778,7 +779,7 @@ function GeoMotionScene({
             ? `${format(layout.widthM, 0)} × ${format(layout.lengthM, 0)} × ${format(layout.heightM, 0)} m · ${result.blocks.length.toLocaleString()} cells`
             : "No cells loaded"}
         </span>
-        <span>{result ? "1 m³ cubes · ore gold, waste stone" : "Run GeoMotion 3D to show the cubes"}</span>
+        <span>{result ? `${format(result.assumptions.cell_size_m || 1, 0)} m cubes · ore gold, waste stone` : "Run GeoMotion 3D to show the cubes"}</span>
       </div>
       <div className="geomotionSceneHud geomotionSceneHudRight" aria-live="polite">
         <strong>{result ? (view === "destination" ? "POST-BLAST MODEL" : view === "movement" ? "MOVING CELLS" : "IN-SITU MODEL") : "AWAITING SIMULATION"}</strong>
@@ -1334,7 +1335,7 @@ export function GeoMotionPanel({
           <span><i className="wasteCube" />Waste cube</span>
           <span><i className="cubeEdge" />Cube edges</span>
           {showVectors ? <span><i className="movementVector" />Movement vector</span> : null}
-          <span className="geomotionLegendNote">Only 1 m³ cells are drawn. Displacement is uncalibrated bulk-rock movement—not flyrock, damage or an exclusion zone.</span>
+          <span className="geomotionLegendNote">Individual cubes only. Displacement is uncalibrated bulk-rock movement—not flyrock, damage or an exclusion zone.</span>
         </div>
         {result ? (
           <ColorLegend mode={colorMode} blocks={result.blocks} destination={view === "destination" || (view === "movement" && progress > 0.5)} />
@@ -1390,7 +1391,7 @@ export function GeoMotionPanel({
           seamPercent={seamPercent}
         />
         <div className="geomotionViewerFooter">
-          <span><strong>1 m³ cubes in local blast coordinates</strong> · Fit frames the whole model</span>
+          <span><strong>Cubes in local blast coordinates</strong> · Fit frames the whole model</span>
           <span>Planning/simulation only · no detonator, firing-system, or hardware control</span>
         </div>
         <span className="geomotionSrOnly" aria-live="polite">

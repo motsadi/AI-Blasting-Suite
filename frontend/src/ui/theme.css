@@ -151,8 +151,8 @@ body{
 }
 .geomotionPitLegend span{ display:inline-flex; align-items:center; gap:5px; }
 .geomotionPitLegend i{ display:inline-block; width:11px; height:11px; border:1px solid rgba(15,23,42,.22); border-radius:3px; }
-.geomotionPitLegend i.oreCube{ background:#f4c14b; }
-.geomotionPitLegend i.wasteCube{ background:#c5ced8; }
+.geomotionPitLegend i.oreCube{ background:#ffd34d; }
+.geomotionPitLegend i.wasteCube{ background:#d7dee6; }
 .geomotionPitLegend i.cubeEdge{ background:transparent; border:2px solid #e2e8f0; }
 .geomotionPitLegend i.movementVector{ width:17px; height:0; border:0; border-top:3px solid #fb7185; border-radius:0; }
 .geomotionLegendNote{ margin-left:auto; font-weight:650!important; }
